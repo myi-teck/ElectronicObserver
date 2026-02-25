@@ -91,6 +91,7 @@ namespace ElectronicObserver.Window
 
 
 			Utility.Configuration.Instance.Load(this);
+			Utility.ThemeManager.Load();
 
 
 			Utility.Logger.Instance.LogAdded += new Utility.LogAddedEventHandler((Utility.Logger.LogData data) =>
@@ -322,6 +323,16 @@ namespace ElectronicObserver.Window
 
 			if (!c.Control.UseSystemVolume)
 				_volumeUpdateState = -1;
+
+			// 全パネルへのテーマ一括適用
+			Utility.ThemeManager.ApplyTheme(this);
+			if (SubForms != null)
+			{
+				foreach (var f in SubForms)
+				{
+					Utility.ThemeManager.ApplyTheme(f);
+				}
+			}
 		}
 
 

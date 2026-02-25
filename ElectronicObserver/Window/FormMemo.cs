@@ -56,6 +56,9 @@ namespace ElectronicObserver.Window
 		{
 			// フォント反映
 			txb_Memo.Font = Font = Utility.Configuration.Config.UI.MainFont;
+
+			// テーマ反映
+			Utility.ThemeManager.ApplyTheme(this);
 		}
 
 		/// <summary>

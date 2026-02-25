@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ThemeConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <Themes>
+    <Theme name="Dark">
+      <BackColor>#2B2B2B</BackColor>
+      <ForeColor>#DCDCDC</ForeColor>
+      <SubBackColor>#3C3F41</SubBackColor>
+      <HighlightColor>#4B6EAF</HighlightColor>
+      <GridColor>#323232</GridColor>
+      <ButtonStyle>Flat</ButtonStyle>
+    </Theme>
+  </Themes>
+  <CurrentTheme>Dark</CurrentTheme>
+</ThemeConfiguration>

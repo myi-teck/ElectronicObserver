@@ -382,6 +382,7 @@
     <Compile Include="Resource\Record\ShipDropRecord.cs" />
     <Compile Include="Resource\Record\ShipParameterRecord.cs" />
     <Compile Include="Resource\ResourceManager.cs" />
+    <Compile Include="Utility\ThemeManager.cs" />
     <Compile Include="Utility\Configuration.cs" />
     <Compile Include="Utility\Data\ExpTable.cs" />
     <Compile Include="Utility\ErrorReporter.cs" />
@@ -1051,6 +1052,9 @@
     <Content Include="Other\Information\apilist.txt" />
     <Content Include="version.txt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Settings\ThemeConfiguration.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <None Include="Other\Information\kcmemo.md" />
     <Content Include="Other\Information\todo.txt" />
