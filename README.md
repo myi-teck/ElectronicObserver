@@ -4,6 +4,6 @@
 ・ダークテーマっぽいもの  
 ・メモ帳機能  
 
-偉大なる先駆者達に敬意を込めて
-開発版様
+偉大なる先駆者達に敬意を込めて  
+開発版様  
 [https://github.com/dais-k/ElectronicObserver]
