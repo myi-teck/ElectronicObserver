@@ -709,6 +709,12 @@
     <Compile Include="Window\FormJson.Designer.cs">
       <DependentUpon>FormJson.cs</DependentUpon>
     </Compile>
+    <Compile Include="Window\FormMemo.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Window\FormMemo.Designer.cs">
+      <DependentUpon>FormMemo.cs</DependentUpon>
+    </Compile>
     <Compile Include="Window\FormSenka.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -960,6 +966,9 @@
     <EmbeddedResource Include="Window\FormJson.resx">
       <DependentUpon>FormJson.cs</DependentUpon>
     </EmbeddedResource>
+    <EmbeddedResource Include="Window\FormMemo.resx">
+      <DependentUpon>FormMemo.cs</DependentUpon>
+    </EmbeddedResource>
     <EmbeddedResource Include="Window\FormSenka.resx">
       <DependentUpon>FormSenka.cs</DependentUpon>
     </EmbeddedResource>
@@ -1070,6 +1079,10 @@
     <ProjectReference Include="..\BrowserLib\BrowserLib.csproj">
       <Project>{8bb3e37d-09fb-40b9-958a-8cdcd18ef1f5}</Project>
       <Name>BrowserLib</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\DockPanelSuite\WinFormsUI\ThemeVS2015.csproj">
+      <Project>{30506734-8bcf-bbe5-115d-358a1556f04f}</Project>
+      <Name>ThemeVS2015</Name>
     </ProjectReference>
     <ProjectReference Include="..\DockPanelSuite\WinFormsUI\WinFormsUI.csproj">
       <Project>{c75532c4-765b-418e-b09b-46d36b2abdb1}</Project>

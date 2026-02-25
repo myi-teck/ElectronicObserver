@@ -137,6 +137,7 @@
 			this.StripStatus_Clock = new System.Windows.Forms.ToolStripStatusLabel();
 			this.UIUpdateTimer = new System.Windows.Forms.Timer(this.components);
 			this.MainDockPanel = new WeifenLuo.WinFormsUI.Docking.DockPanel();
+			this.StripMenu_View_Memo = new System.Windows.Forms.ToolStripMenuItem();
 			this.StripMenu.SuspendLayout();
 			this.StripStatus.SuspendLayout();
 			this.SuspendLayout();
@@ -326,6 +327,7 @@
             this.StripMenu_View_Log,
             this.StripMenu_WindowCapture,
             this.StripMenu_View_Json,
+            this.StripMenu_View_Memo,
             this.StripMenu_View_AccessTime});
 			this.StripMenu_View.Name = "StripMenu_View";
 			this.StripMenu_View.Size = new System.Drawing.Size(62, 22);
@@ -985,6 +987,13 @@
 			this.MainDockPanel.Size = new System.Drawing.Size(640, 431);
 			this.MainDockPanel.TabIndex = 0;
 			// 
+            // StripMenu_View_Memo
+            // 
+            this.StripMenu_View_Memo.Name = "StripMenu_View_Memo";
+            this.StripMenu_View_Memo.Size = new System.Drawing.Size(224, 26);
+            this.StripMenu_View_Memo.Text = "MEMO";
+            this.StripMenu_View_Memo.Click += new System.EventHandler(this.StripMenu_View_Memo_Click);
+			// 
 			// FormMain
 			// 
 			this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.None;
@@ -1120,5 +1129,6 @@
 		private System.Windows.Forms.ToolStripMenuItem StripMenu_Tool_CopyAllShips;
 		private System.Windows.Forms.ToolStripMenuItem StripMenu_Tool_CopyAllEquips;
 		private System.Windows.Forms.ToolStripMenuItem StripMenu_View_EquipmentGroup;
+        private System.Windows.Forms.ToolStripMenuItem StripMenu_View_Memo;
 	}
 }

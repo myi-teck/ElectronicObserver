@@ -69,6 +69,7 @@ namespace ElectronicObserver.Window
 		public FormSenka fSenka;
 		public FormAccessTime fAccessTime;
 		public FormEquipmentGroup fEquipmentGroup;
+		public FormMemo fMemo;
 
 		#endregion
 
@@ -169,7 +170,9 @@ namespace ElectronicObserver.Window
 			APIObserver.Instance.Start(Utility.Configuration.Config.Connection.Port, this);
 
 
-			MainDockPanel.Extender.FloatWindowFactory = new CustomFloatWindowFactory();
+			// 以下の設定は、テーマ設定前で MainDockPanel.Extender が null の場合があり、NullReferenceException が発生するためコメントアウト
+			// また、後の設定（ConfigurationChanged() -> テーマ設定）で再度適切に設定されるため、ここでの実行は不要
+			// MainDockPanel.Extender.FloatWindowFactory = new CustomFloatWindowFactory();
 
 
 			SubForms = new List<DockContent>();
@@ -200,6 +203,7 @@ namespace ElectronicObserver.Window
 			SubForms.Add(fSenka = new FormSenka(this));
 			SubForms.Add(fAccessTime = new FormAccessTime(this));
 			SubForms.Add(fEquipmentGroup = new FormEquipmentGroup(this));
+			SubForms.Add(fMemo = new FormMemo(this));
 
 			ConfigurationChanged();     //設定から初期化
 
@@ -285,11 +289,18 @@ namespace ElectronicObserver.Window
 			Font = c.UI.MainFont;
 			//StripMenu.Font = Font;
 			StripStatus.Font = Font;
+/*			
 #pragma warning disable CS0618 // 型またはメンバーが旧型式です
 			MainDockPanel.Skin.AutoHideStripSkin.TextFont = Font;
 			MainDockPanel.Skin.DockPaneStripSkin.TextFont = Font;
 #pragma warning restore CS0618 // 型またはメンバーが旧型式です
-
+*/
+			// 新たにVS2015Darkのテーマ設定を追加
+			MainDockPanel.Theme = new WeifenLuo.WinFormsUI.Docking.VS2015DarkTheme();
+			if (MainDockPanel.Theme != null)
+			{
+				MainDockPanel.Theme.Extender.FloatWindowFactory = new CustomFloatWindowFactory();
+			}
 
 			if (c.Life.LockLayout)
 			{
@@ -533,6 +544,8 @@ namespace ElectronicObserver.Window
 					return fSenka;
 				case "AccessTime":
 					return fAccessTime;
+				case "Memo":
+					return fMemo;
 				default:
 					if (persistString.StartsWith("ShipGroup"))
 					{
@@ -1886,6 +1899,16 @@ namespace ElectronicObserver.Window
 			ShowForm(fEquipmentGroup);
 		}
 
+		/// <summary>
+		/// メモ押下時イベントハンドラ
+		/// 2024/01/23 myi ADD
+		/// </summary>
+		/// <param name="sender"></param>
+		/// <param name="e"></param>
+		private void StripMenu_View_Memo_Click(object sender, EventArgs e)
+		{
+			ShowForm(fMemo);
+		}
 		#endregion
 
 	}
