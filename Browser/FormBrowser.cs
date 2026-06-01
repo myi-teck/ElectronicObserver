@@ -275,7 +275,7 @@ namespace Browser
 		private IntPtr HostWindow;
 
 
-		private ChromiumWebBrowser Browser = null;
+		internal ChromiumWebBrowser Browser = null;
 
 		private string ProxySettings = null;
 
@@ -340,6 +340,9 @@ namespace Browser
 		public FormBrowser(string serverUri)
 		{
 			InitializeComponent();
+
+			// 拡張メニューの初期化 (タグ付けと共通イベントの適用)
+			InitializeColorFilterMenu();
 
 			ServerUri = serverUri;
 			StyleSheetApplied = false;
@@ -520,6 +523,9 @@ namespace Browser
 			ToolMenu.Dock = (DockStyle)Configuration.ToolMenuDockStyle;
 			ToolMenu.Visible = Configuration.IsToolMenuVisible;
 			ToolMenu_Other_ClearCache.Visible = conf.EnableDebugMenu;
+
+			UpdateColorFilterMenu();
+			ApplyColorFilter();
 		}
 
 		private void ConfigurationUpdated()
@@ -532,7 +538,7 @@ namespace Browser
 			BrowserHost.AsyncRemoteRun(() => BrowserHost.Proxy.AddLog(priority, message));
 		}
 
-		private void SendErrorReport(string exceptionName, string message)
+		internal void SendErrorReport(string exceptionName, string message)
 		{
 			BrowserHost.AsyncRemoteRun(() => BrowserHost.Proxy.SendErrorReport(exceptionName, message));
 		}
@@ -545,6 +551,7 @@ namespace Browser
 			//ロード直後の適用ではレイアウトがなぜか崩れるのでこのタイミングでも適用
 			ApplyStyleSheet();
 			ApplyZoom();
+			ApplyColorFilter();
 			DestroyDMMreloadDialog();
 
 			//起動直後はまだ音声が鳴っていないのでミュートできないため、この時点で有効化
@@ -602,6 +609,7 @@ namespace Browser
 					// DOM が完成した後に確実に適用
 					ApplyStyleSheet();
 					ApplyZoom();
+					ApplyColorFilter();
 					DestroyDMMreloadDialog();
 				}
 				catch (Exception ex)
@@ -612,11 +620,11 @@ namespace Browser
 		}
 
 
-		private bool IsBrowserInitialized =>
+		internal bool IsBrowserInitialized =>
 			Browser != null &&
 			Browser.IsBrowserInitialized;
 
-		private IFrame GetMainFrame()
+		internal IFrame GetMainFrame()
 		{
 			if (!IsBrowserInitialized)
 				return null;
@@ -630,7 +638,7 @@ namespace Browser
 			return null;
 		}
 
-		private IFrame GetGameFrame()
+		internal IFrame GetGameFrame()
 		{
 			if (!IsBrowserInitialized)
 				return null;
@@ -645,7 +653,7 @@ namespace Browser
 			return null;
 		}
 
-		private IFrame GetKanColleFrame()
+		internal IFrame GetKanColleFrame()
 		{
 			if (!IsBrowserInitialized)
 				return null;
@@ -771,6 +779,66 @@ namespace Browser
 			{
 				SendErrorReport(ex.ToString(), "ApplyStyleSheet: スタイルシート適用に失敗しました。");
 			}
+		}
+
+		private BrowserPrivacyFilterManager _privacyFilterManager;
+		internal BrowserPrivacyFilterManager PrivacyFilterManager => _privacyFilterManager ?? (_privacyFilterManager = new BrowserPrivacyFilterManager(this));
+
+		/// <summary>
+		/// プライバシーフィルタ(カラーフィルタや目隠し設定等)を適用または解除します。
+		/// </summary>
+		public void ApplyColorFilter()
+		{
+			PrivacyFilterManager.ApplyFilter(Configuration.ColorFilterMode, Configuration.AppliesHoverCover);
+		}
+
+		private void InitializeColorFilterMenu()
+		{
+			// UIアイテムにモード番号をTagとして持たせ、排他選択のイベントハンドラを登録する
+			ToolMenu_ColorFilter_None.Tag = 0;
+			ToolMenu_ColorFilter_Grayscale.Tag = 1;
+			ToolMenu_ColorFilter_LowContrast.Tag = 4;
+
+			var items = new[] {
+				ToolMenu_ColorFilter_None,
+				ToolMenu_ColorFilter_Grayscale,
+				ToolMenu_ColorFilter_LowContrast
+			};
+
+			foreach (var item in items)
+			{
+				item.Click += ToolMenu_ColorFilter_Item_Click;
+			}
+
+			// カバー機能（ホバー時のみ表示）は独立のトグルスイッチとして別登録
+			ToolMenu_ColorFilter_HoverCover.Click += ToolMenu_ColorFilter_HoverCover_Click;
+		}
+
+		private void ToolMenu_ColorFilter_Item_Click(object sender, EventArgs e)
+		{
+			if (sender is ToolStripMenuItem item && item.Tag is int mode)
+			{
+				Configuration.ColorFilterMode = mode;
+				UpdateColorFilterMenu();
+				ApplyColorFilter();
+				ConfigurationUpdated();
+			}
+		}
+
+		private void ToolMenu_ColorFilter_HoverCover_Click(object sender, EventArgs e)
+		{
+			Configuration.AppliesHoverCover = ToolMenu_ColorFilter_HoverCover.Checked;
+			ApplyColorFilter(); // ColorFilter処理も再評価・再適用する可能性があるため共通メソッドを呼ぶ
+			ConfigurationUpdated();
+		}
+
+		private void UpdateColorFilterMenu()
+		{
+			ToolMenu_ColorFilter_None.Checked = (Configuration.ColorFilterMode == 0);
+			ToolMenu_ColorFilter_Grayscale.Checked = (Configuration.ColorFilterMode == 1);
+			ToolMenu_ColorFilter_LowContrast.Checked = (Configuration.ColorFilterMode == 4);
+
+			ToolMenu_ColorFilter_HoverCover.Checked = Configuration.AppliesHoverCover;
 		}
 
 
@@ -1260,6 +1328,9 @@ namespace Browser
 				Icons.Images["Browser_Navigate"];
 			ToolMenu_Other.Image =
 				Icons.Images["Browser_Other"];
+
+			ToolMenu_ColorFilter.Image = Icons.Images["Browser_ScreenShot"]; // TODO: 専用アイコンが無い為、とりあえずスクリーンショットと同じアイコン
+			ToolMenu_ColorFilter.Text = "プライバシーフィルタの切り替え";
 
 			SetVolumeState();
 		}

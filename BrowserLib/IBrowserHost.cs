@@ -137,6 +137,24 @@ namespace BrowserLib
 		public bool AppliesStyleSheet { get; set; }
 
 		/// <summary>
+		/// カラーフィルタ(グレースケール)を適用するか
+		/// </summary>
+		[DataMember]
+		public bool AppliesColorFilter { get; set; }
+
+		/// <summary>
+		/// 適用するブラウザカラーフィルタ・プライバシーフィルタのモード
+		/// </summary>
+		[DataMember]
+		public int ColorFilterMode { get; set; }
+
+		/// <summary>
+		/// ホバー時のみ表示するカバー機能（目隠し）を適用するか
+		/// </summary>
+		[DataMember]
+		public bool AppliesHoverCover { get; set; }
+
+		/// <summary>
 		/// DMMによるページ更新ダイアログを表示するか
 		/// </summary>
 		[DataMember]
