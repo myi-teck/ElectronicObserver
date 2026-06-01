@@ -332,9 +332,12 @@ namespace Browser
 					_parent.NavigateToLoginPage();
 				}
 				// プライバシーフィルターのカラーモードを設定（0=なし, 1=グレースケール, 4=低コントラスト）
-				else if (action == "set_filter" && int.TryParse(req.QueryString["mode"], out int filterMode))
+				// 2026/06/01 myi 変更：差分WebP方式に伴い、フィルターはRemoteControllerクライアント側でCSS適用するため
+				//                  サーバー側ではNOP（何もしない）に変更。本家ブラウザ側には影響を与えない。
+				else if (action == "set_filter")
 				{
-					_parent.SetFilterMode(filterMode);
+					// クライアントサイドフィルターのため、サーバーサイドでは何もしない（NOP）
+					// 将来的に状態同期が必要な場合はここを拡張可能
 				}
 				// WebP圧縮品質の動的設定アクションを追加
 				// 2026/06/01 myi 新規作成（品質スライダーとのWebPリアルタイム連動対応）

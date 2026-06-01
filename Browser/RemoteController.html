@@ -93,6 +93,18 @@
             max-height: 100%;
             display: block;            /* canvas はインライン要素なので block に変更 */
             box-shadow: 0 0 15px rgba(0, 255, 102, 0.3); /* グリーン調のグローシャドウ */
+            transition: filter 0.2s ease; /* フィルター切り替え時のアニメーション */
+        }
+
+        /*
+         * ゲーム画面用クライアントサイドフィルター
+         * 2026/06/01 myi 新規作成（差分WebP方式に伴うフィルタークライアント化対応）
+         */
+        #game-screen.filter-grayscale {
+            filter: grayscale(100%);
+        }
+        #game-screen.filter-lowcontrast {
+            filter: grayscale(80%) brightness(30%) contrast(50%);
         }
         
         /* 
@@ -2596,19 +2608,39 @@
         });
 
         //================================================================================
-        // プライバシーフィルター設定
+        // プライバシーフィルター設定（クライアントサイド適用版）
+        // 2026/06/01 myi 変更：差分WebP方式に伴い、フィルターをRemoteControllerクライアント側でCSS適用に変更。
+        //                  本家ブラウザ側のゲーム画面には影響を与えず、#game-screen canvas のみに適用される。
         //================================================================================
         // フィルターモードの初期値（localStorageから取得、なければデフォルト0=なし）
         let currentFilterMode = parseInt(localStorage.getItem('filterMode')) || 0;
 
+        // ゲーム画面にCSSフィルターを適用する関数
+        function applyClientFilter(mode) {
+            const gameScreen = document.getElementById('game-screen');
+            // 既存のフィルタークラスを全て削除
+            gameScreen.classList.remove('filter-grayscale', 'filter-lowcontrast');
+            switch(mode) {
+                case 1: // グレースケール
+                    gameScreen.classList.add('filter-grayscale');
+                    break;
+                case 4: // 低コントラスト
+                    gameScreen.classList.add('filter-lowcontrast');
+                    break;
+                default: // なし（デフォルト）
+                    break;
+            }
+        }
 
+        // ページロード時にフィルターを初期適用
+        applyClientFilter(currentFilterMode);
 
-        // フィルターボタン群の初期化
+        // フィルターボタン群の初期化（サーバー送信を廃止、ローカル適用のみ）
         initSettingsButtons('filter-group', currentFilterMode, value => {
             currentFilterMode = value;
             localStorage.setItem('filterMode', value.toString());
-            // サーバーにフィルターモードを設定
-            fetch(`/control?action=set_filter&mode=${value}`);
+            // クライアントサイドにフィルターを適用
+            applyClientFilter(value);
         });
 
         // FPS実測用の変数定義
