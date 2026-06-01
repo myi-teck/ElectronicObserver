@@ -1,4 +1,4 @@
-﻿using Browser.CefOp;
+using Browser.CefOp;
 using BrowserLib;
 using CefSharp;
 using CefSharp.WinForms;
@@ -257,6 +257,61 @@ namespace Browser
 
 				waitForWindow();
 
+			})();
+			";
+
+		/// <summary>
+		/// 描画完了直後（WebGLバッファクリア前）の瞬間をフックし、
+		/// 最新のWebP画面データとサムネイルJPEGデータを常駐キャッシュするJavaScriptスクリプト。
+		/// 2026/06/01 myi 新規作成
+		/// </summary>
+		internal string CaptureEngineScript => @"
+			(function() {
+				if (window._kancolleCaptureEngine) return;
+
+				window._kancolleCaptureEngine = {
+					lastWebp: null,
+					lastThumb: null,
+					lastCaptureTime: 0,
+					intervalMs: 100, // 10 FPS (100msに1回のみエンコード) に制限して軽量化
+
+					start: function() {
+						const canvas = document.querySelector('canvas');
+						if (!canvas) {
+							// canvas が未生成の場合は150ms待って再試行
+							setTimeout(() => this.start(), 150);
+							return;
+						}
+
+						// サムネイル比較用の極小インメモリ canvas を初期化
+						const thumbCanvas = document.createElement('canvas');
+						thumbCanvas.width = 160;
+						thumbCanvas.height = 96;
+						const thumbCtx = thumbCanvas.getContext('2d');
+
+						const loop = () => {
+							const now = Date.now();
+							if (now - this.lastCaptureTime >= this.intervalMs) {
+								try {
+									// WebGLバッファが即時クリアされる前の瞬間（描画完了直後）をフックして取得
+									this.lastWebp = canvas.toDataURL('image/webp', 0.6);
+									
+									if (thumbCtx) {
+										thumbCtx.drawImage(canvas, 0, 0, 160, 96);
+										this.lastThumb = thumbCanvas.toDataURL('image/jpeg', 0.01);
+									}
+									this.lastCaptureTime = now;
+								} catch (e) {
+									console.error('Capture loop error:', e);
+								}
+							}
+							// 描画フレームに完全同期させるため requestAnimationFrame ループを使用
+							requestAnimationFrame(loop);
+						};
+						requestAnimationFrame(loop);
+					}
+				};
+				window._kancolleCaptureEngine.start();
 			})();
 			";
 
@@ -1039,6 +1094,20 @@ namespace Browser
 
 		private void Browser_FrameLoadEnd(object sender, FrameLoadEndEventArgs e)
 		{
+			// 艦これゲームフレームのロード完了時に、常駐キャプチャエンジンを自動注入して起動
+			// 2026/06/01 myi 新規作成
+			try
+			{
+				if (IsKanColleFrame(e.Frame))
+				{
+					e.Frame.ExecuteJavaScriptAsync(CaptureEngineScript);
+				}
+			}
+			catch (Exception ex)
+			{
+				SendErrorReport(ex.ToString(), "Browser_FrameLoadEnd: キャプチャエンジンの自動注入に失敗しました。");
+			}
+
 			if (!Configuration.AppliesStyleSheet)
 				return;
 

@@ -34,6 +34,7 @@
 //                  2026/05/29 myi 送信方式の統一として、SendScreenDiffWebPAsync内のfullキーフレーム送信後の
 //                                           サムネイルキャプチャも同様にclip+Scale方式（GPU縮小）に統一。
 //                  2026/05/31 myi 案A採用による画面縮小拡大のガタつきバグの修正。clip指定のない全体キャプチャ1回化とC#側サムネイルリサイズによる安定化および負荷削減。
+//                  2026/06/01 myi 常駐フック型フレームキャッシュ方式（プランA）対応、BoundObject廃止に伴う超高速引き抜き方式へのリファクタリング。
 #endregion
 // Copyright 2026 bEST ANSWER's Inc.
 //============================================================================================
@@ -318,6 +319,7 @@ namespace Browser
 		// 処理ブロック名 : SendScreenAsync
 		// 概要           : ゲーム内の canvas を直接コピー抽出し、JPEG 形式で配信します（後方互換用）。
 		//                  PCウィンドウサイズに依存せず、常に本来の解像度で配信できます。
+		//                  2026/06/01 myi 変更（EvaluateScriptAsync 方式へ完全リファクタリング、BoundObjectの廃止）
 		//------------------------------------------------------------------------------------
 		private async Task SendScreenAsync(HttpListenerRequest req, HttpListenerResponse res)
 		{
@@ -347,42 +349,32 @@ namespace Browser
 					return;
 				}
 
-				// JavaScriptを介して canvas から JPEG データを直接取得するためのパケットを生成
-				var request = new Browser.CefOp.CanvasCapturePacket();
 				double jpegQuality = (double)quality / 100.0;
 
-				// 描画バッファを JPEG で抽出するスクリプトを構築
+				// 描画バッファを JPEG で抽出するスクリプトを構築し、同期実行（バインドオーバーヘッドゼロ）
 				string script = $@"
-					(async function() {{
+					(function() {{
 						try {{
-							await CefSharp.BindObjectAsync('{request.ID}');
 							const canvas = document.querySelector('canvas');
 							if (!canvas || canvas.width === 0 || canvas.height === 0) {{
-								{request.ID}.complete(null, null);
-								return;
+								return null;
 							}}
 							// GPU上で JPEG 圧縮して Base64 形式で取得
-							const fullJpeg = canvas.toDataURL('image/jpeg', {jpegQuality});
-							{request.ID}.complete(fullJpeg, null);
+							return canvas.toDataURL('image/jpeg', {jpegQuality});
 						}} catch (e) {{
-							{request.ID}.complete(null, null);
+							return null;
 						}}
 					}})();
 					";
 
-				// レポジトリに登録してJavaScriptを実行
-				_parent.Browser.JavascriptObjectRepository.Register(request.ID, request, true);
-				kancolleFrame.ExecuteJavaScriptAsync(script);
-
-				// コールバックを最大3秒間待機します
-				var completedTask = await Task.WhenAny(request.TaskSource.Task, Task.Delay(3000));
-				if (completedTask == request.TaskSource.Task)
+				var response = await kancolleFrame.EvaluateScriptAsync(script);
+				if (response.Success && response.Result != null)
 				{
-					var capture = await request.TaskSource.Task;
-					if (capture != null && !string.IsNullOrEmpty(capture.FullWebp))
+					string fullJpeg = response.Result as string;
+					if (!string.IsNullOrEmpty(fullJpeg))
 					{
 						// Base64 文字列をデコードして生の JPEG バイナリデータに復元
-						byte[] jpegData = Browser.CefOp.CanvasCapturePacket.ConvertToBytes(capture.FullWebp, "data:image/jpeg");
+						byte[] jpegData = ConvertToBytes(fullJpeg, "data:image/jpeg");
 						if (jpegData != null && jpegData.Length > 0)
 						{
 							res.ContentType = "image/jpeg";
@@ -1010,11 +1002,12 @@ namespace Browser
 		//====================================================================================
 		// 処理ブロック名 : CaptureCanvasAsync
 		// 概要           : ゲーム内の canvas 描画バッファをフックして常駐キャッシュする
-		//                  JavaScriptエンジンから、最新の WebP 画像とサムネイル JPEG を一括取得します。
+		//                  JavaScriptエンジンから、最新 of WebP 画像とサムネイル JPEG を一括取得します。
 		//                  常駐エンジン未起動時は、初回接続時に自動的に常駐インジェクションを行って起動します。
 		//                  WebGLの preserveDrawingBuffer=false によるバッファ即時クリア問題を完全に克服します。
+		//                  2026/06/01 myi 変更（EvaluateScriptAsync 方式へ完全リファクタリング、BoundObjectの廃止）
 		//------------------------------------------------------------------------------------
-		private async Task<Browser.CefOp.CanvasCapturePacket> CaptureCanvasAsync(long quality)
+		private async Task<Tuple<string, string>> CaptureCanvasAsync()
 		{
 			// 艦これの描画フレームがロードされている iframe への参照を取得します
 			var kancolleFrame = _parent.GetKanColleFrame();
@@ -1028,110 +1021,43 @@ namespace Browser
 				return null;
 			}
 
-			var request = new Browser.CefOp.CanvasCapturePacket();
-			double webpQuality = (double)quality / 100.0;
-
-			// 常駐キャプチャエンジンを起動・フックし、最新の描画ピクセルデータを引き出すスクリプトを構築
-			// 常駐エンジンが存在しない場合は、初回時に自動的に JS インジェクションを行って起動します
-			string script = $@"
-				(async function() {{
-					try {{
-						await CefSharp.BindObjectAsync('{request.ID}');
-
-						// 1. 常駐エンジンがまだ存在しない場合は、動的インジェクションを行って起動する
-						if (!window._kancolleCaptureEngine) {{
-							window._kancolleCaptureEngine = {{
-								lastWebp: null,
-								lastThumb: null,
-								lastCaptureTime: 0,
-								intervalMs: 100, // 10 FPS (100ms周期)で負荷を極小化
-
-								start: function() {{
-									const canvas = document.querySelector('canvas');
-									if (!canvas) {{
-										setTimeout(() => this.start(), 150);
-										return;
-									}}
-
-									const thumbCanvas = document.createElement('canvas');
-									thumbCanvas.width = 160;
-									thumbCanvas.height = 96;
-									const thumbCtx = thumbCanvas.getContext('2d');
-
-									const loop = () => {{
-										const now = Date.now();
-										if (now - this.lastCaptureTime >= this.intervalMs) {{
-											try {{
-												// ─── 描画完了直後（クリア前）のバッファをフック ───
-												this.lastWebp = canvas.toDataURL('image/webp', {webpQuality});
-												
-												if (thumbCtx) {{
-													thumbCtx.drawImage(canvas, 0, 0, 160, 96);
-													this.lastThumb = thumbCanvas.toDataURL('image/jpeg', 0.01);
-												}}
-												this.lastCaptureTime = now;
-											}} catch (e) {{
-												console.error('Capture loop error:', e);
-											}}
-										}}
-										// requestAnimationFrame により描画プレゼン直前のクリア前の瞬間をフック
-										requestAnimationFrame(loop);
-									}};
-									requestAnimationFrame(loop);
-								}}
-							}};
-							window._kancolleCaptureEngine.start();
-							
-							// 起動直後はキャッシュがまだ空なので、1フレーム待つか、または即席で1回だけ同期取得を試みる
-							const canvas = document.querySelector('canvas');
-							if (canvas && canvas.width > 0 && canvas.height > 0) {{
-								try {{
-									const instantWebp = canvas.toDataURL('image/webp', {webpQuality});
-									{request.ID}.complete(instantWebp, null);
-									return;
-								}} catch(e) {{}}
-							}}
-							{request.ID}.complete(null, null);
-							return;
-						}}
-
-						// 2. 既に常駐エンジンが動いている場合は、プールされている最新キャッシュを瞬時に引き抜く（超高速・描画遅延ゼロ）
-						{request.ID}.complete(window._kancolleCaptureEngine.lastWebp, window._kancolleCaptureEngine.lastThumb);
-
-					}} catch (e) {{
-						console.error('CaptureCanvasAsync JS error:', e);
-						{request.ID}.complete(null, null);
-					}}
-				}})();
-				";
+			// EvaluateScriptAsync を用いてプールされている最新キャッシュを瞬時に引き抜く（超高速・バインドオーバーヘッドゼロ）
+			string script = @"
+				(function() {
+					if (window._kancolleCaptureEngine) {
+						return [window._kancolleCaptureEngine.lastWebp, window._kancolleCaptureEngine.lastThumb];
+					}
+					return null;
+				})();";
 
 			try
 			{
-				// リポジトリへ登録し、非同期で JavaScript を実行
-				_parent.Browser.JavascriptObjectRepository.Register(request.ID, request, true);
-				kancolleFrame.ExecuteJavaScriptAsync(script);
-
-				// キャッシュデータの引きぬき完了を待機します（同期待ちが無いためタイムアウトは1.5秒に短縮）
-				var completedTask = await Task.WhenAny(request.TaskSource.Task, Task.Delay(1500));
-				if (completedTask != request.TaskSource.Task)
+				var response = await kancolleFrame.EvaluateScriptAsync(script);
+				if (response.Success && response.Result != null)
 				{
-					Console.WriteLine("RemoteController: CaptureCanvasAsync タイムアウトしました。");
-					return null;
+					var list = response.Result as System.Collections.Generic.IList<object>;
+					if (list != null && list.Count >= 2)
+					{
+						string lastWebp = list[0] as string;
+						string lastThumb = list[1] as string;
+						if (!string.IsNullOrEmpty(lastWebp))
+						{
+							return Tuple.Create(lastWebp, lastThumb);
+						}
+					}
 				}
 
-				return await request.TaskSource.Task;
+				// まだ常駐エンジンが存在しない場合は、動的に注入して起動する（セーフティネット）
+				// 2026/06/01 myi 新規作成
+				string injectScript = _parent.CaptureEngineScript;
+				kancolleFrame.ExecuteJavaScriptAsync(injectScript);
 			}
 			catch (Exception ex)
 			{
 				Console.WriteLine($"RemoteController: CaptureCanvasAsync エラー: {ex.Message}");
-				return null;
 			}
-			finally
-			{
-				// JavaScript 側のゴミ掃除を確実に実行
-				_parent.Browser.JavascriptObjectRepository.UnRegister(request.ID);
-				kancolleFrame.ExecuteJavaScriptAsync($"try {{ delete window['{request.ID}']; }} catch(e) {{}}");
-			}
+
+			return null;
 		}
 
 		//====================================================================================
@@ -1140,6 +1066,7 @@ namespace Browser
 		//                  差分WebP方式で画面を配信する（GET /screen.webp）。
 		//                  PCウィンドウの表示サイズやアスペクト比に依存せず、常に余白なしで
 		//                  高精細なゲーム画面を配信できます。
+		//                  2026/06/01 myi 変更（EvaluateScriptAsync 方式へ完全リファクタリング、BoundObjectの廃止）
 		//------------------------------------------------------------------------------------
 		private async Task SendScreenDiffWebPAsync(HttpListenerRequest req, HttpListenerResponse res)
 		{
@@ -1151,6 +1078,7 @@ namespace Browser
 			}
 
 			// クエリパラメータから目標画質「q」(5%〜100%)を取得
+			// 常駐JSループ側の quality 設定(0.6)が優先されるため、ここでは主に引き抜き処理のみ
 			long quality = WebpQuality;
 			var qStr = req.QueryString["q"];
 			if (long.TryParse(qStr, out long parsedQ))
@@ -1164,16 +1092,16 @@ namespace Browser
 				bool isInit = req.QueryString["init"] == "1" || req.QueryString["init"] == "true";
 
 				// 1. canvas から WebP とサムネイル JPEG を一括で直接抽出
-				var capture = await CaptureCanvasAsync(quality);
-				if (capture == null || string.IsNullOrEmpty(capture.FullWebp))
+				var capture = await CaptureCanvasAsync();
+				if (capture == null || string.IsNullOrEmpty(capture.Item1))
 				{
 					res.StatusCode = 503;
 					return;
 				}
 
 				// 2. Base64 データをデコードして生のバイナリデータに変換
-				byte[] fullWebpData = Browser.CefOp.CanvasCapturePacket.ConvertToBytes(capture.FullWebp, "data:image/webp");
-				byte[] thumbJpegData = Browser.CefOp.CanvasCapturePacket.ConvertToBytes(capture.ThumbJpeg, "data:image/jpeg");
+				byte[] fullWebpData = ConvertToBytes(capture.Item1, "data:image/webp");
+				byte[] thumbJpegData = ConvertToBytes(capture.Item2, "data:image/jpeg");
 
 				if (fullWebpData == null)
 				{
@@ -1231,6 +1159,33 @@ namespace Browser
 			finally
 			{
 				res.Close();
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : ConvertToBytes
+		// 概要           : 受信した Base64 文字列をバイト配列に変換します。
+		//                  2026/06/01 myi 新規作成（CanvasCapturePacket廃止に伴う処理移植）
+		//------------------------------------------------------------------------------------
+		private byte[] ConvertToBytes(string dataUrl, string prefix)
+		{
+			if (string.IsNullOrEmpty(dataUrl) || !dataUrl.StartsWith(prefix))
+			{
+				return null;
+			}
+
+			try
+			{
+				// "data:image/webp;base64," のヘッダ部分（カンマ以前）を除去してデコード
+				int commaIdx = dataUrl.IndexOf(',');
+				if (commaIdx == -1) return null;
+
+				string base64Str = dataUrl.Substring(commaIdx + 1);
+				return Convert.FromBase64String(base64Str);
+			}
+			catch (Exception)
+			{
+				return null;
 			}
 		}
 
