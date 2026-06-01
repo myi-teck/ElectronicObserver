@@ -17,6 +17,7 @@
 //                  2026/05/28 myi 戦闘艦隊テーブルの艦名列に艦隊詳細HUD同等の往復スクロールアニメーションを適用。3文字以内は固定表示、4文字以上は電光掲示板風スクロール表示に自動切替。
 //                  2026/05/28 myi TACTICAL SYSTEM ヘッダに損害率・勝利区分・航空戦結果を追加。2行目の #combat-header-2 に DMG/RESULT/AIR タグを配置。データなし時は非表示。
 //                  2026/05/29 myi 艦隊詳細HUDの装備情報トグル機能を2層オーバーレイ方式（opacityトグル）に修正。HP/FEL/AMOセル内に resource-view と equip-view を配置し、タップでセル内の表示を切り替える動作に変更。旧来の下段行展開方式を廃止。
+//                  2026/06/01 myi 戦術情報HUDのHP表示を艦隊詳細HUD同等の数値+セグメントゲージ2行構成に変更。`.combat-ship-hp`→`.combat-ship-hp-cell`とし、10段階ゲージを状態別カラー（緑/アンバー/赤/グレー）で表示。
 //                  2026/05/29 myi 差分WebP方式対応。画面表示要素を<img>から<canvas>に変更。updateScreenをupdateScreenDiff / updateScreenLegacyに分離。
 //                                           drawMagnifierの naturalWidth → width 変更。配信モード切替UI追加。
 //                  2026/05/29 myi クライアント再接続時（リロード・通信復帰時）に初期画面が真っ黒のまま表示されない不具合を修正。
@@ -24,7 +25,7 @@
 //                  2026/06/01 myi 配信モードトグルボタンの完全削除。WebP画質設定連動アクションの実装。
 //                  2026/06/01 myi 画面更新ループの多重起動（二重スレッド化）防止用の排他制御処理（isUpdatingフラグ）を追加。
 //                  2026/06/01 myi 画面更新間隔の動的ディレイ補正処理（実処理時間を差し引いて周期を一定化する処理）を追加。
-//                  2026/06/01 myi 画面更新間隔の動的ディレイ補正処理（実処理時間を差し引いて周期を一定化する処理）を追加。
+//                  2026/06/01 myi 艦隊詳細HUDのヘッダトグル機能を実装。HP表示モード時（6列: NAME/LV/CND/HP/FEL/AMO）と装備表示モード時（9列: NAME/LV/CND/S1/S2/S3/S4/S5/EX）でテーブル構造を動的切替。トグル時にrenderFleetDetailを再実行。equipSlotの個別セル表示と電光掲示板式スクロール対応。
 //============================================================================================
 -->
 <!DOCTYPE html>
@@ -415,6 +416,19 @@
             flex-shrink: 0; /* 親コンテナの折り返し時にも縮小しない */
         }
 
+        /*
+         * 任務HUDとTACTICAL SYSTEMを横並びに配置する行コンテナ
+         * #fleet-info-rowと同様のflex: nowrapで横並びを強制
+         */
+        #tactical-quest-row {
+            display: flex;
+            flex-direction: row;
+            flex-wrap: nowrap;
+            align-items: flex-start;
+            gap: 2px;
+            flex-shrink: 0; /* 親コンテナの折り返し時にも縮小しない */
+        }
+
         /* 各艦隊行のボックス定義 */
         .fleet-hud-item {
             position: relative; /* 詳細表示時の右三角マーク(▶)を絶対配置するための基準点 */
@@ -753,9 +767,32 @@
             border-right: 3px solid var(--accent-color);
         }
 
-        /* 任務HUD専用: 幅を約70%に縮小 */
+        /* 任務HUD専用: 幅をTACTICAL SYSTEMと同じ行に収めるよう縮小 */
         #quest-hud-panel {
-            min-width: 90px;
+            min-width: 75px;
+        }
+
+        /* 任務HUD縮小時のフォント調整 */
+        #quest-hud-panel .quest-slot-row {
+            font-size: 7px;
+            height: 18px;
+        }
+
+        #quest-hud-panel .quest-id {
+            font-size: 7px;
+        }
+
+        #quest-hud-panel .quest-text-scroll {
+            font-size: 7px;
+        }
+
+        #quest-hud-panel .quest-progress-text {
+            font-size: 6.5px;
+        }
+
+        #quest-hud-panel .quest-progress-segment-gauge {
+            width: 38px;
+            height: 4px;
         }
 
         .battle-title {
@@ -792,7 +829,7 @@
             flex-direction: row;
             flex-wrap: wrap;
             align-items: center;
-            gap: 3px;
+            gap: 1px;
             padding: 1px 0;
             border-bottom: 1px solid rgba(0, 255, 102, 0.15);
             margin-bottom: 2px;
@@ -807,7 +844,7 @@
 
         #combat-header .combat-tag {
             font-size: 7px;
-            padding: 0px 3px;
+            padding: 0px 0px;
             border-radius: 2px;
             background: rgba(239, 68, 68, 0.15);
             border: 1px solid rgba(239, 68, 68, 0.35);
@@ -832,7 +869,7 @@
             flex-direction: row;
             flex-wrap: wrap;
             align-items: center;
-            gap: 3px;
+            gap: 1px;
             padding: 1px 0;
             border-bottom: 1px solid rgba(0, 255, 102, 0.1);
             margin-bottom: 2px;
@@ -841,7 +878,7 @@
         /* 損害率タグ */
         .damage-tag {
             font-size: 7px;
-            padding: 0px 3px;
+            padding: 0px 0px;
             border-radius: 2px;
             background: rgba(239, 68, 68, 0.12);
             border: 1px solid rgba(239, 68, 68, 0.3);
@@ -983,10 +1020,73 @@
             animation: ship-name-bounce 4s linear infinite;
         }
 
-        /* HPセル */
-        .combat-ship-hp {
+        /* HPセル（セグメントゲージを含む2行構成） */
+        .combat-ship-hp-cell {
+            width: 5em;
+            min-width: 5em;
+            max-width: 5em;
+            vertical-align: middle;
+        }
+
+        /* 戦闘HPセル内コンテナ */
+        .combat-cell-container {
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+            align-items: flex-start;
+            width: 100%;
+        }
+
+        /* 戦闘HP数値テキスト */
+        .combat-hp-text {
+            font-size: 7px;
             font-weight: bold;
-            text-align: right;
+            color: #a3f7bf;
+        }
+
+        /* 戦闘用セグメントゲージ（艦隊詳細HUD版より小振り） */
+        .combat-segment-gauge {
+            display: flex;
+            gap: 0.5px;
+            justify-content: flex-start;
+            align-items: center;
+            width: 4em;
+            height: 3px;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 0;
+            border: 1px solid rgba(0, 255, 102, 0.15);
+            border-radius: 1px;
+        }
+
+        .combat-segment-gauge .gauge-segment {
+            flex: 1;
+            height: 100%;
+            background: rgba(0, 255, 102, 0.06);
+            border: 1px solid rgba(0, 255, 102, 0.1);
+            border-radius: 1px;
+        }
+
+        .combat-segment-gauge .gauge-segment.active {
+            background: #00ff66;
+            border-color: rgba(0, 255, 102, 0.6);
+            box-shadow: 0 0 2px rgba(0, 255, 102, 0.4);
+        }
+
+        /* 状態別ゲージカラー（戦闘用） */
+        .combat-segment-gauge .gauge-segment.active.warning {
+            background: #ffaa00;
+            border-color: rgba(255, 170, 0, 0.6);
+        }
+
+        .combat-segment-gauge .gauge-segment.active.critical {
+            background: #ef4444;
+            border-color: rgba(239, 68, 68, 0.6);
+        }
+
+        /* 撃沈時: グレーアウト */
+        .combat-segment-gauge .gauge-segment.sunk {
+            background: rgba(100, 116, 139, 0.2);
+            border-color: rgba(100, 116, 139, 0.15);
         }
 
         /* 状態セル */
@@ -1439,11 +1539,12 @@
             text-shadow: 0 0 3px rgba(0, 255, 102, 0.4);
         }
 
-        /* テーブルボディの行 - 行間隙を縮小 */
+        /* テーブルボディの行 - 行間隙を縮小・行高固定でトグル時のガタつき防止 */
         #ship-table tbody tr {
             border-bottom: none; /* 行境界線を削除して隙間を縮小 */
             transition: background 0.15s;
             border-bottom: 1px solid rgba(0, 255, 102, 0.3);
+            height: 17px; /* 行高を固定（HPモードのセグメントゲージにも対応） */
         }
 
         #ship-table tbody tr:hover {
@@ -1662,16 +1763,67 @@
             animation: equip-bounce 4s linear infinite;
         }
         @keyframes equip-bounce {
-            0% {
-                transform: translateX(0);
-            }
-            12.5% {
-                transform: translateX(0);
-            }
-            100% {
-                transform: translateX(calc(-50% - 0.5em));
-            }
+            0% { transform: translateX(0); }
+            10% { transform: translateX(0); }
+            100% { transform: translateX(calc(-50% - 0.75em)); }
         }
+
+        /* ----------------------------------------------------------------------------
+           * 装備スロットセル（装備モード用・等幅固定）
+           * 装備モード時に各スロットを個別のセルとして表示（S1〜S5 + EX = 9列テーブル）
+           * ---------------------------------------------------------------------------- */
+        .ship-equip-cell {
+            width: 3em;
+            min-width: 3em;
+            max-width: 3em;
+            overflow: hidden;
+            text-align: center;
+            vertical-align: middle;
+            font-size: 8px;
+            color: rgba(163, 247, 191, 0.7);
+            font-family: 'Consolas', monospace;
+        }
+
+        /* 装備スロット内コンテナ */
+        .equip-slot-container {
+            width: 100%;
+            overflow: hidden;
+            white-space: nowrap;
+            position: relative;
+            height: 1.2em;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* 装備スロットスクロール用内包要素 */
+        .equip-slot-scroll {
+            display: inline-block;
+            white-space: nowrap;
+            width: max-content;
+        }
+
+        /* 装備スロット 電光掲示板スクロールアニメーション（4秒ループ） */
+        .equip-slot-scroll.scroll::after {
+            content: attr(data-name);
+            margin-left: 1.5em;
+        }
+        .equip-slot-scroll.scroll {
+            position: absolute;
+            left: 0;
+            animation: equip-slot-bounce 4s linear infinite;
+        }
+        @keyframes equip-slot-bounce {
+            0% { transform: translateX(0); }
+            10% { transform: translateX(0); }
+            100% { transform: translateX(calc(-50% - 0.75em)); }
+        }
+
+        /* 補強増設スロットの特別カラー */
+        .equip-slot-expansion {
+            color: rgba(255, 102, 0, 0.8);
+        }
+
         .equip-badge.empty {
             border-color: rgba(163, 247, 191, 0.1);
             background: rgba(163, 247, 191, 0.02);
@@ -2090,8 +2242,8 @@
                     </div>
                     <!-- 右：通信量、FPS、設定トグル -->
                     <div style='display: flex; gap: 8px; align-items: center;'>
-                        <span class='sys-label'>BANDWIDTH: <span id='data-usage' class='sys-val'>0.0 MB</span></span>
-                        <span class='sys-label'>REFRESH RATE: <span id='fps-info' class='sys-val'>0.00 FPS</span></span>
+                        <span class='sys-label'>BANDWIDTH <br/><span id='data-usage' class='sys-val'>0.0 MB</span></span>
+                        <span class='sys-label'>REFRESH RATE <br/><span id='fps-info' class='sys-val'>0.00 FPS</span></span>
                         <button id='settings-toggle' class='sys-btn'>SETUP</button>
                     </div>
                 </div>
@@ -2168,23 +2320,25 @@
                         </div>
                     </div> <!-- /#fleet-info-row -->
 
-                    <!-- 受領中任務HUD（独立ブロック） -->
-                    <div id='quest-hud'>
-                        <div class='battle-hud-item' id='quest-hud-panel'>
-                            <span class='battle-title' style='color: #ff6600; border-bottom: 1px solid rgba(255, 102, 0, 0.2);'>QUEST SYSTEM</span>
-                            <div id='quest-list' style='display: flex; flex-direction: column; gap: 2px;'>
-                                <!-- 8スロットの任務が動的に生成されます -->
+                    <!-- 任務HUDとTACTICAL SYSTEMを横並びに配置する行コンテナ -->
+                    <div id='tactical-quest-row'>
+                        <!-- 受領中任務HUD -->
+                        <div id='quest-hud'>
+                            <div class='battle-hud-item' id='quest-hud-panel'>
+                                <span class='battle-title' style='color: #ff6600; border-bottom: 1px solid rgba(255, 102, 0, 0.2);'>QUEST SYSTEM</span>
+                                <div id='quest-list' style='display: flex; flex-direction: column; gap: 2px;'>
+                                    <!-- 8スロットの任務が動的に生成されます -->
+                                </div>
                             </div>
                         </div>
-                    </div>
 
-                    <!-- 作戦海域・戦術予測HUD ＆ 詳細戦闘情報HUD（統合ブロック） -->
-                    <div id='battle-hud'>
+                        <!-- 作戦海域・戦術予測HUD ＆ 詳細戦闘情報HUD -->
+                        <div id='battle-hud'>
                         <div class='battle-hud-item'>
                             <span class='battle-title'>TACTICAL SYSTEM</span>
+                            <span class='battle-area-tag' id='battle-area'>3-2 / AREA NORTH</span>
                             <!-- 統合戦闘情報ヘッダ 1行目: 海域・陣形・交戦・触接 -->
                             <div id='combat-header'>
-                                <span class='battle-area-tag' id='battle-area'>3-2 / AREA NORTH</span>
                                 <span class='combat-tag' id='combat-formation'>FORM: ------</span>
                                 <span class='combat-tag' id='combat-engagement'>ENGAGE: ------</span>
                                 <span class='combat-tag' id='combat-touch'>TOUCH: ------</span>
@@ -2204,6 +2358,7 @@
                             </div>
                         </div>
                     </div>
+                </div> <!-- /#tactical-quest-row -->
 
                 </div> <!-- /#hud-container -->
 
@@ -2857,12 +3012,14 @@
         // ====================================================================================
         // 処理ブロック名 : renderFleetDetail
         // 概要           : 指定された艦隊IDの艦船リストをテーブル形式で描画します
-        //                  HPバーはHP比率に応じた幅で動的に生成され、Condに応じた色分けが適用されます
+        //                  HPモード時（6列）: NAME | LV | CND | HP | FEL | AMO
+        //                  装備モード時（9列）: NAME | LV | CND | S1 | S2 | S3 | S4 | S5 | EX
         //                  艦船データ本体に変化がない場合は、DOMの書き換えをスキップしてアニメーションを維持します
         // ------------------------------------------------------------------------------------
         function renderFleetDetail(fleetId) {
             const tbody = document.querySelector('#ship-table tbody');
-            if (!tbody) return;
+            const theadRow = document.querySelector('#ship-table thead tr');
+            if (!tbody || !theadRow) return;
 
             // グローバル変数から艦隊データを取得
             const fleets = window._fleetData;
@@ -2872,13 +3029,16 @@
             const fleet = fleets.find(f => f.id === fleetId);
             if (!fleet || !fleet.ships || fleet.ships.length === 0) {
                 // 艦船データがない場合は空の行を表示
+                const colspan = window._showFleetEquipment ? '9' : '6';
                 tbody.innerHTML = `
                     <tr>
-                        <td colspan="6" style="text-align: center; padding: 10px; color: rgba(163, 247, 191, 0.5);">
+                        <td colspan="${colspan}" style="text-align: center; padding: 10px; color: rgba(163, 247, 191, 0.5);">
                             艦船データなし
                         </td>
                     </tr>
                 `;
+                // ヘッダ更新
+                updateFleetHeader(theadRow);
                 return;
             }
 
@@ -2904,8 +3064,10 @@
             });
 
             // 抽出した主要ステータスに基づくJSON文字列を作成し、前回のレンダリング結果と比較します
+            // 表示モードが切り替わった場合はスキップ判定を無効化
             const currentShipsJson = JSON.stringify(compareShips);
-            if (lastRenderedFleetId === fleetId && lastRenderedShipsJson === currentShipsJson) {
+            const currentMode = window._showFleetEquipment ? 'equip' : 'hp';
+            if (lastRenderedFleetId === fleetId && lastRenderedShipsJson === currentShipsJson && lastRenderedMode === currentMode) {
                 // 艦名や耐久、燃料等に変化がなければ、余計なDOM再構築を行わずに処理をスキップします。
                 // これにより、CSSアニメーション（ship-name-bounce等）が途切れることなく滑らかに継続されます。
                 return;
@@ -2914,143 +3076,227 @@
             // 主要ステータスキャッシュと表示艦隊IDを更新
             lastRenderedFleetId = fleetId;
             lastRenderedShipsJson = currentShipsJson;
+            lastRenderedMode = currentMode;
+
+            // ヘッダを更新（モードに応じて6列/9列を切替）
+            updateFleetHeader(theadRow);
 
             // 艦船リストをテーブル行として生成
             let html = '';
-            fleet.ships.forEach((ship, shipIndex) => {
-                // 空スロット（null）の場合は空の行を表示
-                if (!ship) {
+
+            if (window._showFleetEquipment) {
+                // ===== 装備モード（9列） =====
+                fleet.ships.forEach((ship, shipIndex) => {
+                    if (!ship) {
+                        html += `
+                            <tr class="empty-slot-row">
+                                <td class="ship-name-cell" colspan="9" style="color: rgba(163, 247, 191, 0.3);">--- 空スロット ---</td>
+                            </tr>
+                        `;
+                        return;
+                    }
+
+                    const shipName = ship.name || '---';
+                    const nameClass = shipName.length > 3 ? 'ship-name-scroll scroll' : 'ship-name-scroll';
+                    const nameHtml = `
+                        <div class="ship-name-container" title="${shipName}">
+                            <span class="${nameClass}" data-name="${shipName}">${shipName}</span>
+                        </div>
+                    `;
+
+                    let conditionClass = 'ship-condition-cell condition-ok';
+                    if (ship.condition < 50) {
+                        conditionClass = 'ship-condition-cell condition-fatigue';
+                    } else if (ship.condition < 70) {
+                        conditionClass = 'ship-condition-cell condition-warning';
+                    }
+
+                    // 装備スロット配列の取得（S1〜S5 + EX）
+                    // equipment配列: 0=S1, 1=S2, 2=S3, 3=S4, 4=S5, 5=EX（補強増設は"[補強]..."プレフィックス付き）
+                    const equipment = ship.equipment || [];
+                    const slots = [];
+                    for (let i = 0; i < 6; i++) {
+                        slots.push(equipment[i] ?? null);
+                    }
+
                     html += `
-                        <tr class="empty-slot-row">
-                            <td class="ship-name-cell" colspan="6" style="color: rgba(163, 247, 191, 0.3);">--- 空スロット ---</td>
+                        <tr>
+                            <td class="ship-name-cell">${nameHtml}</td>
+                            <td class="ship-level-cell">${ship.level || '-'}</td>
+                            <td class="${conditionClass}">${ship.condition || '-'}</td>
+                            <td class="ship-equip-cell">${renderEquipSlot(slots[0])}</td>
+                            <td class="ship-equip-cell">${renderEquipSlot(slots[1])}</td>
+                            <td class="ship-equip-cell">${renderEquipSlot(slots[2])}</td>
+                            <td class="ship-equip-cell">${renderEquipSlot(slots[3])}</td>
+                            <td class="ship-equip-cell">${renderEquipSlot(slots[4])}</td>
+                            <td class="ship-equip-cell">${renderEquipSlot(slots[5])}</td>
                         </tr>
                     `;
-                    return;
-                }
-                
-                // HP比率を計算（0〜1の範囲）
-                const hpRatio = ship.maxHp > 0 ? ship.hp / ship.maxHp : 0;
-                
-                // HP (10段階セグメントゲージ) 生成と小破・中破・大破枠点滅用クラスの決定
-                const hpSegments = Math.round(hpRatio * 10);
-                let hpBarClass = 'segment-bar-fill';
-                let hpStateClass = ''; // 小破、中破、大破の枠線点滅用CSSクラス
-                
-                if (hpRatio <= 0.25) {
-                    hpBarClass += ' critical';       // 25%以下：大破赤
-                    hpStateClass = 'hp-state-critical';
-                } else if (hpRatio <= 0.50) {
-                    hpBarClass += ' warning';        // 50%以下：中破オレンジ
-                    hpStateClass = 'hp-state-moderate';
-                } else if (hpRatio <= 0.75) {
-                    hpStateClass = 'hp-state-minor';   // 75%以下：小破黄
-                }
-                
-                let hpGaugeHtml = `<div class="resource-segment-gauge">`;
-                for (let i = 1; i <= 10; i++) {
-                    const activeClass = i <= hpSegments ? `active ${hpBarClass}` : '';
-                    hpGaugeHtml += `<span class="gauge-segment ${activeClass}"></span>`;
-                }
-                hpGaugeHtml += `</div>`;
+                });
+            } else {
+                // ===== HPモード（6列） =====
+                fleet.ships.forEach((ship, shipIndex) => {
+                    if (!ship) {
+                        html += `
+                            <tr class="empty-slot-row">
+                                <td class="ship-name-cell" colspan="6" style="color: rgba(163, 247, 191, 0.3);">--- 空スロット ---</td>
+                            </tr>
+                        `;
+                        return;
+                    }
 
-                // Cond（状態）のクラスを条件値に応じて決定
-                let conditionClass = 'ship-condition-cell condition-ok';
-                if (ship.condition < 50) {
-                    conditionClass = 'ship-condition-cell condition-fatigue'; // 50未満：疲労（赤）
-                } else if (ship.condition < 70) {
-                    conditionClass = 'ship-condition-cell condition-warning'; // 70未満：警告（アンバー）
-                }
+                    const hpRatio = ship.maxHp > 0 ? ship.hp / ship.maxHp : 0;
+                    const hpSegments = Math.round(hpRatio * 10);
+                    let hpBarClass = 'segment-bar-fill';
+                    let hpStateClass = '';
 
-                // 艦名を取得（空の場合は '---' ）
-                const shipName = ship.name || '---';
-                
-                // 艦名の長さを判定し、3文字を超える場合はスクロール用のクラスを付与
-                const nameClass = shipName.length > 3 ? 'ship-name-scroll scroll' : 'ship-name-scroll';
-                
-                // 艦名表示用エリアの生成（data-name属性を付与してCSS疑似要素用のテキスト複製元とする）
-                const nameHtml = `
-                    <div class="ship-name-container" title="${shipName}">
-                        <span class="${nameClass}" data-name="${shipName}">${shipName}</span>
-                    </div>
-                `;
+                    if (hpRatio <= 0.25) {
+                        hpBarClass += ' critical';
+                        hpStateClass = 'hp-state-critical';
+                    } else if (hpRatio <= 0.50) {
+                        hpBarClass += ' warning';
+                        hpStateClass = 'hp-state-moderate';
+                    } else if (hpRatio <= 0.75) {
+                        hpStateClass = 'hp-state-minor';
+                    }
 
-                // 燃料 (FEL) の 10段階セグメントゲージ生成
-                const fuelRatio = ship.fuelMax > 0 ? ship.fuel / ship.fuelMax : 0;
-                const fuelSegments = Math.round(fuelRatio * 10);
-                let fuelBarClass = 'segment-bar-fill';
-                if (fuelRatio < 0.20) fuelBarClass += ' critical';      // 20%未満：危険赤
-                else if (fuelRatio < 0.50) fuelBarClass += ' warning'; // 50%未満：警告黄
-                
-                let fuelGaugeHtml = `<div class="resource-segment-gauge">`;
-                for (let i = 1; i <= 10; i++) {
-                    const activeClass = i <= fuelSegments ? `active ${fuelBarClass}` : '';
-                    fuelGaugeHtml += `<span class="gauge-segment ${activeClass}"></span>`;
-                }
-                fuelGaugeHtml += `</div>`;
+                    let hpGaugeHtml = `<div class="resource-segment-gauge">`;
+                    for (let i = 1; i <= 10; i++) {
+                        const activeClass = i <= hpSegments ? `active ${hpBarClass}` : '';
+                        hpGaugeHtml += `<span class="gauge-segment ${activeClass}"></span>`;
+                    }
+                    hpGaugeHtml += `</div>`;
 
-                // 弾薬 (AMO) の 10段階セグメントゲージ生成
-                const ammoRatio = ship.ammoMax > 0 ? ship.ammo / ship.ammoMax : 0;
-                const ammoSegments = Math.round(ammoRatio * 10);
-                let ammoBarClass = 'segment-bar-fill';
-                if (ammoRatio < 0.20) ammoBarClass += ' critical';      // 20%未満：危険赤
-                else if (ammoRatio < 0.50) ammoBarClass += ' warning'; // 50%未満：警告黄
-                
-                let ammoGaugeHtml = `<div class="resource-segment-gauge">`;
-                for (let i = 1; i <= 10; i++) {
-                    const activeClass = i <= ammoSegments ? `active ${ammoBarClass}` : '';
-                    ammoGaugeHtml += `<span class="gauge-segment ${activeClass}"></span>`;
-                }
-                ammoGaugeHtml += `</div>`;
-                
-                // 装備情報バッジHTMLを生成
-                const equipBadgesHtml = generateEquipmentBadges(ship.equipment || []);
-                
-                // テーブル行を生成（各HP/FEL/AMOセル内にresource-viewとequip-viewの2層オーバーレイ）
-                // 各セルはposition:relativeで、.equip-viewは初期状態opacity:0の絶対配置
-                html += `
-                    <tr>
-                        <td class="ship-name-cell">${nameHtml}</td>
-                        <td class="ship-level-cell">${ship.level || '-'}</td>
-                        <td class="${conditionClass}">${ship.condition || '-'}</td>
-                        <td class="ship-hp-cell" data-ship-index="${shipIndex}" style="position:relative;">
-                            <div class="resource-view">
+                    let conditionClass = 'ship-condition-cell condition-ok';
+                    if (ship.condition < 50) {
+                        conditionClass = 'ship-condition-cell condition-fatigue';
+                    } else if (ship.condition < 70) {
+                        conditionClass = 'ship-condition-cell condition-warning';
+                    }
+
+                    const shipName = ship.name || '---';
+                    const nameClass = shipName.length > 3 ? 'ship-name-scroll scroll' : 'ship-name-scroll';
+                    const nameHtml = `
+                        <div class="ship-name-container" title="${shipName}">
+                            <span class="${nameClass}" data-name="${shipName}">${shipName}</span>
+                        </div>
+                    `;
+
+                    const fuelRatio = ship.fuelMax > 0 ? ship.fuel / ship.fuelMax : 0;
+                    const fuelSegments = Math.round(fuelRatio * 10);
+                    let fuelBarClass = 'segment-bar-fill';
+                    if (fuelRatio < 0.20) fuelBarClass += ' critical';
+                    else if (fuelRatio < 0.50) fuelBarClass += ' warning';
+
+                    let fuelGaugeHtml = `<div class="resource-segment-gauge">`;
+                    for (let i = 1; i <= 10; i++) {
+                        const activeClass = i <= fuelSegments ? `active ${fuelBarClass}` : '';
+                        fuelGaugeHtml += `<span class="gauge-segment ${activeClass}"></span>`;
+                    }
+                    fuelGaugeHtml += `</div>`;
+
+                    const ammoRatio = ship.ammoMax > 0 ? ship.ammo / ship.ammoMax : 0;
+                    const ammoSegments = Math.round(ammoRatio * 10);
+                    let ammoBarClass = 'segment-bar-fill';
+                    if (ammoRatio < 0.20) ammoBarClass += ' critical';
+                    else if (ammoRatio < 0.50) ammoBarClass += ' warning';
+
+                    let ammoGaugeHtml = `<div class="resource-segment-gauge">`;
+                    for (let i = 1; i <= 10; i++) {
+                        const activeClass = i <= ammoSegments ? `active ${ammoBarClass}` : '';
+                        ammoGaugeHtml += `<span class="gauge-segment ${activeClass}"></span>`;
+                    }
+                    ammoGaugeHtml += `</div>`;
+
+                    html += `
+                        <tr>
+                            <td class="ship-name-cell">${nameHtml}</td>
+                            <td class="ship-level-cell">${ship.level || '-'}</td>
+                            <td class="${conditionClass}">${ship.condition || '-'}</td>
+                            <td class="ship-hp-cell">
                                 <div class="ship-cell-container ${hpStateClass}">
                                     <span class="ship-hp-text">${ship.hp}/${ship.maxHp}</span>
                                     ${hpGaugeHtml}
                                 </div>
-                            </div>
-                            <div class="equip-view">${equipBadgesHtml}</div>
-                        </td>
-                        <td class="ship-resource-cell" data-ship-index="${shipIndex}" title="FUEL: ${ship.fuel}/${ship.fuelMax} (${Math.round(fuelRatio*100)}%)" style="position:relative;">
-                            <div class="resource-view">
+                            </td>
+                            <td class="ship-resource-cell" title="FUEL: ${ship.fuel}/${ship.fuelMax} (${Math.round(fuelRatio*100)}%)">
                                 <div class="ship-cell-container">
                                     <span class="ship-resource-text">${(ship.fuel ?? '-').toLocaleString()}/${(ship.fuelMax ?? '-').toLocaleString()}</span>
                                     ${fuelGaugeHtml}
                                 </div>
-                            </div>
-                            <div class="equip-view">${equipBadgesHtml}</div>
-                        </td>
-                        <td class="ship-resource-cell" data-ship-index="${shipIndex}" title="AMMO: ${ship.ammo}/${ship.ammoMax} (${Math.round(ammoRatio*100)}%)" style="position:relative;">
-                            <div class="resource-view">
+                            </td>
+                            <td class="ship-resource-cell" title="AMMO: ${ship.ammo}/${ship.ammoMax} (${Math.round(ammoRatio*100)}%)">
                                 <div class="ship-cell-container">
                                     <span class="ship-resource-text">${(ship.ammo ?? '-').toLocaleString()}/${(ship.ammoMax ?? '-').toLocaleString()}</span>
                                     ${ammoGaugeHtml}
                                 </div>
-                            </div>
-                            <div class="equip-view">${equipBadgesHtml}</div>
-                        </td>
-                    </tr>
-                `;
-            });
+                            </td>
+                        </tr>
+                    `;
+                });
+            }
 
             // テーブルボディに生成したHTMLを設定
             tbody.innerHTML = html;
+        }
 
-            // 現在の装備表示フラグに応じて .show-equip を全セルに適用
+        // ====================================================================================
+        // 処理ブロック名 : updateFleetHeader
+        // 概要           : 艦隊詳細HUDのテーブルヘッダを現在の表示モードに応じて更新します
+        //                  HPモード（6列）: NAME | LV | CND | HP | FEL | AMO
+        //                  装備モード（9列）: NAME | LV | CND | S1 | S2 | S3 | S4 | S5 | EX
+        // ------------------------------------------------------------------------------------
+        function updateFleetHeader(theadRow) {
             if (window._showFleetEquipment) {
-                const allCells = document.querySelectorAll('.ship-hp-cell, .ship-resource-cell');
-                allCells.forEach(c => c.classList.add('show-equip'));
+                theadRow.innerHTML = `
+                    <th>NAME</th>
+                    <th>LV</th>
+                    <th>CND</th>
+                    <th>S1</th>
+                    <th>S2</th>
+                    <th>S3</th>
+                    <th>S4</th>
+                    <th>S5</th>
+                    <th>EX</th>
+                `;
+            } else {
+                theadRow.innerHTML = `
+                    <th>NAME</th>
+                    <th>LV</th>
+                    <th>CND</th>
+                    <th>HP</th>
+                    <th>FEL</th>
+                    <th>AMO</th>
+                `;
             }
+        }
+
+        // ====================================================================================
+        // 処理ブロック名 : renderEquipSlot
+        // 概要           : 装備スロット1枠分のHTMLを生成します
+        //                  nullの場合: '-'
+        //                  補強増設: '[補強]...'プレフィックス付きの場合: 補強色
+        //                  通常: 装備名を表示（長文は電光掲示板式スクロールに自動切替）
+        // ------------------------------------------------------------------------------------
+        function renderEquipSlot(equip) {
+            if (!equip) return '-';
+            let name;
+            let isExpansion = false;
+
+            if (typeof equip === 'string' && equip.startsWith('[補強]')) {
+                const eqName = equip.substring(4);
+                name = eqName === '空' ? '空' : eqName;
+                isExpansion = true;
+            } else if (typeof equip === 'string') {
+                name = equip;
+            } else {
+                name = '-';
+            }
+
+            const scrollThreshold = 4;
+            const scrollClass = name.length > scrollThreshold ? 'equip-slot-scroll scroll' : 'equip-slot-scroll';
+            const expansionClass = isExpansion ? 'equip-slot-expansion' : '';
+            return `<div class="equip-slot-container"><span class="${scrollClass} ${expansionClass}" data-name="${name}">${name}</span></div>`;
         }
 
         //============================================================================================
@@ -3173,6 +3419,7 @@
         // 艦船詳細テーブルのDOM更新スキップ用キャッシュ変数
         let lastRenderedFleetId = -1;
         let lastRenderedShipsJson = "";
+        let lastRenderedMode = "";  // HPモード/装備モードの切り替え検出用
 
         // ====================================================================================
         // 処理ブロック名 : updateHud
@@ -3360,13 +3607,53 @@
                             const shipName = ship.name || '---';
                             const nameClass = shipName.length > 3 ? 'combat-ship-name-scroll scroll' : 'combat-ship-name-scroll';
                             
+                            // HPセグメントゲージ生成
+                            const hpVal = ship.hp ?? '-';
+                            const maxHpVal = ship.maxHp ?? '-';
+                            const hpText = `${hpVal}/${maxHpVal}`;
+                            
+                            let gaugeHtml = '';
+                            if (hpVal !== '-' && maxHpVal !== '-' && parseInt(maxHpVal) > 0) {
+                                const hpRate = Math.max(0, Math.min(1, parseInt(hpVal) / parseInt(maxHpVal)));
+                                const hpSegments = Math.round(hpRate * 10);
+                                
+                                // 状態判定によるゲージカラー
+                                let barClass = '';
+                                if (statusClass === 'status-emergency') {
+                                    barClass = 'critical';
+                                } else if (statusClass === 'status-warning') {
+                                    barClass = 'warning';
+                                }
+                                
+                                gaugeHtml = '<div class="combat-segment-gauge">';
+                                for (let i = 1; i <= 10; i++) {
+                                    const segClass = i <= hpSegments
+                                        ? `gauge-segment active ${barClass}`.trim()
+                                        : 'gauge-segment';
+                                    gaugeHtml += `<span class="${segClass}"></span>`;
+                                }
+                                gaugeHtml += '</div>';
+                            } else {
+                                // 撃沈時・データなし: グレーアウトのゲージ
+                                gaugeHtml = '<div class="combat-segment-gauge">';
+                                for (let i = 1; i <= 10; i++) {
+                                    gaugeHtml += '<span class="gauge-segment sunk"></span>';
+                                }
+                                gaugeHtml += '</div>';
+                            }
+                            
                             tr.innerHTML = `
                                 <td class="combat-ship-name-cell">
                                     <div class="combat-ship-name-container" title="${shipName}">
                                         <span class="${nameClass}" data-name="${shipName}">${shipName}</span>
                                     </div>
                                 </td>
-                                <td class="combat-ship-hp">${ship.hp ?? '-'}/${ship.maxHp ?? '-'}</td>
+                                <td class="combat-ship-hp-cell">
+                                    <div class="combat-cell-container">
+                                        <span class="combat-hp-text">${hpText}</span>
+                                        ${gaugeHtml}
+                                    </div>
+                                </td>
                                 <td class="combat-ship-status ${statusClass}">${statusText}</td>
                             `;
                             tbody.appendChild(tr);
@@ -3766,14 +4053,8 @@
                 e.preventDefault();
                 e.stopPropagation();
                 window._showFleetEquipment = !window._showFleetEquipment;
-                const allCells = document.querySelectorAll('.ship-hp-cell, .ship-resource-cell');
-                allCells.forEach(c => {
-                    if (window._showFleetEquipment) {
-                        c.classList.add('show-equip');
-                    } else {
-                        c.classList.remove('show-equip');
-                    }
-                });
+                // テーブル全体を再構築（ヘッダ+ボディの列数切替）
+                renderFleetDetail(currentDetailFleetId);
             });
 
             // タッチイベント（タッチデバイス用）
@@ -3784,14 +4065,8 @@
                 }
                 e.stopPropagation();
                 window._showFleetEquipment = !window._showFleetEquipment;
-                const allCells = document.querySelectorAll('.ship-hp-cell, .ship-resource-cell');
-                allCells.forEach(c => {
-                    if (window._showFleetEquipment) {
-                        c.classList.add('show-equip');
-                    } else {
-                        c.classList.remove('show-equip');
-                    }
-                });
+                // テーブル全体を再構築（ヘッダ+ボディの列数切替）
+                renderFleetDetail(currentDetailFleetId);
             }, { passive: false });
         })();
 
