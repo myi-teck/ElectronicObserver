@@ -314,10 +314,16 @@ namespace Browser
 		/// クライアントからクエリパラメータで指定された任意の画質設定(q)をリアルタイムに適用します。
 		/// ウィンドウが隠れていても最小化されていても動作します。
 		/// </summary>
+		//====================================================================================
+		// 処理ブロック名 : SendScreenAsync
+		// 概要           : ゲーム内の canvas を直接コピー抽出し、JPEG 形式で配信します（後方互換用）。
+		//                  PCウィンドウサイズに依存せず、常に本来の解像度で配信できます。
+		//------------------------------------------------------------------------------------
 		private async Task SendScreenAsync(HttpListenerRequest req, HttpListenerResponse res)
 		{
 			try
 			{
+				// ブラウザコントロールが未初期化の場合は 503 サービス不可を応答
 				if (_parent.Browser == null || !_parent.Browser.IsBrowserInitialized)
 				{
 					res.StatusCode = 503;
@@ -330,35 +336,68 @@ namespace Browser
 				var qStr = req.QueryString["q"];
 				if (long.TryParse(qStr, out long parsedQ))
 				{
-					// 指定された画質値を 5〜100% の安全な範囲に丸めます
 					quality = Math.Max(5, Math.Min(100, parsedQ));
 				}
 
-				// DevTools Protocol の Page.captureScreenshot を使用
-				// GPUコンポジタから直接描画内容を任意の圧縮品質で取得するため、
-				// ウィンドウの表示状態に依存せず、かつ負荷も最小限に抑えられます。
-				var devToolsClient = _parent.Browser.GetDevToolsClient();
-				var result = await devToolsClient.Page.CaptureScreenshotAsync(
-					format: CaptureScreenshotFormat.Jpeg,
-					quality: (int)quality,
-					optimizeForSpeed: true
-				);
-
-				// 取得した画像データをそのままHTTPレスポンスとして返却します
-				if (result?.Data != null && result.Data.Length > 0)
-				{
-					res.ContentType = "image/jpeg";
-					res.ContentLength64 = result.Data.Length;
-					await res.OutputStream.WriteAsync(result.Data, 0, result.Data.Length);
-				}
-				else
+				// 艦これのゲームがロードされている iframe への参照を取得します
+				var kancolleFrame = _parent.GetKanColleFrame();
+				if (kancolleFrame == null)
 				{
 					res.StatusCode = 503;
+					return;
 				}
+
+				// JavaScriptを介して canvas から JPEG データを直接取得するためのパケットを生成
+				var request = new Browser.CefOp.CanvasCapturePacket();
+				double jpegQuality = (double)quality / 100.0;
+
+				// 描画バッファを JPEG で抽出するスクリプトを構築
+				string script = $@"
+					(async function() {{
+						try {{
+							await CefSharp.BindObjectAsync('{request.ID}');
+							const canvas = document.querySelector('canvas');
+							if (!canvas || canvas.width === 0 || canvas.height === 0) {{
+								{request.ID}.complete(null, null);
+								return;
+							}}
+							// GPU上で JPEG 圧縮して Base64 形式で取得
+							const fullJpeg = canvas.toDataURL('image/jpeg', {jpegQuality});
+							{request.ID}.complete(fullJpeg, null);
+						}} catch (e) {{
+							{request.ID}.complete(null, null);
+						}}
+					}})();
+					";
+
+				// レポジトリに登録してJavaScriptを実行
+				_parent.Browser.JavascriptObjectRepository.Register(request.ID, request, true);
+				kancolleFrame.ExecuteJavaScriptAsync(script);
+
+				// コールバックを最大3秒間待機します
+				var completedTask = await Task.WhenAny(request.TaskSource.Task, Task.Delay(3000));
+				if (completedTask == request.TaskSource.Task)
+				{
+					var capture = await request.TaskSource.Task;
+					if (capture != null && !string.IsNullOrEmpty(capture.FullWebp))
+					{
+						// Base64 文字列をデコードして生の JPEG バイナリデータに復元
+						byte[] jpegData = Browser.CefOp.CanvasCapturePacket.ConvertToBytes(capture.FullWebp, "data:image/jpeg");
+						if (jpegData != null && jpegData.Length > 0)
+						{
+							res.ContentType = "image/jpeg";
+							res.ContentLength64 = jpegData.Length;
+							await res.OutputStream.WriteAsync(jpegData, 0, jpegData.Length);
+							return;
+						}
+					}
+				}
+
+				res.StatusCode = 503;
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"RemoteController: DevToolsキャプチャエラー: {ex.Message}");
+				Console.WriteLine($"RemoteController: JPEG配信エラー: {ex.Message}");
 				res.StatusCode = 500;
 			}
 			finally
@@ -862,39 +901,7 @@ namespace Browser
 		// 概要           : 取得した全体JPEG画像（JPEGバイトデータ）を、C# (GDI+) で
 		//                  160×96 のサムネイルサイズにリサイズして JPEG (quality:1) で返却します。
 		//------------------------------------------------------------------------------------
-		private byte[] ResizeJpegToThumbnail(byte[] originalJpeg, int targetWidth, int targetHeight)
-		{
-			try
-			{
-				using (var msIn = new MemoryStream(originalJpeg))
-				using (var originalBitmap = new Bitmap(msIn))
-				using (var resizedBitmap = new Bitmap(targetWidth, targetHeight))
-				using (var g = Graphics.FromImage(resizedBitmap))
-				{
-					// サムネイル比較用なので最低品質で高速処理します
-					g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Low;
-					g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighSpeed;
-					g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighSpeed;
-					
-					g.DrawImage(originalBitmap, 0, 0, targetWidth, targetHeight);
-					
-					using (var msOut = new MemoryStream())
-					{
-						// Quality: 1% の JPEG で圧縮してバイト配列として返却します
-						var encoder = GetEncoder(ImageFormat.Jpeg);
-						var encoderParameters = new EncoderParameters(1);
-						encoderParameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 1L);
-						resizedBitmap.Save(msOut, encoder, encoderParameters);
-						return msOut.ToArray();
-					}
-				}
-			}
-			catch (Exception ex)
-			{
-				Console.WriteLine($"ResizeJpegToThumbnail error: {ex.Message}");
-				return null;
-			}
-		}
+
 
 		//====================================================================================
 		// 処理ブロック名 : GetEncoder
@@ -920,55 +927,7 @@ namespace Browser
 		//                  Full 返却後の本番キャプチャ完了後に _lastThumb を更新するため、
 		//                  ここでは何も更新しない（呼び出し元の SendScreenDiffWebPAsync が責任を持つ）。
 		//------------------------------------------------------------------------------------
-		private async Task<DiffResult> CalculateDiffAsync()
-		{
-			var devToolsClient = _parent.Browser.GetDevToolsClient();
-
-			// ─── 初回フレームの場合は Full を返す（サムネイルキャプチャは行わない）
-			if (_lastThumb == null)
-			{
-				return new DiffResult { Type = DiffType.Full, Rect = null };
-			}
-
-			// ─── 本家ブラウザの画面ガタつきを完全に防止するため、clipを指定せず全体を JPEG (quality:1) でキャプチャする。
-			var thumbResult = await devToolsClient.Page.CaptureScreenshotAsync(
-				format: CaptureScreenshotFormat.Jpeg,
-				quality: 1,
-				optimizeForSpeed: true
-			);
-
-			if (thumbResult?.Data == null || thumbResult.Data.Length == 0)
-			{
-				// キャプチャ失敗の場合はキーフレームにフォールバック
-				return new DiffResult { Type = DiffType.Full, Rect = null };
-			}
-
-			// ─── 取得した全体JPEG画像から、C#（GDI+）側で 160×96 の縮小サムネイルを安全に生成する。
-			byte[] scaledThumbData = ResizeJpegToThumbnail(thumbResult.Data, ThumbnailWidth, ThumbnailHeight);
-			if (scaledThumbData == null)
-			{
-				return new DiffResult { Type = DiffType.Full, Rect = null };
-			}
-
-			// ─── セーフコードによるピクセル差分領域の算出
-			//     _lastThumb は前フレームの縮小サムネイルデータ
-			//     scaledThumbData は最新フレームの縮小サムネイルデータ
-			var diffRect = ComputeBoundingBoxSafe(_lastThumb, scaledThumbData);
-
-			if (diffRect == Rectangle.Empty)
-			{
-				// 差分なし → 通信不要
-				// ※ _lastThumb は更新しない（同一フレームのキャッシュを維持）
-				return new DiffResult { Type = DiffType.None, Rect = null };
-			}
-
-			// ─── _lastThumb を更新（差分あり確定時に共通処理としてここで更新）
-			_lastThumb = scaledThumbData;
-
-			// ─── 本家ブラウザのガタつきを招くclip（部分キャプチャ）を廃止し、差分あり時は常に全体キーフレーム（Full）で応答する。
-			return new DiffResult { Type = DiffType.Full, Rect = null };
-		}
-
+		//====================================================================================
 		//====================================================================================
 		// 処理ブロック名 : ComputeBoundingBoxSafe
 		// 概要           : セーフコード（unsafe・ポインタ不使用）で2つのJPEGデータの差分領域を算出する。
@@ -1049,10 +1008,100 @@ namespace Browser
 		}
 
 		//====================================================================================
+		// 処理ブロック名 : CaptureCanvasAsync
+		// 概要           : ゲーム内の canvas 要素から直接ピクセルバッファを抽出して
+		//                  WebP画像とサムネイル用JPEG画像を Base64 形式で一括取得します。
+		//                  これらはすべて Chromium 内部 (GPU) で高速処理され、C#のメインスレッドをブロックしません。
+		//------------------------------------------------------------------------------------
+		private async Task<Browser.CefOp.CanvasCapturePacket> CaptureCanvasAsync(long quality)
+		{
+			// 艦これの描画フレームがロードされている iframe への参照を取得します
+			var kancolleFrame = _parent.GetKanColleFrame();
+			if (kancolleFrame == null)
+			{
+				return null;
+			}
+
+			// パケットオブジェクトを生成
+			var request = new Browser.CefOp.CanvasCapturePacket();
+			if (_parent.Browser == null || !_parent.Browser.IsBrowserInitialized)
+			{
+				return null;
+			}
+
+			// WebP 品質を 0.0〜1.0 の実数に変換
+			double webpQuality = (double)quality / 100.0;
+
+			// JavaScript インジェクションスクリプト
+			// canvas データを GPU 上で WebP エンコードし、同時に一時縮小 canvas で 160x96 の超軽量 JPEG を生成します
+			string script = $@"
+				(async function() {{
+					try {{
+						await CefSharp.BindObjectAsync('{request.ID}');
+
+						const canvas = document.querySelector('canvas');
+						if (!canvas || canvas.width === 0 || canvas.height === 0) {{
+							{request.ID}.complete(null, null);
+							return;
+						}}
+
+						// 1. フル解像度 WebP 画像の抽出
+						const fullWebp = canvas.toDataURL('image/webp', {webpQuality});
+
+						// 2. 差分比較用のサムネイル (160x96) の生成
+						const thumbCanvas = document.createElement('canvas');
+						thumbCanvas.width = 160;
+						thumbCanvas.height = 96;
+						const ctx = thumbCanvas.getContext('2d');
+						if (ctx) {{
+							ctx.drawImage(canvas, 0, 0, 160, 96);
+							const thumbJpeg = thumbCanvas.toDataURL('image/jpeg', 0.01);
+							{request.ID}.complete(fullWebp, thumbJpeg);
+						}} else {{
+							{request.ID}.complete(fullWebp, null);
+						}}
+					}} catch (e) {{
+						console.error('CaptureCanvasAsync JS error:', e);
+						{request.ID}.complete(null, null);
+					}}
+				}})();
+				";
+
+			try
+			{
+				// リポジトリへ登録し、非同期で JavaScript を実行
+				_parent.Browser.JavascriptObjectRepository.Register(request.ID, request, true);
+				kancolleFrame.ExecuteJavaScriptAsync(script);
+
+				// JavaScript 側からのコールバック完了（Complete）を待機（最大3秒のタイムアウト制限）
+				var completedTask = await Task.WhenAny(request.TaskSource.Task, Task.Delay(3000));
+				if (completedTask != request.TaskSource.Task)
+				{
+					Console.WriteLine("RemoteController: CaptureCanvasAsync タイムアウトしました。");
+					return null;
+				}
+
+				return await request.TaskSource.Task;
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"RemoteController: CaptureCanvasAsync エラー: {ex.Message}");
+				return null;
+			}
+			finally
+			{
+				// JavaScript 側のゴミ掃除を確実に実行
+				_parent.Browser.JavascriptObjectRepository.UnRegister(request.ID);
+				kancolleFrame.ExecuteJavaScriptAsync($"try {{ delete window['{request.ID}']; }} catch(e) {{}}");
+			}
+		}
+
+		//====================================================================================
 		// 処理ブロック名 : SendScreenDiffWebPAsync
-		// 概要           : 差分WebP方式で画面を配信する（GET /screen.webp）。
-		//                  静的画面は204 No Content、小差分は領域WebP、大差分は全画面WebP。
-		//                  初回フレーム時は Full 送信後、サムネイルも取得して _lastThumb を更新する。
+		// 概要           : ゲーム内の canvas から直接コピーした画像を用いて
+		//                  差分WebP方式で画面を配信する（GET /screen.webp）。
+		//                  PCウィンドウの表示サイズやアスペクト比に依存せず、常に余白なしで
+		//                  高精細なゲーム画面を配信できます。
 		//------------------------------------------------------------------------------------
 		private async Task SendScreenDiffWebPAsync(HttpListenerRequest req, HttpListenerResponse res)
 		{
@@ -1063,8 +1112,7 @@ namespace Browser
 				return;
 			}
 
-			// クエリパラメータから目標画質「q」(5%〜100%)を取得・解析します。
-			// 指定がない場合はデフォルト画質（WebpQuality = 60%）を採用します。
+			// クエリパラメータから目標画質「q」(5%〜100%)を取得
 			long quality = WebpQuality;
 			var qStr = req.QueryString["q"];
 			if (long.TryParse(qStr, out long parsedQ))
@@ -1074,81 +1122,72 @@ namespace Browser
 
 			try
 			{
-				var devToolsClient = _parent.Browser.GetDevToolsClient();
-
-				// ─── クライアント側からの初期化要求・再接続シグナル（init=1）を検出する
+				// クライアント側からの初期化要求・再接続シグナル（init=1）を検出する
 				bool isInit = req.QueryString["init"] == "1" || req.QueryString["init"] == "true";
 
-				DiffResult diff;
-				if (isInit)
+				// 1. canvas から WebP とサムネイル JPEG を一括で直接抽出
+				var capture = await CaptureCanvasAsync(quality);
+				if (capture == null || string.IsNullOrEmpty(capture.FullWebp))
 				{
-					// クライアント側でリロードや再接続が発生した場合は、強制的に全画面キーフレーム（Full）を送信する
-					_lastThumb = null;
-					diff = new DiffResult { Type = DiffType.Full, Rect = null };
+					res.StatusCode = 503;
+					return;
+				}
+
+				// 2. Base64 データをデコードして生のバイナリデータに変換
+				byte[] fullWebpData = Browser.CefOp.CanvasCapturePacket.ConvertToBytes(capture.FullWebp, "data:image/webp");
+				byte[] thumbJpegData = Browser.CefOp.CanvasCapturePacket.ConvertToBytes(capture.ThumbJpeg, "data:image/jpeg");
+
+				if (fullWebpData == null)
+				{
+					res.StatusCode = 503;
+					return;
+				}
+
+				// 3. 差分判定の実行
+				DiffType diffType = DiffType.Full;
+				if (isInit || _lastThumb == null || thumbJpegData == null)
+				{
+					_lastThumb = thumbJpegData;
+					diffType = DiffType.Full;
 				}
 				else
 				{
-					diff = await CalculateDiffAsync();
+					// 前フレームのサムネイルと比較して差分矩形領域を計算
+					var diffRect = ComputeBoundingBoxSafe(_lastThumb, thumbJpegData);
+					if (diffRect == Rectangle.Empty)
+					{
+						// 差分なし → 送信をスキップ
+						diffType = DiffType.None;
+					}
+					else
+					{
+						// 差分あり → 全体キーフレームとして送信
+						_lastThumb = thumbJpegData;
+						diffType = DiffType.Full;
+					}
 				}
 
-				switch (diff.Type)
+				// 4. クライアントへのレスポンス送信
+				switch (diffType)
 				{
 					case DiffType.None:
-						// ─── 差分なし → 204 No Content で即時応答（通信量ゼロ）
+						// 差分なしは 204 No Content を応答（通信量とクライアントの描画負荷を完全にゼロ化）
 						res.StatusCode = 204;
 						res.Headers["X-Diff-Type"] = "none";
 						break;
 
 					case DiffType.Full:
-					case DiffType.Partial: // 部分キャプチャは廃止されましたが、安全のためのフォールバック
-						// ─── 全画面キーフレームを WebP でキャプチャして送信する
-						//     本家PCブラウザのガタつき（縮小拡大）を防ぐため、clipは一切指定せず（null）で全体を撮影します。
-						var fullFrame = await devToolsClient.Page.CaptureScreenshotAsync(
-							format: CaptureScreenshotFormat.Webp,
-							quality: (int)quality,
-							optimizeForSpeed: false
-						);
-
-						if (fullFrame?.Data != null && fullFrame.Data.Length > 0)
-						{
-							res.ContentType = "image/webp";
-							res.Headers["X-Diff-Type"] = "full";
-							res.ContentLength64 = fullFrame.Data.Length;
-							await res.OutputStream.WriteAsync(fullFrame.Data, 0, fullFrame.Data.Length);
-
-							// ─── Full キーフレーム送信後に必ずサムネイルを取得して _lastThumb を更新する。
-							//     ここでも clip の指定を排除し、C#側でサムネイル縮小処理を行うことでガタつきを完全に防止します。
-							try
-							{
-								var thumbAfterFull = await devToolsClient.Page.CaptureScreenshotAsync(
-									format: CaptureScreenshotFormat.Jpeg,
-									quality: 1,
-									optimizeForSpeed: true
-								);
-								if (thumbAfterFull?.Data != null && thumbAfterFull.Data.Length > 0)
-								{
-									byte[] scaledThumbData = ResizeJpegToThumbnail(thumbAfterFull.Data, ThumbnailWidth, ThumbnailHeight);
-									if (scaledThumbData != null)
-									{
-										_lastThumb = scaledThumbData;
-									}
-								}
-							}
-							catch
-							{
-								// サムネイル取得失敗は無視（次フレームで再試行される）
-							}
-						}
-						else
-						{
-							res.StatusCode = 503;
-						}
+						// 差分あり時は高精細な WebP データをそのまま高速転送
+						res.ContentType = "image/webp";
+						res.Headers["X-Diff-Type"] = "full";
+						res.ContentLength64 = fullWebpData.Length;
+						await res.OutputStream.WriteAsync(fullWebpData, 0, fullWebpData.Length);
 						break;
 				}
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"RemoteController: 差分WebPキャプチャエラー: {ex.Message}");
+				Console.WriteLine($"RemoteController: 差分WebP配信エラー: {ex.Message}");
 				res.StatusCode = 500;
 			}
 			finally

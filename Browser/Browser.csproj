@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="12.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="..\packages\CefSharp.Common.143.0.90\build\CefSharp.Common.props" Condition="Exists('..\packages\CefSharp.Common.143.0.90\build\CefSharp.Common.props')" />
   <Import Project="..\packages\chromiumembeddedframework.runtime.win-x86.143.0.9\build\chromiumembeddedframework.runtime.win-x86.props" Condition="Exists('..\packages\chromiumembeddedframework.runtime.win-x86.143.0.9\build\chromiumembeddedframework.runtime.win-x86.props')" />
@@ -139,6 +139,7 @@
     <Compile Include="CefOp\MenuHandler.cs" />
     <Compile Include="CefOp\ResponseFilterPixiSetting.cs" />
     <Compile Include="CefOp\ScreenShotPacket.cs" />
+    <Compile Include="CefOp\CanvasCapturePacket.cs" />
     <Compile Include="BrowserPrivacyFilterManager.cs" />
     <Compile Include="RemoteController.cs" />
     <Compile Include="FormBrowser.cs">
