@@ -1009,9 +1009,10 @@ namespace Browser
 
 		//====================================================================================
 		// 処理ブロック名 : CaptureCanvasAsync
-		// 概要           : ゲーム内の canvas 要素から直接ピクセルバッファを抽出して
-		//                  WebP画像とサムネイル用JPEG画像を Base64 形式で一括取得します。
-		//                  これらはすべて Chromium 内部 (GPU) で高速処理され、C#のメインスレッドをブロックしません。
+		// 概要           : ゲーム内の canvas 描画バッファをフックして常駐キャッシュする
+		//                  JavaScriptエンジンから、最新の WebP 画像とサムネイル JPEG を一括取得します。
+		//                  常駐エンジン未起動時は、初回接続時に自動的に常駐インジェクションを行って起動します。
+		//                  WebGLの preserveDrawingBuffer=false によるバッファ即時クリア問題を完全に克服します。
 		//------------------------------------------------------------------------------------
 		private async Task<Browser.CefOp.CanvasCapturePacket> CaptureCanvasAsync(long quality)
 		{
@@ -1022,44 +1023,81 @@ namespace Browser
 				return null;
 			}
 
-			// パケットオブジェクトを生成
-			var request = new Browser.CefOp.CanvasCapturePacket();
 			if (_parent.Browser == null || !_parent.Browser.IsBrowserInitialized)
 			{
 				return null;
 			}
 
-			// WebP 品質を 0.0〜1.0 の実数に変換
+			var request = new Browser.CefOp.CanvasCapturePacket();
 			double webpQuality = (double)quality / 100.0;
 
-			// JavaScript インジェクションスクリプト
-			// canvas データを GPU 上で WebP エンコードし、同時に一時縮小 canvas で 160x96 の超軽量 JPEG を生成します
+			// 常駐キャプチャエンジンを起動・フックし、最新の描画ピクセルデータを引き出すスクリプトを構築
+			// 常駐エンジンが存在しない場合は、初回時に自動的に JS インジェクションを行って起動します
 			string script = $@"
 				(async function() {{
 					try {{
 						await CefSharp.BindObjectAsync('{request.ID}');
 
-						const canvas = document.querySelector('canvas');
-						if (!canvas || canvas.width === 0 || canvas.height === 0) {{
+						// 1. 常駐エンジンがまだ存在しない場合は、動的インジェクションを行って起動する
+						if (!window._kancolleCaptureEngine) {{
+							window._kancolleCaptureEngine = {{
+								lastWebp: null,
+								lastThumb: null,
+								lastCaptureTime: 0,
+								intervalMs: 100, // 10 FPS (100ms周期)で負荷を極小化
+
+								start: function() {{
+									const canvas = document.querySelector('canvas');
+									if (!canvas) {{
+										setTimeout(() => this.start(), 150);
+										return;
+									}}
+
+									const thumbCanvas = document.createElement('canvas');
+									thumbCanvas.width = 160;
+									thumbCanvas.height = 96;
+									const thumbCtx = thumbCanvas.getContext('2d');
+
+									const loop = () => {{
+										const now = Date.now();
+										if (now - this.lastCaptureTime >= this.intervalMs) {{
+											try {{
+												// ─── 描画完了直後（クリア前）のバッファをフック ───
+												this.lastWebp = canvas.toDataURL('image/webp', {webpQuality});
+												
+												if (thumbCtx) {{
+													thumbCtx.drawImage(canvas, 0, 0, 160, 96);
+													this.lastThumb = thumbCanvas.toDataURL('image/jpeg', 0.01);
+												}}
+												this.lastCaptureTime = now;
+											}} catch (e) {{
+												console.error('Capture loop error:', e);
+											}}
+										}}
+										// requestAnimationFrame により描画プレゼン直前のクリア前の瞬間をフック
+										requestAnimationFrame(loop);
+									}};
+									requestAnimationFrame(loop);
+								}}
+							}};
+							window._kancolleCaptureEngine.start();
+							
+							// 起動直後はキャッシュがまだ空なので、1フレーム待つか、または即席で1回だけ同期取得を試みる
+							const canvas = document.querySelector('canvas');
+							if (canvas && canvas.width > 0 && canvas.height > 0) {{
+								try {{
+									const instantWebp = canvas.toDataURL('image/webp', {webpQuality});
+									{request.ID}.complete(instantWebp, null);
+									return;
+								}} catch(e) {{}}
+							}}
 							{request.ID}.complete(null, null);
 							return;
 						}}
 
-						// 1. フル解像度 WebP 画像の抽出
-						const fullWebp = canvas.toDataURL('image/webp', {webpQuality});
+						// 2. 既に常駐エンジンが動いている場合は、プールされている最新キャッシュを瞬時に引き抜く（超高速・描画遅延ゼロ）
+						{request.ID}.complete(window._kancolleCaptureEngine.lastWebp, window._kancolleCaptureEngine.lastThumb);
 
-						// 2. 差分比較用のサムネイル (160x96) の生成
-						const thumbCanvas = document.createElement('canvas');
-						thumbCanvas.width = 160;
-						thumbCanvas.height = 96;
-						const ctx = thumbCanvas.getContext('2d');
-						if (ctx) {{
-							ctx.drawImage(canvas, 0, 0, 160, 96);
-							const thumbJpeg = thumbCanvas.toDataURL('image/jpeg', 0.01);
-							{request.ID}.complete(fullWebp, thumbJpeg);
-						}} else {{
-							{request.ID}.complete(fullWebp, null);
-						}}
 					}} catch (e) {{
 						console.error('CaptureCanvasAsync JS error:', e);
 						{request.ID}.complete(null, null);
@@ -1073,8 +1111,8 @@ namespace Browser
 				_parent.Browser.JavascriptObjectRepository.Register(request.ID, request, true);
 				kancolleFrame.ExecuteJavaScriptAsync(script);
 
-				// JavaScript 側からのコールバック完了（Complete）を待機（最大3秒のタイムアウト制限）
-				var completedTask = await Task.WhenAny(request.TaskSource.Task, Task.Delay(3000));
+				// キャッシュデータの引きぬき完了を待機します（同期待ちが無いためタイムアウトは1.5秒に短縮）
+				var completedTask = await Task.WhenAny(request.TaskSource.Task, Task.Delay(1500));
 				if (completedTask != request.TaskSource.Task)
 				{
 					Console.WriteLine("RemoteController: CaptureCanvasAsync タイムアウトしました。");
