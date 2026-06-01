@@ -183,6 +183,9 @@ namespace ElectronicObserver.Data.Quest
 				case 2:
 					iscleared = DateTimeHelper.IsCrossedDay(_prevTime, 0, 0, 0);
 					break;
+				case 3:
+					iscleared = true;
+					break;
 			}
 
 
@@ -265,6 +268,16 @@ namespace ElectronicObserver.Data.Quest
 						case 230:   //|230|敵潜水艦を制圧せよ！|潜水6
 							Progresses.Add(new ProgressSlaughter(q, 6, new[] { 13 }));
 							break;
+						case 234:   //|234|週|バレンタイン2026特別限定任務|1-3・1-4・2-1ボスS勝利各1|要 大井, 球磨, 鹿島, 神威, 大泊, 神風, 高波, 涼波, 藤波, 早波, 浜波 の中から旗艦+随伴2=3以上
+							if (DateTime.Now < new DateTime(2026, 12, 31))
+							{
+								Progresses.Add(new ProgressMultiBattle(q, new[]{
+									new ProgressSpecialBattle(q, 1, "S", new[]{ 13 }, true),
+									new ProgressSpecialBattle(q, 1, "S", new[]{ 14 }, true),
+									new ProgressSpecialBattle(q, 1, "S", new[]{ 21 }, true),
+								}));
+							}
+							break;
 						case 242:   //|242|敵東方中枢艦隊を撃破せよ！|4-4ボス勝利1
 							Progresses.Add(new ProgressBattle(q, 1, "B", new[] { 44 }, true));
 							break;
@@ -343,7 +356,7 @@ namespace ElectronicObserver.Data.Quest
 							Progresses.Add(new ProgressPractice(q, 8, true));
 							break;
 						case 329:   //|329|日|【節分任務:枡】節分演習！二〇二六|演習B勝利3|条件：旗艦潜水母艦+潜水艦3or旗艦海防+海防2or旗艦輸送艦+駆逐5|節分イベントの期間限定デイリー任務 2026/1/28
-							//if (DateTime.Now < new DateTime(2025, 4, 1))
+							if (DateTime.Now < new DateTime(2026, 2, 13))
 							{
 								Progresses.Add(new ProgressPractice(q, 3, "B", true));
 							}
@@ -357,6 +370,9 @@ namespace ElectronicObserver.Data.Quest
 						case 339:   //|339|Ｑ|「十九駆」演習！|演習S勝利以上3|条件：磯波、浦波、綾波、敷波|クォータリーだが1日で進捗リセット
 							Progresses.Add(new ProgressPractice(q, 3, "S", true));
 							break;
+						case 340:   //|340|週|【桃の節句任務】桃の節句艦隊演習2026|演習S勝利以上3|条件：海防艦3or駆逐艦4|クォータリーだが1日で進捗リセット
+							Progresses.Add(new ProgressPractice(q, 3, "S", true));
+							break;
 						case 342:   //|342|Ｑ|小艦艇群演習強化任務|演習A勝利以上4|(駆逐艦/海防艦)3隻+(駆逐艦/海防艦/軽巡級)1隻|クォータリーだが1日で進捗リセット
 							Progresses.Add(new ProgressPractice(q, 4, "A", true));
 							break;
@@ -368,6 +384,12 @@ namespace ElectronicObserver.Data.Quest
 							break;
 						case 348:   //|348|２|「精鋭軽巡」演習！|演習A勝利以上4|条件：軽巡級(雷巡を除く)旗艦、旗艦含む軽巡3隻以上、随伴に駆逐艦2隻以上|イヤーリーだが1日で進捗リセット|
 							Progresses.Add(new ProgressPractice(q, 4, "A", true));
+							break;
+						case 349:   //|349|週|バレンタイン2026限定任務【スイーツ演習】|演習S勝利5|条件：「Thonburi」「Helena」「Mogador」「Gotland」「Perth」「Commandant Teste」「曙」「朧」「野埼」旗艦含め3隻以上 | バレンタインイベントの期間限定ウイークリー任務 
+							if (DateTime.Now < new DateTime(2026, 12, 31))
+							{
+								Progresses.Add(new ProgressPractice(q, 5, "S", true));
+							}
 							break;
 						case 350:   //|350|３|精鋭「第七駆逐隊」演習開始！|演習A勝利以上3|条件：朧、曙、漣、潮|イヤーリーだが1日で進捗リセット|
 							Progresses.Add(new ProgressPractice(q, 3, "A", true));
@@ -396,8 +418,8 @@ namespace ElectronicObserver.Data.Quest
 								Progresses.Add(new ProgressPractice(q, 5, "A", true));
 							}
 							break;
-						case 367:   //|367|日|【梅雨限定任務】海上護衛隊、雨中演習！|演習A勝利4|条件：海防艦2隻以上または駆逐艦4隻以上|期間限定デイリー任務 2025/05/30～
-							if (DateTime.Now < new DateTime(2025, 6, 30))
+						case 367:   //|367|日|【梅雨限定任務】海上護衛隊、雨中演習！|演習A勝利4|条件：海防艦3隻以上または駆逐艦5隻以上|期間限定デイリー任務 2025/05/30～
+							if (DateTime.Now < new DateTime(2026, 12, 31))
 							{
 								Progresses.Add(new ProgressPractice(q, 4, "A", true));
 							}
@@ -737,7 +759,7 @@ namespace ElectronicObserver.Data.Quest
 							Progresses.Add(new ProgressBattle(q, 2, "S", new[] { 24 }, true));
 							break;
 						case 840:   //|840|週|【節分任務:豆】節分作戦二〇二六|1-2・1-3・1-4ボスA勝利各1|旗艦と二番艦に鳳翔・朝日・明石・大淀・迅鯨・長鯨・朧・漣・曙・潮から, 期間限定 2026/1/28～
-							//if (DateTime.Now < new DateTime(2025, 4, 1))
+							if (DateTime.Now < new DateTime(2026, 2, 13))
 							{
 								Progresses.Add(new ProgressMultiBattle(q, new[] {
 									new ProgressSpecialBattle(q, 2, "A", new[] { 12 }, true),
@@ -747,7 +769,7 @@ namespace ElectronicObserver.Data.Quest
 							}
 							break;
 						case 841:   //|841|週|【節分任務:鬼】南西方面節分作戦二〇二六|1-4・2-1・2-2のボスA勝利各2|Jean Bart, Ranger, 神鷹, Minneapolis, 夕張, Gloire, Johnston, 風雲, 早霜が旗艦及び2番艦, 期間限定 2026/1/28～
-							//if (DateTime.Now < new DateTime(2025, 4, 1))
+							if (DateTime.Now < new DateTime(2026, 2, 13))
 							{
 								Progresses.Add(new ProgressMultiBattle(q, new[] {
 									new ProgressSpecialBattle(q, 2, "A", new[] { 21 }, true),
@@ -757,7 +779,7 @@ namespace ElectronicObserver.Data.Quest
 							}
 							break;
 						case 843:   //|843|週|【節分任務:柊】節分拡張作戦二〇二六、重巡出撃！|4-1・4-2・4-3・7-5-3ボスS勝利各1|重巡2(旗艦含), 軽空母級(あきつ丸, 山汐丸, 熊野丸も含む)1+自由枠3, 期間限定 2026/1/28～
-							//if (DateTime.Now < new DateTime(2025, 4, 1))
+							if (DateTime.Now < new DateTime(2026, 2, 13))
 							{
 								Progresses.Add(new ProgressMultiBattle(q, new[] {
 									new ProgressSpecialBattle(q, 1, "S", new[] { 41 }, true),
@@ -953,37 +975,39 @@ namespace ElectronicObserver.Data.Quest
 								new ProgressSpecialBattle(q, 1, "S", new[] { 22 }, true),
 							}));
 							break;
-						case 953:   //|953|週|【梅雨限定任務】雨の南西諸島防衛戦！|2-1, 2-2, 2-3ボスA勝利各1回|条件：巡洋艦を旗艦、駆逐艦x1、海防艦x1、水上機母艦x1|期間限定任務 2025/5/30～
-							if (DateTime.Now < new DateTime(2025, 6, 30))
+						case 953:   //|953|週|【梅雨限定任務】雨の南西諸島防衛戦2026|1-2, 1-4, 2-1, 2-2ボスA勝利各1回|条件：(海防2 または 水母2)旗艦,2番艦、駆逐2|期間限定任務 2026/5/29～
+							if (DateTime.Now < new DateTime(2026, 12, 30))
 							{
 								Progresses.Add(new ProgressMultiBattle(q, new[]{
+									new ProgressSpecialBattle(q, 1, "A", new[] { 12 }, true),
+									new ProgressSpecialBattle(q, 1, "A", new[] { 14 }, true),
 									new ProgressSpecialBattle(q, 1, "A", new[] { 21 }, true),
 									new ProgressSpecialBattle(q, 1, "A", new[] { 22 }, true),
+								}));
+							}
+							break;
+						case 954:   //|954|週|【梅雨拡張任務】梅雨の海上護衛強化2026|1-3, 1-5, 2-3, 7-4ボスA勝利各1回+1-6到達3回|条件：軽空(旗艦), 駆逐2以上|期間限定任務 2026/5/29～
+							if (DateTime.Now < new DateTime(2026, 12, 30))
+							{
+								Progresses.Add(new ProgressMultiBattle(q, new[]{
+									new ProgressSpecialBattle(q, 1, "A", new[] { 13 }, true),
+									new ProgressSpecialBattle(q, 1, "A", new[] { 15 }, true),
 									new ProgressSpecialBattle(q, 1, "A", new[] { 23 }, true),
+									new ProgressSpecialBattle(q, 1, "A", new[] { 74 }, true),
+									new ProgressSpecialBattle(q, 3, "x", new[] { 16 }, true),
 								}));
 							}
 							break;
-						case 954:   //|954|週|【梅雨拡張任務】梅雨の海上護衛強化2025|1-2, 1-3, 1-4, 1-5ボスS勝利各1回+1-6到達2回|条件：駆逐艦を旗艦、海防艦x2|期間限定任務 2025/5/30～
-							if (DateTime.Now < new DateTime(2025, 6, 30))
+						case 955:   //|955|月|【梅雨任務拡張作戦】南方反攻望楼作戦を叩け！|5-1, 5-2, 5-3, 5-4, 5-5, 5-6-3ボスS勝利各1回|条件：戦艦1, 重巡級2または夕雲型2|期間限定任務  2025/5/30～
+							if (DateTime.Now < new DateTime(2026, 12, 30))
 							{
 								Progresses.Add(new ProgressMultiBattle(q, new[]{
-									new ProgressSpecialBattle(q, 1, "S", new[] { 12 }, true),
-									new ProgressSpecialBattle(q, 1, "S", new[] { 13 }, true),
-									new ProgressSpecialBattle(q, 1, "S", new[] { 14 }, true),
-									new ProgressSpecialBattle(q, 1, "S", new[] { 15 }, true),
-									new ProgressSpecialBattle(q, 2, "x", new[] { 16 }, true),
-								}));
-							}
-							break;
-						case 955:   //|955|月|【梅雨限定月間任務】西方海域統合作戦2025|4-1, 4-2, 4-3, 4-4, 4-5ボスS勝利各1回|条件：空母1以上、(重巡or秋月型)2以上|期間限定任務  2025/5/30～
-							if (DateTime.Now < new DateTime(2025, 6, 30))
-							{
-								Progresses.Add(new ProgressMultiBattle(q, new[]{
-									new ProgressSpecialBattle(q, 1, "S", new[] { 41 }, true),
-									new ProgressSpecialBattle(q, 1, "S", new[] { 42 }, true),
-									new ProgressSpecialBattle(q, 1, "S", new[] { 43 }, true),
-									new ProgressSpecialBattle(q, 1, "S", new[] { 44 }, true),
-									new ProgressSpecialBattle(q, 1, "S", new[] { 45 }, true),
+									new ProgressSpecialBattle(q, 1, "S", new[] { 51 }, true),
+									new ProgressSpecialBattle(q, 1, "S", new[] { 52 }, true),
+									new ProgressSpecialBattle(q, 1, "S", new[] { 53 }, true),
+									new ProgressSpecialBattle(q, 1, "S", new[] { 54 }, true),
+									new ProgressSpecialBattle(q, 1, "S", new[] { 55 }, true),
+									new ProgressSpecialBattle(q, 1, "S", new[] { 56 }, true, 3),
 								}));
 							}
 							break;
@@ -1257,6 +1281,31 @@ namespace ElectronicObserver.Data.Quest
 								new ProgressDiscard(q, 6, true, new[]{ 44 }, -1),
 								new ProgressDiscard(q, 6, true, new[]{ 45 }, -1),
 								new ProgressDiscard(q, 6, true, new[]{ 346 }, -1),
+							}));
+							break;
+						case 1160:  //|1160|単|【工廠任務】試製震電の艦戦型改二への改修|零式艦戦52型×5, 紫電改二×5を廃棄
+							Progresses.Add(new ProgressMultiDiscard(q, new[]{
+								new ProgressDiscard(q, 5, true, new[]{ 21 }, -1),
+								new ProgressDiscard(q, 5, true, new[]{ 55 }, -1),
+							}));
+							break;
+						case 1161:  //|1161|単|【工廠任務】新装備運用のための工廠整備【壱】|艦戦×9, 艦爆×9, 艦攻×9, 爆雷兵装x8, 機銃兵装x8, 中口径主砲x9, 大口径主砲x7を廃棄
+							Progresses.Add(new ProgressMultiDiscard(q, new[]{
+								new ProgressDiscard(q, 9, true, new[]{ 6 }),
+								new ProgressDiscard(q, 9, true, new[]{ 7 }),
+								new ProgressDiscard(q, 9, true, new[]{ 8 }),
+								new ProgressDiscard(q, 8, true, new[]{ 15 }),
+								new ProgressDiscard(q, 8, true, new[]{ 21 }),
+								new ProgressDiscard(q, 9, true, new[]{ 2 }),
+								new ProgressDiscard(q, 7, true, new[]{ 3 }),
+							}));
+							break;
+						case 1162:  //|1162|単|【工廠任務】新装備運用のための工廠整備【壱】|零式艦戦52型×6, 紫電一一型×4, 12.7cm連装高角砲×8, 46cm三連装砲x2を廃棄
+							Progresses.Add(new ProgressMultiDiscard(q, new[]{
+								new ProgressDiscard(q, 6, true, new[]{ 21 }, -1),
+								new ProgressDiscard(q, 4, true, new[]{ 201 }, -1),
+								new ProgressDiscard(q, 8, true, new[]{ 10 }, -1),
+								new ProgressDiscard(q, 2, true, new[]{ 9 }, -1),
 							}));
 							break;
 					}

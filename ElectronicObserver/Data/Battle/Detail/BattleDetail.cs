@@ -173,14 +173,21 @@ namespace ElectronicObserver.Data.Battle.Detail
 						bool has6 = cats.Contains(6);
 						bool has7 = cats.Contains(7);
 						bool has8 = cats.Contains(8);
+						bool has56 = cats.Contains(56);
+						bool has57 = cats.Contains(57);
+						bool has58 = cats.Contains(58);
+
 
 						// 組み合わせがある場合は分かりやすく付加表示する（例: [カテゴリ: 艦戦(6)+艦爆(7)]）
-						if (has6 || has7 || has8)
+						if (has6 || has7 || has8 || has56 || has57 || has58)
 						{
 							var present = new List<string>();
 							if (has6) present.Add("F");
+							if (has56) present.Add("jF");
 							if (has7) present.Add("B");
+							if (has57) present.Add("jB");
 							if (has8) present.Add("A");
+							if (has58) present.Add("jA");
 							builder.Append("[").Append(GetAttackKind()).Append("(").Append(string.Join("", present)).Append(")] ");
 						}
 					}
@@ -222,8 +229,35 @@ namespace ElectronicObserver.Data.Battle.Detail
 							builder.Append("[").Append(GetAttackKind()).Append("(").Append(string.Join("", present)).Append(")] ");
 					}
 				}
-				else
+				else if (GetAttackKind().Contains("カットイン(魚雷/魚雷/魚雷)") && EquipmentIDs != null)
+				{
+					var masters = EquipmentIDs
+						.Select(id => KCDatabase.Instance.MasterEquipments[id])
+						.Where(eq => eq != null)
+						.ToArray();
 
+					if (masters.Length > 0)
+					{
+						var lateModelTorpedoCount = masters.Count(eq => eq.IsLateModelTorpedo);
+						var submarineRadorCount = masters.Count(eq => (int)eq.CategoryType == 51);
+						if (lateModelTorpedoCount > 0)
+						{
+							if (submarineRadorCount > 0)
+							{
+								builder.Append("[潜水艦カットイン(電探/魚雷/魚雷)] ");
+							}
+							else if (lateModelTorpedoCount > 1)
+							{
+								builder.Append("[潜水艦カットイン(魚雷/魚雷/魚雷)] ");
+							}
+						}
+						else
+						{
+							builder.Append("[").Append(GetAttackKind()).Append("] ");
+						}
+					}
+				}
+				else
 				{
 					builder.Append("[").Append(GetAttackKind()).Append("] ");
 				}

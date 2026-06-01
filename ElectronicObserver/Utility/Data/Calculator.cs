@@ -591,6 +591,40 @@ namespace ElectronicObserver.Utility.Data
 		}
 
 		/// <summary>
+		/// 艦隊の航空偵察値を求めます。
+		/// </summary>
+		/// <param name="fleet">対象の艦隊。</param>
+		public static double GetAerialRecon(FleetData fleet)
+		{
+			double aerialRecon = 0.0;
+
+			foreach (var ship in fleet.MembersWithoutEscaped)
+			{
+				if (ship == null) continue;
+
+				var eqs = ship.SlotInstanceMaster;
+
+				for (int i = 0; i < ship.Slot.Count; i++)
+				{
+					if (eqs[i] == null)
+						continue;
+
+					switch (eqs[i].CategoryType)
+					{
+						case EquipmentTypes.SeaplaneRecon:
+						case EquipmentTypes.SeaplaneBomber:
+						case EquipmentTypes.FlyingBoat:
+							aerialRecon += eqs[i].LOS * Math.Sqrt(Math.Sqrt(ship.Aircraft[i]));
+							break;
+					}
+
+				}
+			}
+
+			return aerialRecon;
+		}
+		
+		/// <summary>
 		/// 煙幕発動
 		/// ※煙幕の発動率ではなく、煙幕が発動した場合に何重の煙幕になるかの確率
 		/// x.com/yukicacoon/status/1739480992090632669
@@ -1715,6 +1749,7 @@ namespace ElectronicObserver.Utility.Data
 			{ 50, 7 },
 			{ 51, 5 },
 			{ 52, 5 },
+			{ 53, 4 },
 		});
 
 		/// <summary>
@@ -1774,6 +1809,7 @@ namespace ElectronicObserver.Utility.Data
 			{ 50, 1 },
 			{ 51, 1 },
 			{ 52, 1 },
+			{ 53, 1 },
 		});
 
 		/// <summary>
@@ -1833,6 +1869,7 @@ namespace ElectronicObserver.Utility.Data
 			{ 50, 1.5 },
 			{ 51, 1.4 },
 			{ 52, 1.4 },
+			{ 53, 1.6 },
 		});
 
 		/// <summary>
@@ -1842,41 +1879,41 @@ namespace ElectronicObserver.Utility.Data
 			{  0, 999},
 			{  1, 12 },
 			{  2, 17 },
-			{  3, 31 },
+			{  3, 32 },
 			{  4, 16 },
-			{  5, 32 },
-			{  6, 33 },
-			{  7, 41 },
-			{  8, 38 },
-			{  9, 51 },
+			{  5, 33 },
+			{  6, 34 },
+			{  7, 42 },
+			{  8, 39 },
+			{  9, 52 },
 			{ 10,  6 },
 			{ 11,  9 },
-			{ 12, 45 },
-			{ 13, 39 },
-			{ 14, 30 },
-			{ 15, 40 },
-			{ 16, 29 },
-			{ 17, 48 },
-			{ 18, 49 },
+			{ 12, 46 },
+			{ 13, 40 },
+			{ 14, 31 },
+			{ 15, 41 },
+			{ 16, 30 },
+			{ 17, 49 },
+			{ 18, 50 },
 			{ 19, 26 },
-			{ 20, 42 },
+			{ 20, 43 },
 			{ 21, 27 },
-			{ 22, 50 },
-			{ 23, 52 },
-			{ 24, 43 },
+			{ 22, 51 },
+			{ 23, 53 },
+			{ 24, 44 },
 			{ 25, 10 },
 			{ 26, 15 },
 			{ 27, 20 },
-			{ 28, 34 },
+			{ 28, 35 },
 			{ 29, 28 },
-			{ 30, 37 },
-			{ 31, 46 },
-			{ 32, 44 },
-			{ 33, 36 },
+			{ 30, 38 },
+			{ 31, 47 },
+			{ 32, 45 },
+			{ 33, 37 },
 			{ 34, 13 },
 			{ 35, 18 },
 			{ 36, 19 },
-			{ 37, 35 },
+			{ 37, 36 },
 			{ 38,  1 },
 			{ 39,  2 },
 			{ 40,  3 },
@@ -1886,12 +1923,13 @@ namespace ElectronicObserver.Utility.Data
 			{ 44, 14 },
 			{ 45, 21 },
 			{ 46,  8 },
-			{ 47, 47 },
+			{ 47, 48 },
 			{ 48, 11 },
 			{ 49, 23 },
 			{ 50, 22 },
 			{ 51, 24 },
 			{ 52, 25 },
+			{ 53, 29 },
 		});
 
 		/// <summary>
@@ -2547,6 +2585,15 @@ namespace ElectronicObserver.Utility.Data
 
 		/// <summary> 空母カットイン(BA) </summary>
 		CutinBomberAttacker,
+
+		/// <summary> 空母カットイン(jFBA) </summary>
+		CutinJetFighterBomberAttacker,
+
+		/// <summary> 空母カットイン(jFjBjB) </summary>
+		CutinJetFighterJetBomberJetBomber,
+
+		/// <summary> 空母カットイン(jFjB) </summary>
+		CutinJetFighterJetBomber,
 
 		/// <summary> ロケット攻撃 </summary>
 		Rocket = 2000,
