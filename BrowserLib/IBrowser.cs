@@ -27,6 +27,9 @@ namespace BrowserLib
 		void RefreshBrowser();
 
 		[OperationContract]
+		void UpdateHudData(string hudJson);
+
+		[OperationContract]
 		void ApplyZoom();
 
 		[OperationContract]

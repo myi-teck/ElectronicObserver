@@ -277,6 +277,8 @@ namespace Browser
 
 		internal ChromiumWebBrowser Browser = null;
 
+		private RemoteController _remoteController;
+
 		private string ProxySettings = null;
 
 
@@ -427,6 +429,10 @@ namespace Browser
 
 
 			InitializeBrowser();
+
+			// リモート操作サーバーの開始 (デフォルトポート8080)
+			_remoteController = new RemoteController(this, 8080);
+			_remoteController.Start();
 		}
 
 
@@ -464,6 +470,17 @@ namespace Browser
 			settings.CefCommandLineArgs.Add("proxy-server", ProxySettings);
 			if (Configuration.ForceColorProfile)
 				settings.CefCommandLineArgs.Add("force-color-profile", "srgb");
+
+			// --------------------------------------------------------------------------------------------
+			// 遠隔操作時のために、バックグラウンド（最小化や他のウィンドウに隠れた状態）
+			// でも描画・JavaScriptを停止・制限させない設定
+			// --------------------------------------------------------------------------------------------
+			settings.CefCommandLineArgs.Add("disable-background-timer-throttling", "1");
+			settings.CefCommandLineArgs.Add("disable-backgrounding-occluded-windows", "1");
+			settings.CefCommandLineArgs.Add("disable-renderer-backgrounding", "1");
+			// Chrome 87以降で導入された ネイティブウィンドウの隠蔽検知 による描画停止を無効化
+			settings.CefCommandLineArgs.Add("disable-features", "CalculateNativeWinOcclusion,RendererBackgrounding");
+
 			CefSharpSettings.SubprocessExitIfParentProcessClosed = true;
 			Cef.Initialize(settings, false, (IBrowserProcessHandler)null);
 
@@ -494,6 +511,7 @@ namespace Browser
 			{
 				BrowserHost.Close();
 				HeartbeatTimer.Stop();
+				_remoteController?.Dispose();
 				Cef.Shutdown();
 				Application.Exit();
 			}
@@ -531,6 +549,24 @@ namespace Browser
 		private void ConfigurationUpdated()
 		{
 			BrowserHost.AsyncRemoteRun(() => BrowserHost.Proxy.ConfigurationUpdated(Configuration));
+		}
+
+		/// <summary>
+		/// リモートコントローラーからログインページへ移動します。
+		/// </summary>
+		public void NavigateToLoginPage()
+		{
+			Navigate(Configuration.LogInPageURL);
+		}
+
+		/// <summary>
+		/// リモートコントローラーからプライバシーフィルターモードを設定します。
+		/// </summary>
+		public void SetFilterMode(int mode)
+		{
+			Configuration.ColorFilterMode = mode;
+			ApplyColorFilter();
+			ConfigurationUpdated();
 		}
 
 		private void AddLog(int priority, string message)
@@ -991,6 +1027,14 @@ namespace Browser
 				AddLog(1, "RefreshBrowser failed: " + ex.Message);
 				try { Browser.Reload(ignoreCache); } catch { }
 			}
+		}
+
+		/// <summary>
+		/// メインプロセスから送られてきたゲーム内HUDデータを受信し、リモートコントローラーへ中継します。
+		/// </summary>
+		public void UpdateHudData(string hudJson)
+		{
+			_remoteController?.UpdateHudData(hudJson);
 		}
 
 		private void Browser_FrameLoadEnd(object sender, FrameLoadEndEventArgs e)

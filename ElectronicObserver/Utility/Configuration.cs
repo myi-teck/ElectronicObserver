@@ -1019,6 +1019,21 @@ namespace ElectronicObserver.Utility
 				public bool AppliesStyleSheet { get; set; }
 
 				/// <summary>
+				/// カラーフィルタ(グレースケール)を適用するか (互換性用・非推奨)
+				/// </summary>
+				public bool AppliesColorFilter { get; set; }
+
+				/// <summary>
+				/// 適用するブラウザカラーフィルタ・プライバシーフィルタのモード
+				/// </summary>
+				public int ColorFilterMode { get; set; }
+
+				/// <summary>
+				/// ホバー時のみ表示するカバー機能を適用するか
+				/// </summary>
+				public bool AppliesHoverCover { get; set; }
+
+				/// <summary>
 				/// DMMによるページ更新ダイアログを非表示にするか
 				/// </summary>
 				public bool IsDMMreloadDialogDestroyable { get; set; }
@@ -1076,6 +1091,9 @@ namespace ElectronicObserver.Utility
 					StyleSheet = "\r\nbody {\r\n	margin:0;\r\n	overflow:hidden\r\n}\r\n\r\n#game_frame {\r\n	position:fixed;\r\n	left:50%;\r\n	top:-16px;\r\n	margin-left:-450px;\r\n	z-index:1\r\n}\r\n";
 					IsScrollable = false;
 					AppliesStyleSheet = true;
+					AppliesColorFilter = false;
+					ColorFilterMode = 0; // なし
+					AppliesHoverCover = false;
 					IsDMMreloadDialogDestroyable = false;
 					AvoidTwitterDeterioration = true;
 					ToolMenuDockStyle = DockStyle.Top;

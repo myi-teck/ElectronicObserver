@@ -140,6 +140,7 @@
     <Compile Include="CefOp\ResponseFilterPixiSetting.cs" />
     <Compile Include="CefOp\ScreenShotPacket.cs" />
     <Compile Include="BrowserPrivacyFilterManager.cs" />
+    <Compile Include="RemoteController.cs" />
     <Compile Include="FormBrowser.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -162,6 +163,9 @@
       <DesignTime>True</DesignTime>
     </Compile>
     <None Include="packages.config" />
+    <None Include="RemoteController.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="Properties\Settings.settings">
       <Generator>SettingsSingleFileGenerator</Generator>
       <LastGenOutput>Settings.Designer.cs</LastGenOutput>
