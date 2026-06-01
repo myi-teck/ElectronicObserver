@@ -7,7 +7,7 @@
 // program name   : RemoteController
 // file name      : RemoteController.html
 // summary        : モバイル端末からの遠隔操作（画面配信・操作転送）のUI定義
-//----------------------------------------// // version        : 2.31
+//----------------------------------------// // version        : 2.33
 //--------------------------------------------------------------------------------------------
 #region "change history"
 // change history : 2026/05/25 myi 新規作成
@@ -18,14 +18,13 @@
 //                  2026/05/28 myi TACTICAL SYSTEM ヘッダに損害率・勝利区分・航空戦結果を追加。2行目の #combat-header-2 に DMG/RESULT/AIR タグを配置。データなし時は非表示。
 //                  2026/05/29 myi 艦隊詳細HUDの装備情報トグル機能を2層オーバーレイ方式（opacityトグル）に修正。HP/FEL/AMOセル内に resource-view と equip-view を配置し、タップでセル内の表示を切り替える動作に変更。旧来の下段行展開方式を廃止。
 //                  2026/05/29 myi 差分WebP方式対応。画面表示要素を<img>から<canvas>に変更。updateScreenをupdateScreenDiff / updateScreenLegacyに分離。
-//                                           drawMagnifierの naturalWidth → width 変更。配信モード切曻UI追加。
+//                                           drawMagnifierの naturalWidth → width 変更。配信モード切替UI追加。
 //                  2026/05/29 myi クライアント再接続時（リロード・通信復帰時）に初期画面が真っ黒のまま表示されない不具合を修正。
 //                                           初回WebP要求時に init=1 を付与してサーバーに強制キーフレームを要求する処理を実装。
-//============================================================================================��電光掲示板風スクロール表示に自動切替。
-//                  2026/05/28 myi TACTICAL SYSTEM ヘッダに損害率・勝利区分・航空戦結果を追加。2行目の #combat-header-2 に DMG/RESULT/AIR タグを配置。データなし時は非表示。
-//                  2026/05/29 myi 艦隊詳細HUDの装備情報トグル機能を2層オーバーレイ方式（opacityトグル）に修正。HP/FEL/AMOセル内に resource-view と equip-view を配置し、タップでセル内の表示を切り替える動作に変更。旧来の下段行展開方式を廃止。
-//                  2026/05/29 myi 差分WebP方式対応。画面表示要素を<img>から<canvas>に変更。updateScreenをupdateScreenDiff / updateScreenLegacyに分離。
-//                                           drawMagnifierの naturalWidth → width 変更。配信モード切曻UI追加。
+//                  2026/06/01 myi 配信モードトグルボタンの完全削除。WebP画質設定連動アクションの実装。
+//                  2026/06/01 myi 画面更新ループの多重起動（二重スレッド化）防止用の排他制御処理（isUpdatingフラグ）を追加。
+//                  2026/06/01 myi 画面更新間隔の動的ディレイ補正処理（実処理時間を差し引いて周期を一定化する処理）を追加。
+//                  2026/06/01 myi 画面更新間隔の動的ディレイ補正処理（実処理時間を差し引いて周期を一定化する処理）を追加。
 //============================================================================================
 -->
 <!DOCTYPE html>
@@ -2014,14 +2013,7 @@
                     <button class='settings-btn' data-zoom='5.0'>5x</button>
                 </div>
             </div>
-            <!-- 配信モード切替 -->
-            <div class='setting-group'>
-                <label>配信モード</label>
-                <div class='btn-group' id='mode-group'>
-                    <button class='settings-btn active' data-mode='diff'>差分WebP</button>
-                    <button class='settings-btn' data-mode='jpeg'>JPEG</button>
-                </div>
-            </div>
+
             <!-- ブラウザ操作設定 -->
             <div class='setting-group'>
                 <label>ブラウザ操作</label>
@@ -2202,8 +2194,8 @@
         // ─── canvas の描画コンテキストを取得する（差分WebP・レガシーJPEGの両モードで共用）
         let gameCtx = screen.getContext('2d');
 
-        // 配信モード設定を localStorage から読み込む（デフォルトは差分WebPモード有効）
-        let isDiffWebp = localStorage.getItem('diffWebp') !== '0';
+        // 配信モード設定（2026/06/01 myi 変更：レガシーJPEG配信の廃止に伴い差分WebPモードに強制固定）
+        let isDiffWebp = true;
 
         const viewport = document.getElementById('viewport');
         const pad = document.getElementById('trackpad');
@@ -2510,7 +2502,13 @@
         initSettingsButtons('quality-group', targetQuality, value => {
             targetQuality = value;
             localStorage.setItem('targetQuality', value); // 前回選択値をlocalStorageに記憶
+            // WebP圧縮品質の動的変更アクションを呼び出す
+            // 2026/06/01 myi 新規作成（品質スライダーとWebPのリアルタイム連動対応）
+            fetch(`/control?action=set_quality&q=${value}`);
         });
+        // 起動時に現在の画質設定をC#側に確実に伝播させる初期化送信
+        // 2026/06/01 myi 新規作成
+        fetch(`/control?action=set_quality&q=${targetQuality}`);
 
         // 自動FPS制御設定変更の監視および保存
         initSettingsButtons('auto-fps-group', autoFpsEnabled ? 1 : 0, value => {
@@ -2603,27 +2601,7 @@
         // フィルターモードの初期値（localStorageから取得、なければデフォルト0=なし）
         let currentFilterMode = parseInt(localStorage.getItem('filterMode')) || 0;
 
-        // 配信モード切替ボタン初期化と保存
-        const modeGroup = document.getElementById('mode-group');
-        if (modeGroup) {
-            const modeBtns = modeGroup.querySelectorAll('.settings-btn');
-            modeBtns.forEach(btn => {
-                const mode = btn.getAttribute('data-mode');
-                // 現在の設定と一致するボタンに active クラスを付与
-                if ((mode === 'diff' && isDiffWebp) || (mode === 'jpeg' && !isDiffWebp)) {
-                    btn.classList.add('active');
-                } else {
-                    btn.classList.remove('active');
-                }
-                btn.addEventListener('click', () => {
-                    modeBtns.forEach(b => b.classList.remove('active'));
-                    btn.classList.add('active');
-                    isDiffWebp = (mode === 'diff');
-                    // localStorage に保存（0 = JPEG, 1 = 差分WebP）
-                    localStorage.setItem('diffWebp', isDiffWebp ? '1' : '0');
-                });
-            });
-        }
+
 
         // フィルターボタン群の初期化
         initSettingsButtons('filter-group', currentFilterMode, value => {
@@ -2637,19 +2615,15 @@
         let frameCount = 0; // 1秒間の描画フレーム数カウント用
         let lastFpsUpdate = Date.now(); // 前回FPS表示を更新したタイムスタンプ
         let isFirstWebpRequest = true;  // 差分WebPの初回要求フラグ（リロード・再接続時にキーフレームを強制するためのフラグ）
+        let isUpdating = false; // ★画面更新処理が現在実行中（非同期待機中）であるかを示す排他制御用フラグ（2026/06/01 myi 追加）
 
         //============================================================================================
         // 処理ブロック名 : updateScreen
-        // 概要           : 配信モード（差分WebP / 後方互換JPEG）に応じて画面更新ルーティングを行う
-        //                  差分WebPモードでは updateScreenDiff() を、
-        //                  レガシーモードでは updateScreenLegacy() を呼び出す
+        // 概要           : 画面更新ルーティングを行う（差分WebP配信へ一本化）
+        //                  2026/06/01 myi 変更（不要なレガシーJPEG配信の廃止に伴いWebPへ一本化）
         //============================================================================================
         async function updateScreen() {
-            if (isDiffWebp) {
-                await updateScreenDiff();
-            } else {
-                await updateScreenLegacy();
-            }
+            await updateScreenDiff();
         }
 
         //============================================================================================
@@ -2657,8 +2631,15 @@
         // 概要           : 差分WebP方式で画面を更新する（直接描画・超高速版）
         //                  toDataURL を廃止し canvas への drawImage 直接描画に変更
         //                  メモリ解放（URL.revokeObjectURL）を onload 内で確実に実行
+        //                  2026/06/01 myi 変更：isUpdatingフラグによる多重実行（二重スレッド化）防止処理を適用
         //============================================================================================
         async function updateScreenDiff() {
+            // すでに非同期の更新処理が実行中である場合は、多重起動を防ぐため即座に処理をスキップします
+            if (isUpdating) return;
+            isUpdating = true; // 排他ロックを確保
+
+            const startTime = Date.now(); // ★実処理（通信・デコード等）の開始時刻をミリ秒で記録（2026/06/01 myi 追加）
+
             try {
                 let url = `/screen.webp?t=${Date.now()}`;
                 if (isFirstWebpRequest) {
@@ -2672,7 +2653,12 @@
                     isFirstWebpRequest = false; // 204応答であっても初期通信は成立したためフラグを下げる
                     frameCount++;
                     updateFpsDisplay();
-                    updateTimer = setTimeout(updateScreen, getDynamicDelay());
+                    isUpdating = false; // ★タイマー設定前に排他ロックを解放
+
+                    // 実処理にかかった時間を差し引いて次の更新ディレイを補正します（下限5ms）
+                    const elapsed = Date.now() - startTime;
+                    const nextDelay = Math.max(5, getDynamicDelay() - elapsed);
+                    updateTimer = setTimeout(updateScreen, nextDelay);
                     return;
                 }
 
@@ -2720,13 +2706,23 @@
 
                     frameCount++;
                     updateFpsDisplay();
-                    updateTimer = setTimeout(updateScreen, getDynamicDelay());
+                    isUpdating = false; // ★処理成功に伴い排他ロックを解放
+
+                    // 実処理にかかった時間を差し引いて次の更新ディレイを補正します（下限5ms）
+                    const elapsed = Date.now() - startTime;
+                    const nextDelay = Math.max(5, getDynamicDelay() - elapsed);
+                    updateTimer = setTimeout(updateScreen, nextDelay);
                 };
 
                 img.onerror = () => {
                     // ─── 画像ロード失敗時も BlobURL を必ず解放してリトライ
                     URL.revokeObjectURL(img.src);
-                    updateTimer = setTimeout(updateScreen, getDynamicDelay());
+                    isUpdating = false; // ★処理失敗に伴い排他ロックを解放
+
+                    // 実処理にかかった時間を差し引いて次の更新ディレイを補正します（下限5ms）
+                    const elapsed = Date.now() - startTime;
+                    const nextDelay = Math.max(5, getDynamicDelay() - elapsed);
+                    updateTimer = setTimeout(updateScreen, nextDelay);
                 };
 
                 // ─── BlobURL を生成して img に渡すことで非同期デコードを開始する
@@ -2736,50 +2732,9 @@
                 isFirstWebpRequest = true; // 例外発生時（再接続）は、再度初回キーフレーム要求フラグを立てる
                 status.textContent = 'RE-SYNCING...';
                 status.classList.remove('ok');
-                updateTimer = setTimeout(updateScreen, 1000);
-            }
-        }
+                isUpdating = false; // ★例外発生に伴い排他ロックを解放
 
-        //============================================================================================
-        // 処理ブロック名 : updateScreenLegacy
-        // 概要           : 後方互換 JPEG モードで画面を更新する。
-        //                  canvas への drawImage 描画に統一して img.src 直接代入を廃止している。
-        //============================================================================================
-        async function updateScreenLegacy() {
-            try {
-                const url      = `/screen.jpg?q=${targetQuality}&t=${Date.now()}`;
-                const response = await fetch(url);
-                if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
-
-                const blob = await response.blob();
-                updateDataUsage(blob.size);
-
-                const img = new Image();
-                img.onload = () => {
-                    // ─── JPEG フルフレームを canvas に直接描画（img.src への代入を廃止）
-                    gameCtx.clearRect(0, 0, screen.width, screen.height);
-                    gameCtx.drawImage(img, 0, 0);
-
-                    // ─── 拡大鏡を再描画
-                    drawMagnifier();
-
-                    URL.revokeObjectURL(img.src);
-
-                    status.textContent = 'SYNCHRONIZED';
-                    status.classList.add('ok');
-                    frameCount++;
-                    updateFpsDisplay();
-                    updateTimer = setTimeout(updateScreen, getDynamicDelay());
-                };
-                img.onerror = () => {
-                    URL.revokeObjectURL(img.src);
-                    updateTimer = setTimeout(updateScreen, getDynamicDelay());
-                };
-                img.src = URL.createObjectURL(blob);
-
-            } catch (error) {
-                status.textContent = 'RE-SYNCING...';
-                status.classList.remove('ok');
+                // 通信エラーなどの例外発生時はバーストを防ぐため補正をせず、安全のために固定の長い遅延（1000ms）を適用します
                 updateTimer = setTimeout(updateScreen, 1000);
             }
         }
@@ -3689,7 +3644,10 @@
 
             // シングルタップイベント（タッチデバイス用）
             fleetHud.addEventListener('touchend', (e) => {
-                e.preventDefault();
+                // スクロール中などのキャンセル不可なタッチイベントでのエラーを防ぐため、cancelableである場合のみpreventDefaultを呼ぶ
+                if (e.cancelable) {
+                    e.preventDefault();
+                }
                 e.stopPropagation();
                 switchFleetDetail();
             }, { passive: false });
@@ -3721,7 +3679,10 @@
 
             // タッチイベント（タッチデバイス用）
             detailPanel.addEventListener('touchend', (e) => {
-                e.preventDefault();
+                // スクロール中などのキャンセル不可なタッチイベントでのエラーを防ぐため、cancelableである場合のみpreventDefaultを呼ぶ
+                if (e.cancelable) {
+                    e.preventDefault();
+                }
                 e.stopPropagation();
                 window._showFleetEquipment = !window._showFleetEquipment;
                 const allCells = document.querySelectorAll('.ship-hp-cell, .ship-resource-cell');

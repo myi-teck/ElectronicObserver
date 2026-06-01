@@ -263,7 +263,7 @@ namespace Browser
 		/// <summary>
 		/// 描画完了直後（WebGLバッファクリア前）の瞬間をフックし、
 		/// 最新のWebP画面データとサムネイルJPEGデータを常駐キャッシュするJavaScriptスクリプト。
-		/// 2026/06/01 myi 新規作成
+		/// 2026/06/01 myi 変更（WebP画質の動的調整用パラメータを追加）
 		/// </summary>
 		internal string CaptureEngineScript => @"
 			(function() {
@@ -274,6 +274,7 @@ namespace Browser
 					lastThumb: null,
 					lastCaptureTime: 0,
 					intervalMs: 100, // 10 FPS (100msに1回のみエンコード) に制限して軽量化
+					webpQuality: 0.6, // ★WebP圧縮品質（初期値60%、スライダーとリアルタイム連動）
 
 					start: function() {
 						const canvas = document.querySelector('canvas');
@@ -294,7 +295,7 @@ namespace Browser
 							if (now - this.lastCaptureTime >= this.intervalMs) {
 								try {
 									// WebGLバッファが即時クリアされる前の瞬間（描画完了直後）をフックして取得
-									this.lastWebp = canvas.toDataURL('image/webp', 0.6);
+									this.lastWebp = canvas.toDataURL('image/webp', this.webpQuality);
 									
 									if (thumbCtx) {
 										thumbCtx.drawImage(canvas, 0, 0, 160, 96);

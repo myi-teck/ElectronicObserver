@@ -33,8 +33,9 @@
 //                                           比較ピクセル数を57分の1（864,000→15,360）に削減し、定数ThumbnailWidth/Heightと実サイズを一致させた。
 //                  2026/05/29 myi 送信方式の統一として、SendScreenDiffWebPAsync内のfullキーフレーム送信後の
 //                                           サムネイルキャプチャも同様にclip+Scale方式（GPU縮小）に統一。
-//                  2026/05/31 myi 案A採用による画面縮小拡大のガタつきバグの修正。clip指定のない全体キャプチャ1回化とC#側サムネイルリサイズによる安定化および負荷削減。
+//                  2026/05/31 myi 案A採用による画面縮小拡大 of ガタつきバグの修正。clip指定のない全体キャプチャ1回化とC#側サムネイルリサイズによる安定化および負荷削減。
 //                  2026/06/01 myi 常駐フック型フレームキャッシュ方式（プランA）対応、BoundObject廃止に伴う超高速引き抜き方式へのリファクタリング。
+//                  2026/06/01 myi 不要なレガシーJPEG配信の完全廃止、およびWebP動的画質調整機能（スライダー連動）を追加。
 #endregion
 // Copyright 2026 bEST ANSWER's Inc.
 //============================================================================================
@@ -196,9 +197,6 @@ namespace Browser
 			return null;
 		}
 
-		// 画像設定 (通信量削減のため)
-		private const long JpegQuality = 40L;  // 圧縮率 (低め)
-
 		public RemoteController(FormBrowser parent, int port = 8080)
 		{
 			_parent = parent;
@@ -268,11 +266,6 @@ namespace Browser
 					// 差分WebP方式による画面配信（静的画面は204 No Content）
 					await SendScreenDiffWebPAsync(req, res);
 				}
-				else if (path == "/screen.jpg")
-				{
-					// DevTools APIによる非同期キャプチャ（後方互換用）
-					await SendScreenAsync(req, res);
-				}
 				else if (path == "/control")
 				{
 					HandleControl(req, res);
@@ -310,94 +303,6 @@ namespace Browser
 			res.Close();
 		}
 
-		/// <summary>
-		/// CefSharp DevTools Protocol を使用して、ブラウザの描画内容を直接取得して配信します。
-		/// クライアントからクエリパラメータで指定された任意の画質設定(q)をリアルタイムに適用します。
-		/// ウィンドウが隠れていても最小化されていても動作します。
-		/// </summary>
-		//====================================================================================
-		// 処理ブロック名 : SendScreenAsync
-		// 概要           : ゲーム内の canvas を直接コピー抽出し、JPEG 形式で配信します（後方互換用）。
-		//                  PCウィンドウサイズに依存せず、常に本来の解像度で配信できます。
-		//                  2026/06/01 myi 変更（EvaluateScriptAsync 方式へ完全リファクタリング、BoundObjectの廃止）
-		//------------------------------------------------------------------------------------
-		private async Task SendScreenAsync(HttpListenerRequest req, HttpListenerResponse res)
-		{
-			try
-			{
-				// ブラウザコントロールが未初期化の場合は 503 サービス不可を応答
-				if (_parent.Browser == null || !_parent.Browser.IsBrowserInitialized)
-				{
-					res.StatusCode = 503;
-					return;
-				}
-
-				// クエリパラメータから目標画質「q」(5%〜100%)を取得・解析します。
-				// 指定がない場合はデフォルト画質（JpegQuality = 40%）を採用します。
-				long quality = JpegQuality;
-				var qStr = req.QueryString["q"];
-				if (long.TryParse(qStr, out long parsedQ))
-				{
-					quality = Math.Max(5, Math.Min(100, parsedQ));
-				}
-
-				// 艦これのゲームがロードされている iframe への参照を取得します
-				var kancolleFrame = _parent.GetKanColleFrame();
-				if (kancolleFrame == null)
-				{
-					res.StatusCode = 503;
-					return;
-				}
-
-				double jpegQuality = (double)quality / 100.0;
-
-				// 描画バッファを JPEG で抽出するスクリプトを構築し、同期実行（バインドオーバーヘッドゼロ）
-				string script = $@"
-					(function() {{
-						try {{
-							const canvas = document.querySelector('canvas');
-							if (!canvas || canvas.width === 0 || canvas.height === 0) {{
-								return null;
-							}}
-							// GPU上で JPEG 圧縮して Base64 形式で取得
-							return canvas.toDataURL('image/jpeg', {jpegQuality});
-						}} catch (e) {{
-							return null;
-						}}
-					}})();
-					";
-
-				var response = await kancolleFrame.EvaluateScriptAsync(script);
-				if (response.Success && response.Result != null)
-				{
-					string fullJpeg = response.Result as string;
-					if (!string.IsNullOrEmpty(fullJpeg))
-					{
-						// Base64 文字列をデコードして生の JPEG バイナリデータに復元
-						byte[] jpegData = ConvertToBytes(fullJpeg, "data:image/jpeg");
-						if (jpegData != null && jpegData.Length > 0)
-						{
-							res.ContentType = "image/jpeg";
-							res.ContentLength64 = jpegData.Length;
-							await res.OutputStream.WriteAsync(jpegData, 0, jpegData.Length);
-							return;
-						}
-					}
-				}
-
-				res.StatusCode = 503;
-			}
-			catch (Exception ex)
-			{
-				Console.WriteLine($"RemoteController: JPEG配信エラー: {ex.Message}");
-				res.StatusCode = 500;
-			}
-			finally
-			{
-				res.Close();
-			}
-		}
-
 
 		/// <summary>
 		/// マウス操作を受け取ってエミュレートします。
@@ -430,6 +335,15 @@ namespace Browser
 				else if (action == "set_filter" && int.TryParse(req.QueryString["mode"], out int filterMode))
 				{
 					_parent.SetFilterMode(filterMode);
+				}
+				// WebP圧縮品質の動的設定アクションを追加
+				// 2026/06/01 myi 新規作成（品質スライダーとのWebPリアルタイム連動対応）
+				else if (action == "set_quality" && double.TryParse(req.QueryString["q"], out double qVal))
+				{
+					// 品質を0.05〜1.0の範囲にスケール変換
+					double qualityScale = Math.Max(0.05, Math.Min(1.0, qVal / 100.0));
+					var kancolleFrame = _parent.GetKanColleFrame();
+					kancolleFrame?.ExecuteJavaScriptAsync($"if(window._kancolleCaptureEngine) window._kancolleCaptureEngine.webpQuality = {qualityScale};");
 				}
 				#endregion
 	
