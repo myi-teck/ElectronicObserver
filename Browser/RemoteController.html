@@ -18,6 +18,7 @@
 //                  2026/05/28 myi TACTICAL SYSTEM ヘッダに損害率・勝利区分・航空戦結果を追加。2行目の #combat-header-2 に DMG/RESULT/AIR タグを配置。データなし時は非表示。
 //                  2026/05/29 myi 艦隊詳細HUDの装備情報トグル機能を2層オーバーレイ方式（opacityトグル）に修正。HP/FEL/AMOセル内に resource-view と equip-view を配置し、タップでセル内の表示を切り替える動作に変更。旧来の下段行展開方式を廃止。
 //                  2026/06/01 myi 戦術情報HUDのHP表示を艦隊詳細HUD同等の数値+セグメントゲージ2行構成に変更。`.combat-ship-hp`→`.combat-ship-hp-cell`とし、10段階ゲージを状態別カラー（緑/アンバー/赤/グレー）で表示。
+//                  2026/06/01 myi ログHUD（LOG SYSTEM）を追加。本家ブラウザのLogger.Logから最新10件（P1以上）を取得し、青系テーマで表示。LogAddedイベントドリブン更新にも対応。
 //                  2026/05/29 myi 差分WebP方式対応。画面表示要素を<img>から<canvas>に変更。updateScreenをupdateScreenDiff / updateScreenLegacyに分離。
 //                                           drawMagnifierの naturalWidth → width 変更。配信モード切替UI追加。
 //                  2026/05/29 myi クライアント再接続時（リロード・通信復帰時）に初期画面が真っ黒のまま表示されない不具合を修正。
@@ -1087,6 +1088,76 @@
         .combat-segment-gauge .gauge-segment.sunk {
             background: rgba(100, 116, 139, 0.2);
             border-color: rgba(100, 116, 139, 0.15);
+        }
+
+        /* ========================================================================================
+         * 20. ログHUD (LOG SYSTEM) スタイル定義
+         * 本家ブラウザのログ最新10件を表示。青系テーマ。
+         * ======================================================================================== */
+        #log-hud-panel {
+            min-width: 180px;
+        }
+
+        .log-entry {
+            display: flex;
+            align-items: baseline;
+            gap: 3px;
+            font-size: 7px;
+            padding: 1px 3px;
+            border-radius: 2px;
+            background: rgba(3, 8, 5, 0.6);
+            border-left: 2px solid transparent;
+            font-family: 'Consolas', 'Courier New', monospace;
+        }
+
+        .log-time {
+            color: #64748b;
+            flex-shrink: 0;
+            font-size: 6.5px;
+        }
+
+        .log-priority {
+            flex-shrink: 0;
+            font-size: 6px;
+            font-weight: bold;
+            padding: 0 2px;
+            border-radius: 1px;
+        }
+
+        .log-priority.p1 {
+            color: #60a5fa;
+            background: rgba(96, 165, 250, 0.15);
+        }
+
+        .log-priority.p2 {
+            color: #facc15;
+            background: rgba(250, 204, 21, 0.15);
+        }
+
+        .log-priority.p3 {
+            color: #ef4444;
+            background: rgba(239, 68, 68, 0.15);
+        }
+
+        .log-message {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: #a3f7bf;
+        }
+
+        /* 優先度別左端アクセント */
+        .log-entry.priority-1 {
+            border-left-color: #60a5fa;
+        }
+
+        .log-entry.priority-2 {
+            border-left-color: #facc15;
+        }
+
+        .log-entry.priority-3 {
+            border-left-color: #ef4444;
         }
 
         /* 状態セル */
@@ -2360,6 +2431,16 @@
                     </div>
                 </div> <!-- /#tactical-quest-row -->
 
+                    <!-- ログHUD（最新10件） -->
+                    <div id='log-hud'>
+                        <div class='battle-hud-item' id='log-hud-panel'>
+                            <span class='battle-title' style='color: #60a5fa; border-bottom: 1px solid rgba(96, 165, 250, 0.2);'>LOG SYSTEM</span>
+                            <div id='log-list' style='display: flex; flex-direction: column; gap: 1px; max-height: 200px; overflow-y: auto;'>
+                                <!-- 最新10件のログが動的に生成されます -->
+                            </div>
+                        </div>
+                    </div>
+
                 </div> <!-- /#hud-container -->
 
                 <!-- 【右下に新規配置】拡大表示パネル（タクティカルスコープ・正方形） -->
@@ -3413,7 +3494,8 @@
             fleets: -1,
             battle: -1,
             combat: -1,
-            quests: -1
+            quests: -1,
+            logs: -1
         };
 
         // 艦船詳細テーブルのDOM更新スキップ用キャッシュ変数
@@ -3429,7 +3511,7 @@
         async function updateHud() {
             try {
                 // 各HUDブロックの前回適用バージョンをパラメータに付与して要求
-                const params = `materialVer=${hudVersions.material}&fleetsVer=${hudVersions.fleets}&battleVer=${hudVersions.battle}&combatVer=${hudVersions.combat}&questsVer=${hudVersions.quests}`;
+                const params = `materialVer=${hudVersions.material}&fleetsVer=${hudVersions.fleets}&battleVer=${hudVersions.battle}&combatVer=${hudVersions.combat}&questsVer=${hudVersions.quests}&logsVer=${hudVersions.logs}`;
                 const response = await fetch(`/hud?${params}&t=${Date.now()}`);
                 if (!response.ok) throw new Error("HUD fetch failed");
                 const data = await response.json();
@@ -3793,6 +3875,32 @@
                             
                             questListDiv.appendChild(row);
                         }
+                    }
+                }
+            }
+
+            // ----------------------------------------------------------------------------
+            // 6. ログデータの連動更新 (データ変更時のみ実行)
+            // ----------------------------------------------------------------------------
+            if (data.logs && data.logs.changed) {
+                hudVersions.logs = data.logs.version;
+                const logData = data.logs.data;
+                if (logData) {
+                    const logListDiv = document.getElementById('log-list');
+                    if (logListDiv) {
+                        logListDiv.innerHTML = '';
+                        logData.forEach(log => {
+                            const entry = document.createElement('div');
+                            entry.className = `log-entry priority-${log.priority}`;
+                            const pClass = `p${log.priority}`;
+                            const escapedMessage = log.message.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"');
+                            entry.innerHTML = `
+                                <span class="log-time">${log.time}</span>
+                                <span class="log-priority ${pClass}">P${log.priority}</span>
+                                <span class="log-message" title="${escapedMessage}">${escapedMessage}</span>
+                            `;
+                            logListDiv.appendChild(entry);
+                        });
                     }
                 }
             }

@@ -470,6 +470,17 @@ namespace ElectronicObserver.Window
 				_hudTimer.Tick += (s, ev) => SyncHudData();
 				_hudTimer.Start();
 
+				// ログ追加イベントドリブン更新（ログが追加された際に即座にHUDデータを再送信）
+				Utility.Logger.Instance.LogAdded += (Utility.Logger.LogData data) =>
+				{
+					if (data.Priority >= 1 && Browser != null && !Browser.Closed && Browser.Proxy != null)
+					{
+						// 定期更新と同じ SyncHudData を利用（クライアント側で差分処理を行う）
+						// Invoke しないのは、GUIスレッドの処理順序を乱さないため
+						Task.Run(() => SyncHudData());
+					}
+				};
+
 			}));
 		}
 
@@ -1109,6 +1120,32 @@ namespace ElectronicObserver.Window
 					}
 				}
 				sb.Append(string.Join(",", questList));
+				sb.Append("],");
+
+				// ----------------------------------------------------------------------------
+				// 処理ブロック名 : ログデータのJSON化処理
+				// 概要           : 最新10件のログ（Priority ≥ 1）を取得してJSON配列として追加します。
+				// ----------------------------------------------------------------------------
+				sb.Append("\"logs\":[");
+				var logList = new List<string>();
+				if (Utility.Logger.Log != null && Utility.Logger.Log.Count > 0)
+				{
+					var recentLogs = Utility.Logger.Log
+						.Where(l => l.Priority >= 1)
+						.OrderByDescending(l => l.Time)
+						.Take(10)
+						.ToList();
+					foreach (var log in recentLogs)
+					{
+						string timeStr = log.Time.ToString("HH:mm:ss");
+						logList.Add("{" +
+							$"\"time\":\"{timeStr}\"," +
+							$"\"priority\":{log.Priority}," +
+							$"\"message\":\"{EscapeJson(log.Message)}\"" +
+							"}");
+					}
+				}
+				sb.Append(string.Join(",", logList));
 				sb.Append("]");
 
 				sb.Append("}");

@@ -111,6 +111,9 @@ namespace Browser
 		private string _lastQuestsJson = null;
 		private long _questsVersion = 0;
 
+		private string _lastLogsJson = null;
+		private long _logsVersion = 0;
+
 		//====================================================================================
 		// 差分WebP方式用フィールド・定数
 		//------------------------------------------------------------------------------------
@@ -142,6 +145,7 @@ namespace Browser
 			UpdateSectionVersion(hudJson, "battle", ref _lastBattleJson, ref _battleVersion);
 			UpdateSectionVersion(hudJson, "combat", ref _lastCombatJson, ref _combatVersion);
 			UpdateSectionVersion(hudJson, "quests", ref _lastQuestsJson, ref _questsVersion);
+			UpdateSectionVersion(hudJson, "logs", ref _lastLogsJson, ref _logsVersion);
 		}
 
 		/// <summary>
@@ -558,6 +562,9 @@ namespace Browser
 				long clientQuestsVer = -1;
 				long.TryParse(req.QueryString["questsVer"], out clientQuestsVer);
 
+				long clientLogsVer = -1;
+				long.TryParse(req.QueryString["logsVer"], out clientLogsVer);
+
 				string jsonResponse;
 
 				// キャッシュされた実データが存在する場合は、各ブロックごとの差分データJSONを動的に構築して返却します
@@ -608,6 +615,15 @@ namespace Browser
 					if (clientQuestsVer != _questsVersion && _lastQuestsJson != null)
 					{
 						sb.Append(",\"data\":").Append(_lastQuestsJson);
+					}
+					sb.Append("},");
+
+					// 6. logs（ログ）
+					sb.Append("\"logs\":{\"changed\":").Append(clientLogsVer != _logsVersion ? "true" : "false");
+					sb.Append(",\"version\":").Append(_logsVersion);
+					if (clientLogsVer != _logsVersion && _lastLogsJson != null)
+					{
+						sb.Append(",\"data\":").Append(_lastLogsJson);
 					}
 					sb.Append("}");
 
@@ -752,7 +768,11 @@ namespace Browser
 						"{" +
 						"\"id\":0,\"name\":\"XXXXXX\",\"progressText\":\"XXXXXX\",\"progressRate\":0.00" +
 						"}");
-					sb.Append("]}");
+					sb.Append("]},");
+
+					// 6. logs（ログ）
+					sb.Append("\"logs\":{\"changed\":true,\"version\":0,\"data\":[]");
+					sb.Append("}");
 
 					sb.Append("}");
 					jsonResponse = sb.ToString();
