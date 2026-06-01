@@ -622,155 +622,135 @@ namespace Browser
 
 					// 1. material（資源）
 					sb.Append("\"material\":{\"changed\":true,\"version\":0,\"data\":{");
-					sb.Append("\"fuel\":35120,\"ammo\":34890,\"steel\":42300,\"bauxite\":28950,\"bucket\":1240");
+					sb.Append("\"fuel\":00000,\"ammo\":00000,\"steel\":00000,\"bauxite\":00000,\"bucket\":0000");
 					sb.Append("}},");
-
+	
 					// 2. fleets（艦隊）
 					sb.Append("\"fleets\":{\"changed\":true,\"version\":0,\"data\":[");
 					// 第1艦隊
 					sb.Append("{" +
-						"\"id\":1,\"name\":\"第1艦隊\",\"state\":\"ACTIVE\",\"stateText\":\"ACTIVE / 出撃可能\",\"expeditionRemaining\":\"\",\"ships\":[{" +
-						"\"masterId\":123,\"shipId\":10,\"name\":\"雪風改二\",\"level\":99,\"isMarried\":true," +
-						"\"hp\":40,\"maxHp\":40,\"hpRate\":1.0,\"condition\":50,\"fuel\":1000,\"ammo\":800,\"fuelMax\":1000,\"ammoMax\":800,\"fuelRate\":1.0,\"ammoRate\":1.0," +
-						"\"equipment\":[\"21cm連装砲\",\"三式指揮連絡機\",null,null]," +
-						"\"aircraft\":[12,8,0,0]," +
-						"\"parameters\":{\"firepower\":45,\"torpedo\":20,\"aa\":35,\"armor\":25,\"evasion\":60,\"asw\":40,\"los\":30,\"luck\":45}," +
-						"\"dock\":{\"is_docking\":false,\"end_time\":null}," +
-						"\"fleet_id\":1" +
-						"},{" +
-						"\"masterId\":456,\"shipId\":11,\"name\":\"初雪改\",\"level\":95,\"isMarried\":false," +
-						"\"hp\":35,\"maxHp\":38,\"hpRate\":0.92,\"condition\":45,\"fuel\":800,\"ammo\":600,\"fuelMax\":900,\"ammoMax\":700,\"fuelRate\":0.89,\"ammoRate\":0.86," +
-						"\"equipment\":[\"53cm連装魚雷\",\"九四式爆雷投射機\",null,null]," +
+						"\"id\":1,\"name\":\"第1艦隊\",\"state\":\"LOADING\",\"stateText\":\"LOADING / ローディング中\",\"expeditionRemaining\":\"\",\"ships\":[{" +
+						"\"masterId\":0,\"shipId\":0,\"name\":\"XXXXXX\",\"level\":0,\"isMarried\":false," +
+						"\"hp\":0,\"maxHp\":0,\"hpRate\":0.0,\"condition\":0,\"fuel\":0,\"ammo\":0,\"fuelMax\":0,\"ammoMax\":0,\"fuelRate\":0.0,\"ammoRate\":0.0," +
+						"\"equipment\":[null,null,null,null]," +
 						"\"aircraft\":[0,0,0,0]," +
-						"\"parameters\":{\"firepower\":30,\"torpedo\":35,\"aa\":20,\"armor\":18,\"evasion\":55,\"asw\":50,\"los\":25,\"luck\":38}," +
+						"\"parameters\":{\"firepower\":0,\"torpedo\":0,\"aa\":0,\"armor\":0,\"evasion\":0,\"asw\":0,\"los\":0,\"luck\":0}," +
 						"\"dock\":{\"is_docking\":false,\"end_time\":null}," +
 						"\"fleet_id\":1" +
-						"}]" +
+						"},null,null,null,null,null]" +
 						"}," +
 						// 第2艦隊
 						"{" +
-						"\"id\":2,\"name\":\"第2艦隊\",\"state\":\"MISSION\",\"stateText\":\"MISSION [00:24:15]\",\"expeditionRemaining\":\"00:24:15\",\"ships\":[{" +
-						"\"masterId\":789,\"shipId\":12,\"name\":\"大和改二\",\"level\":100,\"isMarried\":true," +
-						"\"hp\":98,\"maxHp\":98,\"hpRate\":1.0,\"condition\":60,\"fuel\":2000,\"ammo\":1500,\"fuelMax\":2000,\"ammoMax\":1500,\"fuelRate\":1.0,\"ammoRate\":1.0," +
-						"\"equipment\":[\"46cm連装砲\",\"三式弾\",\"対空電探\",null]," +
+						"\"id\":2,\"name\":\"第2艦隊\",\"state\":\"LOADING\",\"stateText\":\"LOADING / ローディング中\",\"expeditionRemaining\":\"\",\"ships\":[{" +
+						"\"masterId\":0,\"shipId\":0,\"name\":\"XXXXXX\",\"level\":0,\"isMarried\":false," +
+						"\"hp\":0,\"maxHp\":0,\"hpRate\":0.0,\"condition\":0,\"fuel\":0,\"ammo\":0,\"fuelMax\":0,\"ammoMax\":0,\"fuelRate\":0.0,\"ammoRate\":0.0," +
+						"\"equipment\":[null,null,null,null]," +
 						"\"aircraft\":[0,0,0,0]," +
-						"\"parameters\":{\"firepower\":98,\"torpedo\":40,\"aa\":55,\"armor\":80,\"evasion\":20,\"asw\":10,\"los\":45,\"luck\":50}," +
+						"\"parameters\":{\"firepower\":0,\"torpedo\":0,\"aa\":0,\"armor\":0,\"evasion\":0,\"asw\":0,\"los\":0,\"luck\":0}," +
 						"\"dock\":{\"is_docking\":false,\"end_time\":null}," +
 						"\"fleet_id\":2" +
 						"},null,null,null,null,null]" +
 						"}," +
 						// 第3艦隊
 						"{" +
-						"\"id\":3,\"name\":\"第3艦隊\",\"state\":\"DOCKING\",\"stateText\":\"DOCKING [01:30:00]\",\"expeditionRemaining\":\"01:30:00\",\"ships\":[{" +
-						"\"masterId\":202,\"shipId\":14,\"name\":\"長門改二\",\"level\":90,\"isMarried\":false," +
-						"\"hp\":10,\"maxHp\":88,\"hpRate\":0.11,\"condition\":20,\"fuel\":200,\"ammo\":100,\"fuelMax\":1500,\"ammoMax\":1200,\"fuelRate\":0.13,\"ammoRate\":0.08," +
-						"\"equipment\":[\"35.6cm連装砲\",\"電探\",null,null]," +
+						"\"id\":3,\"name\":\"第3艦隊\",\"state\":\"LOADING\",\"stateText\":\"LOADING / ローディング中\",\"expeditionRemaining\":\"\",\"ships\":[{" +
+						"\"masterId\":0,\"shipId\":0,\"name\":\"XXXXXX\",\"level\":0,\"isMarried\":false," +
+						"\"hp\":0,\"maxHp\":0,\"hpRate\":0.0,\"condition\":0,\"fuel\":0,\"ammo\":0,\"fuelMax\":0,\"ammoMax\":0,\"fuelRate\":0.0,\"ammoRate\":0.0," +
+						"\"equipment\":[null,null,null,null]," +
 						"\"aircraft\":[0,0,0,0]," +
-						"\"parameters\":{\"firepower\":60,\"torpedo\":20,\"aa\":15,\"armor\":50,\"evasion\":15,\"asw\":10,\"los\":30,\"luck\":25}," +
-						"\"dock\":{\"is_docking\":true,\"end_time\":\"2026-05-27T13:28:56\"}," +
+						"\"parameters\":{\"firepower\":0,\"torpedo\":0,\"aa\":0,\"armor\":0,\"evasion\":0,\"asw\":0,\"los\":0,\"luck\":0}," +
+						"\"dock\":{\"is_docking\":false,\"end_time\":null}," +
 						"\"fleet_id\":3" +
 						"},null,null,null,null,null]" +
 						"}," +
 						// 第4艦隊
 						"{" +
-						"\"id\":4,\"name\":\"第4艦隊\",\"state\":\"STANDBY\",\"stateText\":\"STANDBY [回復 08分]\",\"expeditionRemaining\":\"\",\"ships\":[{" +
-						"\"masterId\":101,\"shipId\":13,\"name\":\"武蔵改二\",\"level\":99,\"isMarried\":true," +
-						"\"hp\":90,\"maxHp\":98,\"hpRate\":0.92,\"condition\":40,\"fuel\":1800,\"ammo\":1200,\"fuelMax\":2000,\"ammoMax\":1500,\"fuelRate\":0.9,\"ammoRate\":0.8," +
-						"\"equipment\":[\"46cm連装砲\",\"対空電探\",null,null]," +
+						"\"id\":4,\"name\":\"第4艦隊\",\"state\":\"LOADING\",\"stateText\":\"LOADING / ローディング中\",\"expeditionRemaining\":\"\",\"ships\":[{" +
+						"\"masterId\":0,\"shipId\":0,\"name\":\"XXXXXX\",\"level\":0,\"isMarried\":false," +
+						"\"hp\":0,\"maxHp\":0,\"hpRate\":0.0,\"condition\":0,\"fuel\":0,\"ammo\":0,\"fuelMax\":0,\"ammoMax\":0,\"fuelRate\":0.0,\"ammoRate\":0.0," +
+						"\"equipment\":[null,null,null,null]," +
 						"\"aircraft\":[0,0,0,0]," +
-						"\"parameters\":{\"firepower\":95,\"torpedo\":38,\"aa\":50,\"armor\":78,\"evasion\":22,\"asw\":8,\"los\":42,\"luck\":48}," +
-						"\"dock\":{\"is_docking\":true,\"end_time\":\"2026-05-26T18:30:00\"}," +
-						"\"fleet_id\":3" +
-						"}]" +
-						"}," +
-						// 第4艦隊
-						"{" +
-						"\"id\":4,\"name\":\"第4艦隊\",\"state\":\"EMERGENCY\",\"stateText\":\"EMERGENCY / 大破\",\"expeditionRemaining\":\"\",\"ships\":[{" +
-						"\"masterId\":202,\"shipId\":14,\"name\":\"長門改二\",\"level\":90,\"isMarried\":false," +
-						"\"hp\":10,\"maxHp\":88,\"hpRate\":0.11,\"condition\":20,\"fuel\":200,\"ammo\":100,\"fuelMax\":1500,\"ammoMax\":1200,\"fuelRate\":0.13,\"ammoRate\":0.08," +
-						"\"equipment\":[\"35.6cm連装砲\",\"電探\",null,null]," +
-						"\"aircraft\":[0,0,0,0]," +
-						"\"parameters\":{\"firepower\":75,\"torpedo\":30,\"aa\":40,\"armor\":65,\"evasion\":25,\"asw\":5,\"los\":38,\"luck\":42}," +
+						"\"parameters\":{\"firepower\":0,\"torpedo\":0,\"aa\":0,\"armor\":0,\"evasion\":0,\"asw\":0,\"los\":0,\"luck\":0}," +
 						"\"dock\":{\"is_docking\":false,\"end_time\":null}," +
 						"\"fleet_id\":4" +
-						"}]" +
+						"},null,null,null,null,null]" +
 						"}");
 					sb.Append("]},");
-
+	
 					// 3. battle（作戦）
 					sb.Append("\"battle\":{\"changed\":true,\"version\":0,\"data\":{");
-					sb.Append("\"area\":\"3-2 / AREA NORTH\",");
-					sb.Append("\"enemy\":\"NO SIGNAL\",");
-					sb.Append("\"predict\":\"S-WIN PREDICT / 雪風\"");
+					sb.Append("\"area\":\"XXXXXX\",");
+					sb.Append("\"enemy\":\"XXXXXX\",");
+					sb.Append("\"predict\":\"XXXXXX\"");
 					sb.Append("}},");
-
+	
 					// 4. combat（戦闘）
 					sb.Append("\"combat\":{\"changed\":true,\"version\":0,\"data\":{");
-					sb.Append("\"formation\":\"第三戦闘隊形 vs 第一警戒航行序列\",");
-					sb.Append("\"engagement\":\"同航戦\",");
-					sb.Append("\"touch\":\"味方: あり / 敵: なし\",");
-					sb.Append("\"damageRate\":35.2,");
-					sb.Append("\"victory\":\"S勝利\",");
-					sb.Append("\"airBattle\":\"制空権確立 自-3/12 敵-1/8\",");
+					sb.Append("\"formation\":\"XXXXXX vs XXXXXX\",");
+					sb.Append("\"engagement\":\"XXXXXX\",");
+					sb.Append("\"touch\":\"XXXXXX\",");
+					sb.Append("\"damageRate\":0.0,");
+					sb.Append("\"victory\":\"XXXXXX\",");
+					sb.Append("\"airBattle\":\"XXXXXX\",");
 					
-					// 味方主力（7隻遊撃部隊デモ）
+					// 味方主力
 					sb.Append("\"friendShips\":[");
-					sb.Append("{\"name\":\"雪風改二\",\"hp\":40,\"maxHp\":40,\"status\":\"OK\"},");
-					sb.Append("{\"name\":\"大和改二重\",\"hp\":12,\"maxHp\":98,\"status\":\"EMERGENCY\"},"); // 大破
-					sb.Append("{\"name\":\"武蔵改二\",\"hp\":98,\"maxHp\":98,\"status\":\"OK\"},");
-					sb.Append("{\"name\":\"長門改二\",\"hp\":55,\"maxHp\":88,\"status\":\"WARNING\"},");   // 中破
-					sb.Append("{\"name\":\"陸奥改二\",\"hp\":88,\"maxHp\":88,\"status\":\"OK\"},");
-					sb.Append("{\"name\":\"矢矧改二乙\",\"hp\":48,\"maxHp\":48,\"status\":\"OK\"},");
-					sb.Append("{\"name\":\"時雨改三\",\"hp\":35,\"maxHp\":35,\"status\":\"OK\"}");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"}");
 					sb.Append("],");
-
-					// 味方随伴（第2艦隊 6隻）
+	
+					// 味方随伴
 					sb.Append("\"friendEscortShips\":[");
-					sb.Append("{\"name\":\"阿武隈改二\",\"hp\":44,\"maxHp\":44,\"status\":\"OK\"},");
-					sb.Append("{\"name\":\"木曾改二\",\"hp\":40,\"maxHp\":42,\"status\":\"OK\"},");
-					sb.Append("{\"name\":\"北上改二\",\"hp\":8,\"maxHp\":43,\"status\":\"EMERGENCY\"},"); // 大破
-					sb.Append("{\"name\":\"大井改二\",\"hp\":20,\"maxHp\":43,\"status\":\"WARNING\"},");   // 中破
-					sb.Append("{\"name\":\"磯風改二\",\"hp\":32,\"maxHp\":32,\"status\":\"OK\"},");
-					sb.Append("{\"name\":\"浜風改二\",\"hp\":32,\"maxHp\":32,\"status\":\"OK\"}");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"}");
 					sb.Append("],");
-
+	
 					// 敵主力
 					sb.Append("\"enemyShips\":[");
-					sb.Append("{\"name\":\"空母ヲ級改Flagship\",\"hp\":84,\"maxHp\":160,\"status\":\"WARNING\"},"); // 中破
-					sb.Append("{\"name\":\"戦艦タ級Flagship\",\"hp\":80,\"maxHp\":80,\"status\":\"OK\"},");
-					sb.Append("{\"name\":\"戦艦タ級Flagship\",\"hp\":80,\"maxHp\":80,\"status\":\"OK\"},");
-					sb.Append("{\"name\":\"軽巡ツ級\",\"hp\":0,\"maxHp\":48,\"status\":\"SUNK\"},"); // 撃沈
-					sb.Append("{\"name\":\"駆逐ハ級後期型\",\"hp\":0,\"maxHp\":20,\"status\":\"SUNK\"},"); // 撃沈
-					sb.Append("{\"name\":\"駆逐ハ級後期型\",\"hp\":0,\"maxHp\":20,\"status\":\"SUNK\"}"); // 撃沈
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"}");
 					sb.Append("],");
-
+	
 					// 敵随伴
 					sb.Append("\"enemyEscortShips\":[");
-					sb.Append("{\"name\":\"軽巡ツ級\",\"hp\":48,\"maxHp\":48,\"status\":\"OK\"},");
-					sb.Append("{\"name\":\"駆逐ロ級後期型\",\"hp\":15,\"maxHp\":15,\"status\":\"OK\"},");
-					sb.Append("{\"name\":\"駆逐ロ級後期型\",\"hp\":15,\"maxHp\":15,\"status\":\"OK\"},");
-					sb.Append("{\"name\":\"駆逐イ級\",\"hp\":0,\"maxHp\":15,\"status\":\"SUNK\"},"); // 撃沈
-					sb.Append("{\"name\":\"駆逐イ級\",\"hp\":0,\"maxHp\":15,\"status\":\"SUNK\"},"); // 撃沈
-					sb.Append("{\"name\":\"駆逐イ級\",\"hp\":0,\"maxHp\":15,\"status\":\"SUNK\"}"); // 撃沈
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"},");
+					sb.Append("{\"name\":\"XXXXXX\",\"hp\":0,\"maxHp\":0,\"status\":\"LOADING\"}");
 					sb.Append("]");
 					sb.Append("}},");
-
+	
 					// 5. quests（任務）
 					sb.Append("\"quests\":{\"changed\":true,\"version\":0,\"data\":[");
 					sb.Append("{" +
-						"\"id\":201,\"name\":\"敵艦隊を撃破せよ！\",\"progressText\":\"達成！\",\"progressRate\":1.00" +
+						"\"id\":0,\"name\":\"XXXXXX\",\"progressText\":\"XXXXXX\",\"progressRate\":0.00" +
 						"}," +
 						"{" +
-						"\"id\":210,\"name\":\"敵空母を3隻撃滅せよ！\",\"progressText\":\"2/3\",\"progressRate\":0.67" +
+						"\"id\":0,\"name\":\"XXXXXX\",\"progressText\":\"XXXXXX\",\"progressRate\":0.00" +
 						"}," +
 						"{" +
-						"\"id\":303,\"name\":\"「演習」で他提督と競い手腕を磨け！\",\"progressText\":\"80%以上\",\"progressRate\":0.80" +
+						"\"id\":0,\"name\":\"XXXXXX\",\"progressText\":\"XXXXXX\",\"progressRate\":0.00" +
 						"}," +
 						"{" +
-						"\"id\":402,\"name\":\"「遠征」を3回成功させよ！\",\"progressText\":\"1/3\",\"progressRate\":0.33" +
+						"\"id\":0,\"name\":\"XXXXXX\",\"progressText\":\"XXXXXX\",\"progressRate\":0.00" +
 						"}," +
 						"{" +
-						"\"id\":403,\"name\":\"「遠征」を10回成功させよ！\",\"progressText\":\"50%以上\",\"progressRate\":0.50" +
+						"\"id\":0,\"name\":\"XXXXXX\",\"progressText\":\"XXXXXX\",\"progressRate\":0.00" +
 						"}");
 					sb.Append("]}");
 

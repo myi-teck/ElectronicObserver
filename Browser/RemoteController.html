@@ -106,6 +106,23 @@
         #game-screen.filter-lowcontrast {
             filter: grayscale(80%) brightness(30%) contrast(50%);
         }
+
+        /*
+         * 暗視カメラ風フィルター（グリーンスケール）
+         * 2026/06/01 myi 新規作成（暗視ボックス用）
+         */
+        #game-screen.filter-greenscale-night {
+            /* 暗視カメラ風：明るい緑 */
+            filter: grayscale(100%) sepia(100%) hue-rotate(90deg) saturate(300%) brightness(1.2);
+        }
+        #game-screen.filter-greenscale-military {
+            /* 軍用モニター風：濃い緑 */
+            filter: grayscale(100%) sepia(100%) hue-rotate(80deg) saturate(500%);
+        }
+        #game-screen.filter-greenscale-phosphor {
+            /* フォスファイト風：暗めの黄緑 */
+            filter: grayscale(100%) sepia(100%) hue-rotate(95deg) saturate(200%) brightness(0.8);
+        }
         
         /* 
          * 3. 仮想カーソル
@@ -2042,6 +2059,13 @@
                     <button class='settings-btn' data-filter='4'>低コントラスト</button>
                 </div>
             </div>
+            <!-- 暗視フィルター設定（トグル方式） -->
+            <div class='setting-group'>
+                <label>暗視</label>
+                <div class='btn-group'>
+                    <button class='settings-btn' id='btn-nightvision'>なし</button>
+                </div>
+            </div>
         </div>
 
         <!-- 確認モーダル -->
@@ -2619,7 +2643,7 @@
         function applyClientFilter(mode) {
             const gameScreen = document.getElementById('game-screen');
             // 既存のフィルタークラスを全て削除
-            gameScreen.classList.remove('filter-grayscale', 'filter-lowcontrast');
+            gameScreen.classList.remove('filter-grayscale', 'filter-lowcontrast', 'filter-greenscale-night', 'filter-greenscale-military', 'filter-greenscale-phosphor');
             switch(mode) {
                 case 1: // グレースケール
                     gameScreen.classList.add('filter-grayscale');
@@ -2641,6 +2665,49 @@
             localStorage.setItem('filterMode', value.toString());
             // クライアントサイドにフィルターを適用
             applyClientFilter(value);
+        });
+
+        //================================================================================
+        // 暗視フィルター設定（トグルサイクル方式）
+        // なし → 暗視カメラ風 → 軍用モニター風 → フォスファイト風 → なし
+        //================================================================================
+        const nightvisionModes = [
+            { name: 'なし', className: null },
+            { name: '暗視カメラ風', className: 'filter-greenscale-night' },
+            { name: '軍用モニター風', className: 'filter-greenscale-military' },
+            { name: 'フォスファイト風', className: 'filter-greenscale-phosphor' },
+        ];
+        let currentNightvisionIndex = parseInt(localStorage.getItem('nightvisionIndex')) || 0;
+
+        // 暗視フィルターを適用する関数
+        function applyNightvisionFilter(index) {
+            const gameScreen = document.getElementById('game-screen');
+            // 既存の暗視フィルタークラスを全て削除
+            nightvisionModes.forEach(m => { if (m.className) gameScreen.classList.remove(m.className); });
+            // 現在のモードを適用
+            const mode = nightvisionModes[index];
+            if (mode.className) {
+                gameScreen.classList.add(mode.className);
+            }
+        }
+
+        // 初期適用
+        applyNightvisionFilter(currentNightvisionIndex);
+
+        // [暗視]ボタンの表示更新
+        const btnNightvision = document.getElementById('btn-nightvision');
+        function updateNightvisionButton() {
+            btnNightvision.textContent = nightvisionModes[currentNightvisionIndex].name;
+        }
+        updateNightvisionButton();
+
+        // タップでサイクル
+        btnNightvision.addEventListener('click', (e) => {
+            e.stopPropagation();
+            currentNightvisionIndex = (currentNightvisionIndex + 1) % nightvisionModes.length;
+            localStorage.setItem('nightvisionIndex', currentNightvisionIndex.toString());
+            applyNightvisionFilter(currentNightvisionIndex);
+            updateNightvisionButton();
         });
 
         // FPS実測用の変数定義
