@@ -1,4 +1,4 @@
-﻿<!--
+<!--
   [AI IMPORTANT INSTRUCTION]
   This file MUST be saved in "UTF-8 with BOM" (UTF-8 signature) encoding to prevent Japanese character corruption (all characters turning into '?').
   Ensure that you preserve the UTF-8 BOM when saving. After editing, verify that no '?' replacements occurred.
@@ -2871,6 +2871,7 @@
         // プライバシーフィルター設定（クライアントサイド適用版）
         // 2026/06/01 myi 変更：差分WebP方式に伴い、フィルターをRemoteControllerクライアント側でCSS適用に変更。
         //                  本家ブラウザ側のゲーム画面には影響を与えず、#game-screen canvas のみに適用される。
+        // 2026/06/02 myi 変更：オンデマンドキャプチャ同期およびJS側軽量差分判定の導入に伴い、差分WebP更新処理を一本化。Fetchタイムアウト制御を追加して安定化。
         //================================================================================
         // フィルターモードの初期値（localStorageから取得、なければデフォルト0=なし）
         let currentFilterMode = parseInt(localStorage.getItem('filterMode')) || 0;
@@ -2964,31 +2965,35 @@
         //============================================================================================
         // 処理ブロック名 : updateScreenDiff
         // 概要           : 差分WebP方式で画面を更新する（直接描画・超高速版）
-        //                  toDataURL を廃止し canvas への drawImage 直接描画に変更
-        //                  メモリ解放（URL.revokeObjectURL）を onload 内で確実に実行
-        //                  2026/06/01 myi 変更：isUpdatingフラグによる多重実行（二重スレッド化）防止処理を適用
+        //                  オンデマンドキャプチャ連動に伴い、Fetchに2秒のタイムアウト制御を追加。
+        //                  不要となったPartial（部分更新）処理を排除し、フルキーフレーム描画に一本化。
+        //                  2026/06/02 myi 変更：Fetchタイムアウト制御による堅牢化と処理の簡略化。
         //============================================================================================
         async function updateScreenDiff() {
             // すでに非同期の更新処理が実行中である場合は、多重起動を防ぐため即座に処理をスキップします
             if (isUpdating) return;
             isUpdating = true; // 排他ロックを確保
 
-            const startTime = Date.now(); // ★実処理（通信・デコード等）の開始時刻をミリ秒で記録（2026/06/01 myi 追加）
+            const startTime = Date.now(); // 実処理（通信・デコード等）の開始時刻をミリ秒で記録
+
+            // オンデマンドキャプチャ時のハングアップを防止するため、2秒のFetchタイムアウトを設ける
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2000);
 
             try {
                 let url = `/screen.webp?t=${Date.now()}`;
                 if (isFirstWebpRequest) {
                     url += '&init=1';
                 }
-                const response = await fetch(url);
+                const response = await fetch(url, { signal: controller.signal });
+                clearTimeout(timeoutId); // 正常に応答を受信したためタイムアウトタイマーをクリア
 
                 // ─── 204 No Content の場合は差分なし → 描画をスキップしてタイマーへ
-                //     注意: blob() は 204 ボディなし時に空 Blob か例外になるため、必ずここで先にガードする
                 if (response.status === 204) {
                     isFirstWebpRequest = false; // 204応答であっても初期通信は成立したためフラグを下げる
                     frameCount++;
                     updateFpsDisplay();
-                    isUpdating = false; // ★タイマー設定前に排他ロックを解放
+                    isUpdating = false; // タイマー設定前に排他ロックを解放
 
                     // 実処理にかかった時間を差し引いて次の更新ディレイを補正します（下限5ms）
                     const elapsed = Date.now() - startTime;
@@ -3007,33 +3012,18 @@
                 // 実際に受信したバイトサイズを通信量メーターに加算
                 updateDataUsage(blob.size);
 
-                // ─── Blob から Image を生成し、ロード完了後に canvas へ直接描画する。
-                //     toDataURL による同期エンコードを一切行わないため、
-                //     モバイル端末の CPU 負荷がほぼゼロになる。
+                // ─── Blob から Image を生成し、ロード完了後に canvas へ直接描画する
                 const img = new Image();
 
                 img.onload = () => {
-                    if (diffType === 'full') {
-                        // ─── 全画面キーフレーム：canvas 全体をクリアして上書き描画
-                        gameCtx.clearRect(0, 0, screen.width, screen.height);
-                        gameCtx.drawImage(img, 0, 0);
-
-                    } else if (diffType === 'partial') {
-                        // ─── 差分領域のみ：ヘッダーから切り出し座標を復元してピンポイント描画
-                        //     画像は差分サイズ（rw × rh）の WebP なので、
-                        //     drawImage の引数で描画先座標（rx, ry）と描画サイズ（rw, rh）を指定する
-                        const rectStr = response.headers.get('X-Diff-Rect');
-                        const [rx, ry, rw, rh] = rectStr.split(',').map(Number);
-
-                        // 差分領域をクリアしてから重ね合わせ描画（透過の混色を防ぐ）
-                        gameCtx.clearRect(rx, ry, rw, rh);
-                        gameCtx.drawImage(img, rx, ry, rw, rh);
-                    }
+                    // ─── 全画面キーフレーム：canvas 全体をクリアして上書き描画
+                    gameCtx.clearRect(0, 0, screen.width, screen.height);
+                    gameCtx.drawImage(img, 0, 0);
 
                     // ─── 拡大鏡を再描画
                     drawMagnifier();
 
-                    // ─── メモリリーク防止：BlobURL を即時解放する（onload 内で確実に実行）
+                    // ─── メモリリーク防止：BlobURL を即時解放する
                     URL.revokeObjectURL(img.src);
 
                     status.textContent = 'SYNCHRONIZED';
@@ -3041,7 +3031,7 @@
 
                     frameCount++;
                     updateFpsDisplay();
-                    isUpdating = false; // ★処理成功に伴い排他ロックを解放
+                    isUpdating = false; // 処理成功に伴い排他ロックを解放
 
                     // 実処理にかかった時間を差し引いて次の更新ディレイを補正します（下限5ms）
                     const elapsed = Date.now() - startTime;
@@ -3050,9 +3040,9 @@
                 };
 
                 img.onerror = () => {
-                    // ─── 画像ロード失敗時も BlobURL を必ず解放してリトライ
+                    // 画像ロード失敗時も BlobURL を必ず解放してリトライ
                     URL.revokeObjectURL(img.src);
-                    isUpdating = false; // ★処理失敗に伴い排他ロックを解放
+                    isUpdating = false; // 処理失敗に伴い排他ロックを解放
 
                     // 実処理にかかった時間を差し引いて次の更新ディレイを補正します（下限5ms）
                     const elapsed = Date.now() - startTime;
@@ -3060,14 +3050,15 @@
                     updateTimer = setTimeout(updateScreen, nextDelay);
                 };
 
-                // ─── BlobURL を生成して img に渡すことで非同期デコードを開始する
+                // BlobURL を生成して img に渡すことで非同期デコードを開始する
                 img.src = URL.createObjectURL(blob);
 
             } catch (error) {
-                isFirstWebpRequest = true; // 例外発生時（再接続）は、再度初回キーフレーム要求フラグを立てる
+                clearTimeout(timeoutId); // 例外発生時も確実にタイムアウトタイマーをクリア
+                isFirstWebpRequest = true; // 例外発生時は、再度初回キーフレーム要求フラグを立てる
                 status.textContent = 'RE-SYNCING...';
                 status.classList.remove('ok');
-                isUpdating = false; // ★例外発生に伴い排他ロックを解放
+                isUpdating = false; // 例外発生に伴い排他ロックを解放
 
                 // 通信エラーなどの例外発生時はバーストを防ぐため補正をせず、安全のために固定の長い遅延（1000ms）を適用します
                 updateTimer = setTimeout(updateScreen, 1000);

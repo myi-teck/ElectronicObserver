@@ -36,8 +36,9 @@
 //                  2026/05/31 myi 案A採用による画面縮小拡大 of ガタつきバグの修正。clip指定のない全体キャプチャ1回化とC#側サムネイルリサイズによる安定化および負荷削減。
 //                  2026/06/01 myi 常駐フック型フレームキャッシュ方式（プランA）対応、BoundObject廃止に伴う超高速引き抜き方式へのリファクタリング。
 //                  2026/06/01 myi 不要なレガシーJPEG配信の完全廃止、およびWebP動的画質調整機能（スライダー連動）を追加。
+//                  2026/06/02 myi C#側のGDI+差分判定を完全廃止し、ブラウザJS側のオンデマンドキャプチャおよび軽量ピクセル差分判定へ移行。
 #endregion
-// Copyright 2026 bEST ANSWER's Inc.
+// Copyright 2026 myi
 //============================================================================================
 
 using System;
@@ -117,10 +118,7 @@ namespace Browser
 		//====================================================================================
 		// 差分WebP方式用フィールド・定数
 		//------------------------------------------------------------------------------------
-		// 差分判定用サムネイルキャッシュ（前フレームのJPEG quality:1 バイトデータ）
-		// byte[] として保持することで、毎フレームのBitmapデコードコストを1回に抑える。
-		// Bitmap を常駐させるとGC負荷が大きいため、byte[] + デコードのトレードオフを選択。
-		private byte[] _lastThumb = null;
+
 
 		// 差分判定用サムネイル設定（1200×720の8分の1 = 160×96）
 		private const int ThumbnailWidth  = 160;
@@ -837,115 +835,36 @@ namespace Browser
 		//                  ここでは何も更新しない（呼び出し元の SendScreenDiffWebPAsync が責任を持つ）。
 		//------------------------------------------------------------------------------------
 		//====================================================================================
-		//====================================================================================
-		// 処理ブロック名 : ComputeBoundingBoxSafe
-		// 概要           : セーフコード（unsafe・ポインタ不使用）で2つのJPEGデータの差分領域を算出する。
-		//                  Marshal.Copy + int[] によるセーフコードで 0.5ms 以下。
-		//                  サイズ不一致時は全面差分を返す。
-		//------------------------------------------------------------------------------------
-		private Rectangle ComputeBoundingBoxSafe(byte[] prevData, byte[] currData)
-		{
-			using (var prevStream = new MemoryStream(prevData))
-			using (var currStream = new MemoryStream(currData))
-			using (var prevBitmap = new Bitmap(prevStream))
-			using (var currBitmap = new Bitmap(currStream))
-			{
-				// ─── サイズ不一致ガード（ブラウザリサイズ等によるキャプチャサイズ変動を検出）
-				//     サイズが合わない場合は比較不能のため Full キーフレームに相当する全面差分を返す。
-				if (prevBitmap.Width != currBitmap.Width || prevBitmap.Height != currBitmap.Height)
-				{
-					return new Rectangle(0, 0, currBitmap.Width, currBitmap.Height);
-				}
 
-				int width  = prevBitmap.Width;
-				int height = prevBitmap.Height;
-
-				var rect     = new Rectangle(0, 0, width, height);
-				var prevLock = prevBitmap.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-				var currLock = currBitmap.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-
-				int minX = int.MaxValue, minY = int.MaxValue;
-				int maxX = int.MinValue, maxY = int.MinValue;
-				bool hasDiff = false;
-
-				try
-				{
-					// ─── LockBits したピクセルデータを int[] にコピーして比較する。
-					//     Marshal.Copy は CLR の管理外メモリを安全にコピーするため、
-					//     unsafe キーワードなしで LockBits の高速アクセスを実現できる。
-					int size       = width * height;
-					int[] prevPx   = new int[size];
-					int[] currPx   = new int[size];
-
-					System.Runtime.InteropServices.Marshal.Copy(prevLock.Scan0, prevPx, 0, size);
-					System.Runtime.InteropServices.Marshal.Copy(currLock.Scan0, currPx, 0, size);
-
-					for (int y = 0; y < height; y++)
-					{
-						int rowOffset = y * width;
-						for (int x = 0; x < width; x++)
-						{
-							int index = rowOffset + x;
-
-							// ─── ARGB の最上位バイト（アルファチャンネル）を 0x00FFFFFF でマスクして除外し、
-							//     RGB チャンネルのみで変化を検出する（透過の違いによる誤検知を防ぐ）
-							if ((prevPx[index] & 0x00FFFFFF) != (currPx[index] & 0x00FFFFFF))
-							{
-								hasDiff = true;
-								if (x < minX) minX = x;
-								if (y < minY) minY = y;
-								if (x > maxX) maxX = x;
-								if (y > maxY) maxY = y;
-							}
-						}
-					}
-				}
-				finally
-				{
-					// ─── 例外発生時でも確実に LockBits を解除する
-					prevBitmap.UnlockBits(prevLock);
-					currBitmap.UnlockBits(currLock);
-				}
-
-				if (!hasDiff)
-				{
-					return Rectangle.Empty;
-				}
-
-				return new Rectangle(minX, minY, maxX - minX + 1, maxY - minY + 1);
-			}
-		}
 
 		//====================================================================================
 		// 処理ブロック名 : CaptureCanvasAsync
-		// 概要           : ゲーム内の canvas 描画バッファをフックして常駐キャッシュする
-		//                  JavaScriptエンジンから、最新 of WebP 画像とサムネイル JPEG を一括取得します。
-		//                  常駐エンジン未起動時は、初回接続時に自動的に常駐インジェクションを行って起動します。
-		//                  WebGLの preserveDrawingBuffer=false によるバッファ即時クリア問題を完全に克服します。
-		//                  2026/06/01 myi 変更（EvaluateScriptAsync 方式へ完全リファクタリング、BoundObjectの廃止）
+		// 概要           : 外部（C#）からの要求に応じて、ブラウザ側の JavaScript エンジを呼び出し、
+		//                  キャッシュされた最新フレームデータの引き抜きを行います。
+		//                  2026/06/02 myi 変更（WebGLバッファクリア対策としてJS側同期キャッシュから pull で引き抜く設計に変更）
 		//------------------------------------------------------------------------------------
-		private async Task<Tuple<string, string>> CaptureCanvasAsync()
+		private async Task<Tuple<string, string>> CaptureCanvasAsync(bool isInit)
 		{
 			// 艦これの描画フレームがロードされている iframe への参照を取得します
 			var kancolleFrame = _parent.GetKanColleFrame();
 			if (kancolleFrame == null)
 			{
-				return null;
+				return Tuple.Create("error", "Kancolle frame not found");
 			}
 
 			if (_parent.Browser == null || !_parent.Browser.IsBrowserInitialized)
 			{
-				return null;
+				return Tuple.Create("error", "Browser not initialized");
 			}
 
-			// EvaluateScriptAsync を用いてプールされている最新キャッシュを瞬時に引き抜く（超高速・バインドオーバーヘッドゼロ）
-			string script = @"
-				(function() {
-					if (window._kancolleCaptureEngine) {
-						return [window._kancolleCaptureEngine.lastWebp, window._kancolleCaptureEngine.lastThumb];
-					}
+			// EvaluateScriptAsync を用いて、ブラウザのJSエンジンからキャッシュを引き抜く
+			string script = $@"
+				(function() {{
+					if (window._kancolleCaptureEngine) {{
+						return window._kancolleCaptureEngine.pull({(isInit ? "true" : "false")});
+					}}
 					return null;
-				})();";
+				}})();";
 
 			try
 			{
@@ -955,12 +874,9 @@ namespace Browser
 					var list = response.Result as System.Collections.Generic.IList<object>;
 					if (list != null && list.Count >= 2)
 					{
-						string lastWebp = list[0] as string;
-						string lastThumb = list[1] as string;
-						if (!string.IsNullOrEmpty(lastWebp))
-						{
-							return Tuple.Create(lastWebp, lastThumb);
-						}
+						string type = list[0] as string;
+						string data = list[1] as string;
+						return Tuple.Create(type, data);
 					}
 				}
 
@@ -972,18 +888,19 @@ namespace Browser
 			catch (Exception ex)
 			{
 				Console.WriteLine($"RemoteController: CaptureCanvasAsync エラー: {ex.Message}");
+				return Tuple.Create("error", ex.Message);
 			}
 
-			return null;
+			return Tuple.Create("error", "Capture engine not ready");
 		}
 
 		//====================================================================================
 		// 処理ブロック名 : SendScreenDiffWebPAsync
-		// 概要           : ゲーム内の canvas から直接コピーした画像を用いて
-		//                  差分WebP方式で画面を配信する（GET /screen.webp）。
+		// 概要           : クライアントからのリクエスト受信時に、JS側のキャプチャおよび軽量差分判定を呼び出し、
+		//                  差分がない場合は 204 No Content を、ある場合は WebP 画像を応答します（GET /screen.webp）。
 		//                  PCウィンドウの表示サイズやアスペクト比に依存せず、常に余白なしで
 		//                  高精細なゲーム画面を配信できます。
-		//                  2026/06/01 myi 変更（EvaluateScriptAsync 方式へ完全リファクタリング、BoundObjectの廃止）
+		//                  2026/06/02 myi 変更（C#側のGDI+デコードおよび差分判定を完全廃止し、JS側判定に一本化）
 		//------------------------------------------------------------------------------------
 		private async Task SendScreenDiffWebPAsync(HttpListenerRequest req, HttpListenerResponse res)
 		{
@@ -994,78 +911,47 @@ namespace Browser
 				return;
 			}
 
-			// クエリパラメータから目標画質「q」(5%〜100%)を取得
-			// 常駐JSループ側の quality 設定(0.6)が優先されるため、ここでは主に引き抜き処理のみ
-			long quality = WebpQuality;
-			var qStr = req.QueryString["q"];
-			if (long.TryParse(qStr, out long parsedQ))
-			{
-				quality = Math.Max(5, Math.Min(100, parsedQ));
-			}
-
 			try
 			{
 				// クライアント側からの初期化要求・再接続シグナル（init=1）を検出する
 				bool isInit = req.QueryString["init"] == "1" || req.QueryString["init"] == "true";
 
-				// 1. canvas から WebP とサムネイル JPEG を一括で直接抽出
-				var capture = await CaptureCanvasAsync();
-				if (capture == null || string.IsNullOrEmpty(capture.Item1))
+				// 1. canvas からのオンデマンドキャプチャおよびJS側差分判定を実行
+				var capture = await CaptureCanvasAsync(isInit);
+				string type = capture.Item1;
+				string dataUrl = capture.Item2;
+
+				if (type == "error")
 				{
 					res.StatusCode = 503;
 					return;
 				}
 
-				// 2. Base64 データをデコードして生のバイナリデータに変換
-				byte[] fullWebpData = ConvertToBytes(capture.Item1, "data:image/webp");
-				byte[] thumbJpegData = ConvertToBytes(capture.Item2, "data:image/jpeg");
-
-				if (fullWebpData == null)
+				// 2. 差分判定結果に応じたレスポンス制御
+				if (type == "none")
 				{
-					res.StatusCode = 503;
-					return;
+					// 差分なしは 204 No Content を応答（通信量とクライアントの描画負荷を完全にゼロ化）
+					res.StatusCode = 204;
+					res.Headers["X-Diff-Type"] = "none";
 				}
-
-				// 3. 差分判定の実行
-				DiffType diffType = DiffType.Full;
-				if (isInit || _lastThumb == null || thumbJpegData == null)
+				else if (type == "full" && !string.IsNullOrEmpty(dataUrl))
 				{
-					_lastThumb = thumbJpegData;
-					diffType = DiffType.Full;
+					// 差分あり時は高精細な WebP データをバイナリにデコードして高速転送
+					byte[] fullWebpData = ConvertToBytes(dataUrl, "data:image/webp");
+					if (fullWebpData == null)
+					{
+						res.StatusCode = 503;
+						return;
+					}
+
+					res.ContentType = "image/webp";
+					res.Headers["X-Diff-Type"] = "full";
+					res.ContentLength64 = fullWebpData.Length;
+					await res.OutputStream.WriteAsync(fullWebpData, 0, fullWebpData.Length);
 				}
 				else
 				{
-					// 前フレームのサムネイルと比較して差分矩形領域を計算
-					var diffRect = ComputeBoundingBoxSafe(_lastThumb, thumbJpegData);
-					if (diffRect == Rectangle.Empty)
-					{
-						// 差分なし → 送信をスキップ
-						diffType = DiffType.None;
-					}
-					else
-					{
-						// 差分あり → 全体キーフレームとして送信
-						_lastThumb = thumbJpegData;
-						diffType = DiffType.Full;
-					}
-				}
-
-				// 4. クライアントへのレスポンス送信
-				switch (diffType)
-				{
-					case DiffType.None:
-						// 差分なしは 204 No Content を応答（通信量とクライアントの描画負荷を完全にゼロ化）
-						res.StatusCode = 204;
-						res.Headers["X-Diff-Type"] = "none";
-						break;
-
-					case DiffType.Full:
-						// 差分あり時は高精細な WebP データをそのまま高速転送
-						res.ContentType = "image/webp";
-						res.Headers["X-Diff-Type"] = "full";
-						res.ContentLength64 = fullWebpData.Length;
-						await res.OutputStream.WriteAsync(fullWebpData, 0, fullWebpData.Length);
-						break;
+					res.StatusCode = 503;
 				}
 			}
 			catch (Exception ex)

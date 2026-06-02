@@ -261,20 +261,23 @@ namespace Browser
 			";
 
 		/// <summary>
-		/// 描画完了直後（WebGLバッファクリア前）の瞬間をフックし、
-		/// 最新のWebP画面データとサムネイルJPEGデータを常駐キャッシュするJavaScriptスクリプト。
-		/// 2026/06/01 myi 変更（WebP画質の動的調整用パラメータを追加）
+		/// WebGLバッファクリア（真っ黒画面）問題を回避するため、ブラウザの描画フレーム（requestAnimationFrame）に完全同期して
+		/// 軽量差分判定とWebPキャッシュを行い、C#からの要求時にその最新キャッシュを非同期引き抜きするハイブリッドJavaScriptスクリプト。
+		/// 変化がない場合はWebPエンコードを完全にスキップし、変化時のみ描画タイミング内でWebP化を行います。
+		/// 2026/06/02 myi 変更（WebGLバッファクリア対策として描画同期キャッシュ＆オンデマンド引き抜き方式へリファクタリング）
 		/// </summary>
 		internal string CaptureEngineScript => @"
 			(function() {
+				// 二重登録 of 防止
 				if (window._kancolleCaptureEngine) return;
 
 				window._kancolleCaptureEngine = {
-					lastWebp: null,
-					lastThumb: null,
+					webpQuality: 0.6,      // WebP圧縮品質（初期値60%、スライダーとリアルタイム連動）
+					lastWebp: null,        // 最新のエンコード済みWebP画像キャッシュ
+					lastThumbData: null,    // 前フレームの極小サムネイルImageData（差分判定用）
+					hasNewFrame: false,    // 未取得の新しいフレームがあるかを示すフラグ
 					lastCaptureTime: 0,
-					intervalMs: 100, // 10 FPS (100msに1回のみエンコード) に制限して軽量化
-					webpQuality: 0.6, // ★WebP圧縮品質（初期値60%、スライダーとリアルタイム連動）
+					intervalMs: 100,       // 10 FPS (100msに1回キャプチャと差分判定を行う)
 
 					start: function() {
 						const canvas = document.querySelector('canvas');
@@ -284,32 +287,86 @@ namespace Browser
 							return;
 						}
 
-						// サムネイル比較用の極小インメモリ canvas を初期化
+						// 差分判定および縮小処理用の極小インメモリ canvas を初期化
 						const thumbCanvas = document.createElement('canvas');
 						thumbCanvas.width = 160;
 						thumbCanvas.height = 96;
 						const thumbCtx = thumbCanvas.getContext('2d');
 
+						// WebGLのpreserveDrawingBuffer=falseによるバッファ即時クリアを克服するため、
+						// requestAnimationFrame 同期ループを用いて、描画完了直後のバッファがある瞬間をフックする
 						const loop = () => {
 							const now = Date.now();
 							if (now - this.lastCaptureTime >= this.intervalMs) {
 								try {
-									// WebGLバッファが即時クリアされる前の瞬間（描画完了直後）をフックして取得
-									this.lastWebp = canvas.toDataURL('image/webp', this.webpQuality);
-									
 									if (thumbCtx) {
+										// 現在のゲーム画面の縮小コピーを描画
 										thumbCtx.drawImage(canvas, 0, 0, 160, 96);
-										this.lastThumb = thumbCanvas.toDataURL('image/jpeg', 0.01);
+										const currThumbData = thumbCtx.getImageData(0, 0, 160, 96);
+
+										let hasDiff = false;
+										if (!this.lastThumbData) {
+											// 初回起動時は必ず差分ありと判定
+											hasDiff = true;
+										} else {
+											const d1 = this.lastThumbData.data;
+											const d2 = currThumbData.data;
+											// RGBのピクセル差分をループ比較（しきい値8でアンチエイリアスの微小ノイズを許容）
+											for (let i = 0; i < d1.length; i += 4) {
+												if (Math.abs(d1[i] - d2[i]) > 8 ||
+													Math.abs(d1[i+1] - d2[i+1]) > 8 ||
+													Math.abs(d1[i+2] - d2[i+2]) > 8) {
+													hasDiff = true;
+													break;
+												}
+											}
+										}
+
+										// 差分が検出された場合のみ、WebGLバッファが生きているこの描画フレーム内で WebP エンコードしてキャッシュ
+										if (hasDiff) {
+											this.lastWebp = canvas.toDataURL('image/webp', this.webpQuality);
+											this.hasNewFrame = true;
+											this.lastThumbData = currThumbData;
+										}
 									}
 									this.lastCaptureTime = now;
 								} catch (e) {
 									console.error('Capture loop error:', e);
 								}
 							}
-							// 描画フレームに完全同期させるため requestAnimationFrame ループを使用
 							requestAnimationFrame(loop);
 						};
 						requestAnimationFrame(loop);
+					},
+
+					// C# から EvaluateScriptAsync で呼び出され、キャッシュデータを引き抜くメソッド
+					pull: function(force) {
+						// 初回ロード時等で lastWebp キャッシュがまだ無い場合は、その場で一度強制的にエンコードを試みる（フォールバック）
+						if (!this.lastWebp) {
+							const canvas = document.querySelector('canvas');
+							if (canvas) {
+								try {
+									this.lastWebp = canvas.toDataURL('image/webp', this.webpQuality);
+									this.hasNewFrame = true;
+								} catch (e) {
+									return ['error', e.toString()];
+								}
+							}
+						}
+
+						// クライアントの初期化要求（force = true）時は、未取得フラグにかかわらず現在のキャッシュを強制返却
+						if (force && this.lastWebp) {
+							return ['full', this.lastWebp];
+						}
+
+						// 新しい差分フレームがキャッシュされている場合はそれを返却し、取得済みフラグを下げる
+						if (this.hasNewFrame && this.lastWebp) {
+							this.hasNewFrame = false;
+							return ['full', this.lastWebp];
+						}
+
+						// 変化がない場合は、余分なデータ転送を避けるため none を返却
+						return ['none', ''];
 					}
 				};
 				window._kancolleCaptureEngine.start();
