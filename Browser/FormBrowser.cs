@@ -732,6 +732,15 @@ namespace Browser
 
 		private void SizeAdjuster_SizeChanged(object sender, EventArgs e)
 		{
+			// 最小化や非表示時はブラウザコントロールのサイズ変更をスキップする
+			// 理由：最小化やドッキング解除による一時的な非表示などを行うと、SizeAdjusterのサイズが
+			//       極小（0×0や1×1など）になり、Browser.Sizeも連動して極小化される。
+			//       これによりCEFのビューポートも縮小され、リモート操作(RemoteController)の
+			//       SendMouseClickEventに渡す座標がビューポート外となり、クリックが一切効かなくなる。
+			//       そのため、極小サイズ時はサイズ変更処理を行わず、以前の正常なサイズを維持する。
+			if (SizeAdjuster.Width <= 10 || SizeAdjuster.Height <= 10)
+				return;
+
 			if (!StyleSheetApplied)
 			{
 				if (Browser != null)
@@ -1214,6 +1223,12 @@ namespace Browser
 		public void ApplyZoom()
 		{
 			if (!IsBrowserInitialized)
+				return;
+
+			// 最小化や非表示などでサイズが極小になっている場合は処理しない
+			// 理由：極小サイズでズーム計算やブラウザサイズの再設定を行うと、Browser.Sizeも極小化され、
+			//       リモート操作の座標計算やクリックイベント送信が正常に動作しなくなるため。
+			if (SizeAdjuster.Width <= 10 || SizeAdjuster.Height <= 10)
 				return;
 
 
