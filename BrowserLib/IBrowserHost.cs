@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.Serialization;
@@ -225,5 +225,17 @@ namespace BrowserLib
 		/// </summary>
 		[DataMember]
 		public bool EnableDebugMenu { get; set; }
+
+		/// <summary>
+		/// リモート操作サーバーのポート番号
+		/// </summary>
+		[DataMember]
+		public int RemoteControllerPort { get; set; }
+
+		/// <summary>
+		/// リモート操作サーバーのリッスンIPアドレス
+		/// </summary>
+		[DataMember]
+		public string RemoteControllerAddress { get; set; }
 	}
 }

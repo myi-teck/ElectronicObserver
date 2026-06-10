@@ -1,4 +1,4 @@
-﻿using BrowserLib;
+using BrowserLib;
 using ElectronicObserver.Data;
 using ElectronicObserver.Data.Battle;
 using ElectronicObserver.Observer;
@@ -253,6 +253,10 @@ namespace ElectronicObserver.Window
 				config.ForceColorProfile = c.ForceColorProfile;
 				config.SavesBrowserLog = c.SavesBrowserLog;
 				config.EnableDebugMenu = Utility.Configuration.Config.Debug.EnableDebugMenu;
+				
+				// 2026/06/10 myi 新規作成（遠隔操作用の設定コピー）
+				config.RemoteControllerPort = c.RemoteControllerPort;
+				config.RemoteControllerAddress = c.RemoteControllerAddress;
 				return config;
 			}
 		}
@@ -284,6 +288,10 @@ namespace ElectronicObserver.Window
 			c.PreserveDrawingBuffer = config.PreserveDrawingBuffer;
 			c.ForceColorProfile = config.ForceColorProfile;
 			c.SavesBrowserLog = config.SavesBrowserLog;
+			
+			// 2026/06/10 myi 新規作成（遠隔操作用の設定書き戻し）
+			c.RemoteControllerPort = config.RemoteControllerPort;
+			c.RemoteControllerAddress = config.RemoteControllerAddress;
 			//Utility.Configuration.Config.Debug.EnableDebugMenu = config.EnableDebugMenu;
 
 			// volume

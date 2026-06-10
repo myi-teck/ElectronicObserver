@@ -565,8 +565,19 @@ namespace Browser
 
 			InitializeBrowser();
 
-			// リモート操作サーバーの開始 (デフォルトポート8080)
-			_remoteController = new RemoteController(this, 8080);
+			// 2026/06/10 myi 新規作成（設定されたポート・リッスンアドレスを用いてリモート操作サーバーを開始）
+			int port = Configuration.RemoteControllerPort;
+			if (port <= 0 || port > 65535)
+			{
+				port = 8080;
+			}
+			string address = Configuration.RemoteControllerAddress;
+			if (string.IsNullOrEmpty(address))
+			{
+				address = "*";
+			}
+
+			_remoteController = new RemoteController(this, port, address);
 			_remoteController.Start();
 		}
 

@@ -1,4 +1,4 @@
-﻿using ElectronicObserver.Resource.Record;
+using ElectronicObserver.Resource.Record;
 using ElectronicObserver.Utility.Mathematics;
 using ElectronicObserver.Utility.Storage;
 using System;
@@ -1078,6 +1078,16 @@ namespace ElectronicObserver.Utility
 				/// </summary>
 				public bool SavesBrowserLog { get; set; }
 
+				/// <summary>
+				/// リモート操作サーバーのポート番号
+				/// </summary>
+				public int RemoteControllerPort { get; set; }
+
+				/// <summary>
+				/// リモート操作サーバーのリッスンIPアドレス（複数指定時はセミコロン区切り）
+				/// </summary>
+				public string RemoteControllerAddress { get; set; }
+
 				public ConfigFormBrowser()
 				{
 					ZoomRate = 1;
@@ -1103,6 +1113,10 @@ namespace ElectronicObserver.Utility
 					PreserveDrawingBuffer = true;
 					ForceColorProfile = false;
 					SavesBrowserLog = false;
+					
+					// 2026/06/10 myi 新規作成（リモート操作用ポート・リッスンアドレスの初期値設定）
+					RemoteControllerPort = 8080;
+					RemoteControllerAddress = "*";
 				}
 			}
 			/// <summary>[ブラウザ]ウィンドウ</summary>

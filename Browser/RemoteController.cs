@@ -66,6 +66,9 @@ namespace Browser
 		private FormBrowser _parent;
 		private bool _isRunning;
 		private int _port;
+		
+		// 2026/06/10 myi 新規作成（リッスン対象のIPアドレス設定値保持用）
+		private string _address;
 
 		//====================================================================================
 		// 差分WebP方式用列挙型・クラス
@@ -199,20 +202,66 @@ namespace Browser
 			return null;
 		}
 
-		public RemoteController(FormBrowser parent, int port = 8080)
+		/// <summary>
+		/// 2026/06/10 myi 新規作成（リッスンアドレスパラメータの追加）
+		/// </summary>
+		public RemoteController(FormBrowser parent, int port = 8080, string address = "*")
 		{
 			_parent = parent;
 			_port = port;
+			_address = address;
 		}
 
+		/// <summary>
+		/// 遠隔操作サーバーを開始します。設定されたポートおよびリッスンIP（複数可）でHttpListenerを起動します。
+		/// </summary>
 		public void Start()
 		{
 			if (_isRunning) return;
 
+			// エラーメッセージのnetsh案内用コマンドリスト
+			var netshCommands = new List<string>();
+
 			try
 			{
 				_listener = new HttpListener();
-				_listener.Prefixes.Add($"http://*:{_port}/");
+
+				// 2026/06/10 myi 新規作成（複数IPアドレス・IPv6対応のプレフィックス構築とバインド）
+				// アドレス設定文字列をセミコロン（;）またはカンマ（,）で分割
+				var addresses = (_address ?? "*")
+					.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries)
+					.Select(a => a.Trim())
+					.ToList();
+
+				// アドレス指定が何も無い場合はデフォルトとして「*」を追加
+				if (addresses.Count == 0)
+				{
+					addresses.Add("*");
+				}
+
+				foreach (var addr in addresses)
+				{
+					string formattedAddr = addr;
+
+					// IPアドレスかパースを試み、IPv6アドレスであれば大括弧「[...]」でエスケープ
+					if (System.Net.IPAddress.TryParse(addr, out System.Net.IPAddress ip))
+					{
+						if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+						{
+							if (!addr.StartsWith("[") && !addr.EndsWith("]"))
+							{
+								formattedAddr = $"[{addr}]";
+							}
+						}
+					}
+
+					// HttpListener に接続プレフィックスを登録
+					_listener.Prefixes.Add($"http://{formattedAddr}:{_port}/");
+					
+					// エラー発生時用の管理者コマンド案内文を生成
+					netshCommands.Add($"netsh http add urlacl url=http://{formattedAddr}:{_port}/ user=Everyone");
+				}
+
 				_listener.Start();
 				_isRunning = true;
 
@@ -221,12 +270,12 @@ namespace Browser
 			catch (Exception ex)
 			{
 				MessageBox.Show(
-					$"遠隔操作サーバー(ポート{_port})の起動に失敗しました。\r\n\r\n" +
-					"【原因】\r\nWindowsのセキュリティ制限により、外部からの接続を受け付ける権限がありません。\r\n\r\n" +
+					$"遠隔操作サーバーの起動に失敗しました。\r\n\r\n" +
+					"【原因】\r\nWindowsのセキュリティ制限により外部からの接続権限がない、または指定されたポート/IPアドレスが他のアプリで使用されています。\r\n\r\n" +
 					"【解決方法】\r\n以下のいずれかを行ってください。\r\n" +
 					"1. ElectronicObserver を「管理者として実行」する\r\n" +
 					"2. 管理者コマンドプロンプトで以下のコマンドを実行する:\r\n" +
-					$"netsh http add urlacl url=http://*:{_port}/ user=Everyone\r\n\r\n" +
+					string.Join("\r\n", netshCommands) + "\r\n\r\n" +
 					$"エラー詳細: {ex.Message}",
 					"RemoteController 起動エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
 			}
