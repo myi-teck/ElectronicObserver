@@ -37,6 +37,7 @@
 //                  2026/06/01 myi 常駐フック型フレームキャッシュ方式（プランA）対応、BoundObject廃止に伴う超高速引き抜き方式へのリファクタリング。
 //                  2026/06/01 myi 不要なレガシーJPEG配信の完全廃止、およびWebP動的画質調整機能（スライダー連動）を追加。
 //                  2026/06/02 myi C#側のGDI+差分判定を完全廃止し、ブラウザJS側のオンデマンドキャプチャおよび軽量ピクセル差分判定へ移行。
+//                  2026/06/10 myi 遠隔操作サーバー起動時のポート自動登録機能 (UAC昇格対応) の追加。
 #endregion
 // Copyright 2026 myi
 //============================================================================================
@@ -258,8 +259,15 @@ namespace Browser
 					// HttpListener に接続プレフィックスを登録
 					_listener.Prefixes.Add($"http://{formattedAddr}:{_port}/");
 					
-					// エラー発生時用の管理者コマンド案内文を生成
-					netshCommands.Add($"netsh http add urlacl url=http://{formattedAddr}:{_port}/ user=Everyone");
+					// 2026/06/10 myi 新規作成（IPv6の netsh 登録エラー50回避のための置き換え案内）
+					// netsh http add urlacl は [::] や [::1] などの IPv6 形式を直接指定すると「エラー50：この要求はサポートされていません」になるため、
+					// 代替ワイルドカードとして「+」を用いて案内します。
+					string netshAddr = formattedAddr;
+					if (addr == "::" || addr == "::1" || addr == "[::]" || addr == "[::1]")
+					{
+						netshAddr = "+";
+					}
+					netshCommands.Add($"netsh http add urlacl url=http://{netshAddr}:{_port}/ user=Everyone");
 				}
 
 				_listener.Start();
@@ -269,8 +277,69 @@ namespace Browser
 			}
 			catch (Exception ex)
 			{
+				// 2026/06/10 myi 新規作成（[::]使用時のエラー原因についての親切な案内文生成）
+				string errorNotice = "";
+				if (ex.Message.Contains("サポートされていません") && 
+				    (_address != null && (_address.Contains("::") || _address.Contains("[::]"))))
+				{
+					errorNotice = "【重要】\r\nすべてのIPv6アドレスを示す「::」や「[::]」は、Windows OSの制限により直接リッスン用のアドレスプレフィックスとして登録できません。\r\n" +
+					              "すべてのインターフェースで待ち受ける場合は、リッスンIPとして「*」を指定してください。\r\n" +
+					              "IPv6限定にしたい場合は、「::1」（ローカルホスト）や、お使いのPCの「物理IPv6アドレス」を指定してください。\r\n\r\n";
+				}
+
+				// エラーがアクセス拒否（HttpListenerException で ErrorCode が 5）であるか特定します
+				bool isAccessDenied = false;
+				if (ex is HttpListenerException hex && hex.ErrorCode == 5)
+				{
+					isAccessDenied = true;
+				}
+
+				// アクセス拒否であり、かつ netsh コマンドが設定されていれば、UAC自動昇格を提案します
+				if (isAccessDenied && netshCommands.Count > 0)
+				{
+					var result = MessageBox.Show(
+						$"遠隔操作サーバーの起動に失敗しました（外部接続の権限がありません）。\r\n\r\n" +
+						errorNotice +
+						"【解決方法】\r\n" +
+						"管理者権限で netsh コマンドを実行し、外部からの接続用ポートを自動的に登録できます。\r\n" +
+						"「はい」を選択すると、ユーザーアカウント制御（UAC）画面が表示され、自動設定を実行します。\r\n\r\n" +
+						"※自動設定を実行しますか？",
+						"RemoteController ポート自動登録",
+						MessageBoxButtons.YesNo,
+						MessageBoxIcon.Question);
+
+					if (result == DialogResult.Yes)
+					{
+						// 管理者権限での自動設定処理を呼び出します
+						if (RunNetshAsAdmin(netshCommands))
+						{
+							MessageBox.Show(
+								"ポートの登録が正常に完了しました。遠隔操作サーバーの起動を再試行します。",
+								"RemoteController 自動設定完了",
+								MessageBoxButtons.OK,
+								MessageBoxIcon.Information);
+
+							// HttpListener のインスタンスをリセットして再度起動します
+							_listener = null;
+							Start();
+							return;
+						}
+						else
+						{
+							MessageBox.Show(
+								"自動登録に失敗したか、またはユーザーによってキャンセルされました。\r\n" +
+								"手動で実行するか、ElectronicObserverを「管理者として実行」してください。",
+								"RemoteController 自動設定失敗",
+								MessageBoxButtons.OK,
+								MessageBoxIcon.Warning);
+						}
+					}
+				}
+
+				// 自動設定を行わなかった、または失敗した場合のフォールバック表示（手動コマンドの提示）
 				MessageBox.Show(
 					$"遠隔操作サーバーの起動に失敗しました。\r\n\r\n" +
+					errorNotice +
 					"【原因】\r\nWindowsのセキュリティ制限により外部からの接続権限がない、または指定されたポート/IPアドレスが他のアプリで使用されています。\r\n\r\n" +
 					"【解決方法】\r\n以下のいずれかを行ってください。\r\n" +
 					"1. ElectronicObserver を「管理者として実行」する\r\n" +
@@ -278,6 +347,57 @@ namespace Browser
 					string.Join("\r\n", netshCommands) + "\r\n\r\n" +
 					$"エラー詳細: {ex.Message}",
 					"RemoteController 起動エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : RunNetshAsAdmin
+		// 概要           : 管理者権限で netsh コマンドを実行し、HttpListener のプレフィックス
+		//                  登録を自動で行います。UAC画面を立ち上げて昇格実行します。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/06/10
+		// version        : 1.00
+		//------------------------------------------------------------------------------------
+		private bool RunNetshAsAdmin(List<string> commands)
+		{
+			try
+			{
+				foreach (var cmd in commands)
+				{
+					// "netsh " の文字列部分を切り除き、引数のみを取得します
+					if (cmd.StartsWith("netsh ", StringComparison.OrdinalIgnoreCase))
+					{
+						string args = cmd.Substring("netsh ".Length);
+
+						// 起動用情報を作成
+						var psi = new System.Diagnostics.ProcessStartInfo
+						{
+							FileName = "netsh",
+							Arguments = args,
+							Verb = "runas", // UAC画面を立ち上げて昇格実行を要求
+							UseShellExecute = true,
+							WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden
+						};
+
+						// プロセスを開始し、終了まで同期的に待機します
+						using (var process = System.Diagnostics.Process.Start(psi))
+						{
+							process?.WaitForExit();
+							// プロセスが正常に終了しなかった場合は処理を中断し、失敗を返します
+							if (process == null || process.ExitCode != 0)
+							{
+								return false;
+							}
+						}
+					}
+				}
+				return true;
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"RemoteController: netshの管理者実行に失敗しました: {ex.Message}");
+				return false;
 			}
 		}
 
