@@ -2472,6 +2472,9 @@
         const viewport = document.getElementById('viewport');
         const pad = document.getElementById('trackpad');
         const cursor = document.getElementById('virtual-cursor');
+        
+        // 2026/06/11 myi 新規作成（ゲーム画面タッチクリック用変数）
+        let lastTapTime = 0;  // ダブルタップ検出用
         const status = document.getElementById('conn-status');
         const fpsInfo = document.getElementById('fps-info');
         const dataUsage = document.getElementById('data-usage'); // 通信量表示要素の取得
@@ -2487,6 +2490,71 @@
 
         // 通信量集計用のグローバル変数 (バイト単位)
         let accumulatedBytes = 0;
+
+        //============================================================================================
+        // ゲーム画面タップ・クリックでクリック（タッチ＋マウスの両対応）
+        //============================================================================================
+        // 共通処理関数に抽出（タッチ・マウスで再利用）
+        function handleViewportClick(clientX, clientY) {
+            // 動的FPS制御：操作検出でタイムスタンプを更新（アクティブ状態に復帰）
+            const isSlowFpsMode = (Date.now() - lastOperationTime) >= ACTIVE_TIMEOUT;
+            lastOperationTime = Date.now();
+            
+            // SLEEP/IDLE状態からの即時復帰のため、直ちに画面更新をトリガー
+            if (isSlowFpsMode) {
+                clearTimeout(updateTimer);
+                updateTimer = setTimeout(updateScreen, 50);
+            }
+            // 即座に状態バッジをACTに復帰
+            const stateBadge = document.getElementById('state-badge');
+            stateBadge.textContent = 'ACT';
+            stateBadge.className = 'badge';
+            
+            // クリック位置からcanvas上の割合座標を算出
+            const rect = screen.getBoundingClientRect();
+            const x = Math.max(0, Math.min(1.0, (clientX - rect.left) / rect.width));
+            const y = Math.max(0, Math.min(1.0, (clientY - rect.top) / rect.height));
+            
+            // サーバーにクリックを送信
+            fetch(`/control?action=touch_click&x=${x}&y=${y}`);
+            
+            // リップルエフェクト表示
+            createViewportRipple(clientX, clientY);
+        }
+
+        // タッチデバイス対応
+        viewport.addEventListener('touchstart', (e) => {
+            const touch = e.touches[0];
+            handleViewportClick(touch.clientX, touch.clientY);
+        }, { passive: true });
+
+        // マウス対応（左クリックのみ）
+        viewport.addEventListener('mousedown', (e) => {
+            if (e.button === 0) { // 左ボタン
+                e.preventDefault();
+                handleViewportClick(e.clientX, e.clientY);
+            }
+        });
+
+        // ゲーム画面用リップルエフェクト生成関数
+        function createViewportRipple(clientX, clientY) {
+            const ripple = document.createElement('div');
+            ripple.style.position = 'absolute';
+            ripple.style.left = (clientX - viewport.getBoundingClientRect().left - 20) + 'px';
+            ripple.style.top = (clientY - viewport.getBoundingClientRect().top - 20) + 'px';
+            ripple.style.width = '40px';
+            ripple.style.height = '40px';
+            ripple.style.background = 'rgba(0, 255, 102, 0.3)';
+            ripple.style.border = '2px solid var(--accent-color)';
+            ripple.style.borderRadius = '50%';
+            ripple.style.transform = 'scale(0)';
+            ripple.style.animation = 'ripple-animation 0.4s cubic-bezier(0.1, 0.8, 0.3, 1)';
+            ripple.style.pointerEvents = 'none';
+            ripple.style.boxShadow = '0 0 10px var(--accent-glow)';
+            ripple.style.zIndex = '20';
+            viewport.appendChild(ripple);
+            setTimeout(() => ripple.remove(), 400);
+        }
 
         //============================================================================================
         // 艦隊詳細HUDの現在表示中艦隊ID（ダブルタップで1→2→3→4→1とサイクル切り替え）

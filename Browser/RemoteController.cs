@@ -38,6 +38,7 @@
 //                  2026/06/01 myi 不要なレガシーJPEG配信の完全廃止、およびWebP動的画質調整機能（スライダー連動）を追加。
 //                  2026/06/02 myi C#側のGDI+差分判定を完全廃止し、ブラウザJS側のオンデマンドキャプチャおよび軽量ピクセル差分判定へ移行。
 //                  2026/06/10 myi 遠隔操作サーバー起動時のポート自動登録機能 (UAC昇格対応) の追加。
+//                  2026/06/11 myi ゲーム画面（viewport）をタップした位置の絶対座標を直接クリックする機能（touch_clickアクション）を追加。
 #endregion
 // Copyright 2026 myi
 //============================================================================================
@@ -494,6 +495,14 @@ namespace Browser
 			}
 			else if (action == "click")
 				{
+					TriggerMouseClick();
+				}
+			// 2026/06/11 myi 新規作成（ゲーム画面タッチクリック）
+			// ゲーム画面（viewport）をタップした位置の絶対座標を直接クリックする
+			else if (action == "touch_click" && double.TryParse(xStr, out double tx) && double.TryParse(yStr, out double ty))
+				{
+					_cursorX = Math.Max(0, Math.Min(1.0, tx));
+					_cursorY = Math.Max(0, Math.Min(1.0, ty));
 					TriggerMouseClick();
 				}
 				#region "追加アクション処理"
