@@ -34,6 +34,9 @@ namespace ElectronicObserver.Window.Dialog
 		private TextBox textBoxCustomAddress;
 		private Button buttonAdd;
 		private Button buttonDelete;
+		// 2026/07/14 bAs)shirakawa 追加（パスワード設定用コントロール）
+		private Label labelPassword;
+		private TextBox textBoxPassword;
 		private Label labelNote;
 		private Button buttonOK;
 		private Button buttonCancel;
@@ -52,17 +55,23 @@ namespace ElectronicObserver.Window.Dialog
 		public string ResultAddress { get; private set; }
 
 		/// <summary>
+		/// 2026/07/14 bAs)shirakawa 追加（ダイアログで確定されたパスワード）
+		/// </summary>
+		public string ResultPassword { get; private set; }
+
+		/// <summary>
 		/// 遠隔操作設定ダイアログを初期化します。
 		/// </summary>
 		/// <param name="currentPort">現在の設定値（ポート番号）</param>
 		/// <param name="currentAddress">現在の設定値（セミコロン区切りアドレス一覧）</param>
-		public DialogConfigurationRemote(int currentPort, string currentAddress)
+		/// <param name="currentPassword">2026/07/14 bAs)shirakawa 追加（現在の設定値（パスワード））</param>
+		public DialogConfigurationRemote(int currentPort, string currentAddress, string currentPassword)
 		{
 			// UIコントロールの構築およびレイアウト設定
 			InitializeControls();
 
 			// データのロード処理
-			LoadSettings(currentPort, currentAddress);
+			LoadSettings(currentPort, currentAddress, currentPassword);
 		}
 
 		/// <summary>
@@ -71,7 +80,7 @@ namespace ElectronicObserver.Window.Dialog
 		private void InitializeControls()
 		{
 			this.Text = "遠隔操作サーバー詳細設定";
-			this.ClientSize = new System.Drawing.Size(384, 321);
+			this.ClientSize = new System.Drawing.Size(384, 360);
 			this.FormBorderStyle = FormBorderStyle.FixedDialog;
 			this.MaximizeBox = false;
 			this.MinimizeBox = false;
@@ -96,18 +105,34 @@ namespace ElectronicObserver.Window.Dialog
 				TextAlign = HorizontalAlignment.Right
 			};
 
+			// 2026/07/14 bAs)shirakawa 追加（パスワード設定ラベル）
+			labelPassword = new Label
+			{
+				Text = "パスワード :",
+				Location = new System.Drawing.Point(12, 48),
+				Size = new System.Drawing.Size(130, 15)
+			};
+
+			// 2026/07/14 bAs)shirakawa 追加（パスワード設定TextBox）
+			textBoxPassword = new TextBox
+			{
+				Location = new System.Drawing.Point(150, 45),
+				Size = new System.Drawing.Size(180, 23),
+				UseSystemPasswordChar = true
+			};
+
 			// リッスンIPリスト用ラベル
 			labelAddresses = new Label
 			{
 				Text = "リッスンIPアドレス一覧（複数選択可） :",
-				Location = new System.Drawing.Point(12, 48),
+				Location = new System.Drawing.Point(12, 78),
 				Size = new System.Drawing.Size(300, 15)
 			};
 
 			// リッスンIP用CheckedListBox
 			checkedListBoxAddresses = new CheckedListBox
 			{
-				Location = new System.Drawing.Point(12, 70),
+				Location = new System.Drawing.Point(12, 100),
 				Size = new System.Drawing.Size(360, 120),
 				CheckOnClick = true
 			};
@@ -115,7 +140,7 @@ namespace ElectronicObserver.Window.Dialog
 			// カスタムIP入力用TextBox
 			textBoxCustomAddress = new TextBox
 			{
-				Location = new System.Drawing.Point(12, 202),
+				Location = new System.Drawing.Point(12, 232),
 				Size = new System.Drawing.Size(180, 23)
 			};
 
@@ -123,7 +148,7 @@ namespace ElectronicObserver.Window.Dialog
 			buttonAdd = new Button
 			{
 				Text = "追加",
-				Location = new System.Drawing.Point(200, 201),
+				Location = new System.Drawing.Point(200, 231),
 				Size = new System.Drawing.Size(80, 25),
 				UseVisualStyleBackColor = true
 			};
@@ -133,7 +158,7 @@ namespace ElectronicObserver.Window.Dialog
 			buttonDelete = new Button
 			{
 				Text = "削除",
-				Location = new System.Drawing.Point(285, 201),
+				Location = new System.Drawing.Point(285, 231),
 				Size = new System.Drawing.Size(87, 25),
 				UseVisualStyleBackColor = true
 			};
@@ -143,7 +168,7 @@ namespace ElectronicObserver.Window.Dialog
 			labelNote = new Label
 			{
 				Text = "* 変更を適用するには本ツール（本体）を再起動してください。",
-				Location = new System.Drawing.Point(12, 240),
+				Location = new System.Drawing.Point(12, 270),
 				Size = new System.Drawing.Size(360, 30),
 				ForeColor = System.Drawing.Color.Red
 			};
@@ -152,7 +177,7 @@ namespace ElectronicObserver.Window.Dialog
 			buttonOK = new Button
 			{
 				Text = "OK",
-				Location = new System.Drawing.Point(210, 280),
+				Location = new System.Drawing.Point(210, 310),
 				Size = new System.Drawing.Size(80, 25),
 				UseVisualStyleBackColor = true
 			};
@@ -162,7 +187,7 @@ namespace ElectronicObserver.Window.Dialog
 			buttonCancel = new Button
 			{
 				Text = "キャンセル",
-				Location = new System.Drawing.Point(295, 280),
+				Location = new System.Drawing.Point(295, 310),
 				Size = new System.Drawing.Size(80, 25),
 				UseVisualStyleBackColor = true
 			};
@@ -171,6 +196,8 @@ namespace ElectronicObserver.Window.Dialog
 			// フォームに各コントロールを追加
 			this.Controls.Add(labelPort);
 			this.Controls.Add(numericUpDownPort);
+			this.Controls.Add(labelPassword);
+			this.Controls.Add(textBoxPassword);
 			this.Controls.Add(labelAddresses);
 			this.Controls.Add(checkedListBoxAddresses);
 			this.Controls.Add(textBoxCustomAddress);
@@ -188,9 +215,15 @@ namespace ElectronicObserver.Window.Dialog
 		/// <summary>
 		/// 現在の設定情報をコントロールに適用します。
 		/// </summary>
-		private void LoadSettings(int port, string addressString)
+		/// <param name="port">ポート番号</param>
+		/// <param name="addressString">セミコロン区切りアドレス一覧</param>
+		/// <param name="password">2026/07/14 bAs)shirakawa 追加（パスワード）</param>
+		private void LoadSettings(int port, string addressString, string password)
 		{
 			numericUpDownPort.Value = Math.Max(1, Math.Min(65535, port));
+
+			// 2026/07/14 bAs)shirakawa 追加（パスワードの読み込み）
+			textBoxPassword.Text = password ?? "";
 
 			// 設定されているリッスンアドレスを切り分け
 			var configuredAddresses = (addressString ?? "")
@@ -271,6 +304,9 @@ namespace ElectronicObserver.Window.Dialog
 
 			ResultPort = (int)numericUpDownPort.Value;
 			ResultAddress = string.Join(";", checkedItems);
+
+			// 2026/07/14 bAs)shirakawa 追加（パスワードの確定）
+			ResultPassword = textBoxPassword.Text ?? "";
 
 			this.DialogResult = DialogResult.OK;
 			this.Close();

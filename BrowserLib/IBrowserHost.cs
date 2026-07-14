@@ -237,5 +237,11 @@ namespace BrowserLib
 		/// </summary>
 		[DataMember]
 		public string RemoteControllerAddress { get; set; }
+
+		/// <summary>
+		/// リモート操作サーバーのログインパスワード（空=認証なし）
+		/// </summary>
+		[DataMember]
+		public string RemoteControllerPassword { get; set; }
 	}
 }

@@ -1088,6 +1088,11 @@ namespace ElectronicObserver.Utility
 				/// </summary>
 				public string RemoteControllerAddress { get; set; }
 
+				/// <summary>
+				/// リモート操作サーバーのログインパスワード（空=認証なし）
+				/// </summary>
+				public string RemoteControllerPassword { get; set; }
+
 				public ConfigFormBrowser()
 				{
 					ZoomRate = 1;
@@ -1117,6 +1122,8 @@ namespace ElectronicObserver.Utility
 					// 2026/06/10 myi 新規作成（リモート操作用ポート・リッスンアドレスの初期値設定）
 					RemoteControllerPort = 8080;
 					RemoteControllerAddress = "*";
+					// 2026/07/14 bAs)shirakawa 新規作成（リモート操作用パスワードの初期値設定）
+					RemoteControllerPassword = "";
 				}
 			}
 			/// <summary>[ブラウザ]ウィンドウ</summary>

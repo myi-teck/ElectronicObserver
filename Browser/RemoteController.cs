@@ -72,6 +72,9 @@ namespace Browser
 		// 2026/06/10 myi 新規作成（リッスン対象のIPアドレス設定値保持用）
 		private string _address;
 
+		// 2026/07/14 bAs)shirakawa 新規作成（リモート操作サーバーのログインパスワード保持用）
+		private string _password;
+
 		//====================================================================================
 		// 差分WebP方式用列挙型・クラス
 		//------------------------------------------------------------------------------------
@@ -206,12 +209,14 @@ namespace Browser
 
 		/// <summary>
 		/// 2026/06/10 myi 新規作成（リッスンアドレスパラメータの追加）
+		/// 2026/07/14 bAs)shirakawa 変更（パスワードパラメータの追加）
 		/// </summary>
-		public RemoteController(FormBrowser parent, int port = 8080, string address = "*")
+		public RemoteController(FormBrowser parent, int port = 8080, string address = "*", string password = "")
 		{
 			_parent = parent;
 			_port = port;
 			_address = address;
+			_password = password;
 		}
 
 		/// <summary>
@@ -428,29 +433,53 @@ namespace Browser
 			{
 				string path = req.Url.AbsolutePath.ToLower();
 
-				// シンプルなルーティング
-				if (path == "/" || path == "/index.html")
+				// 2026/07/14 bAs)shirakawa 新規作成（ログインエンドポイント）
+				if (path == "/login")
 				{
-					SendHtml(res);
-				}
-				else if (path == "/screen.webp")
-				{
-					// 差分WebP方式による画面配信（静的画面は204 No Content）
-					await SendScreenDiffWebPAsync(req, res);
-				}
-				else if (path == "/control")
-				{
-					HandleControl(req, res);
-				}
-				else if (path == "/hud")
-				{
-					// モバイル端末からのHUD情報要求に対し、実際のゲーム内ステータスをJSONで返します
-					SendHudData(req, res);
+					// ログインはPOST専用
+					if (req.HttpMethod == "POST")
+					{
+						HandleLogin(req, res);
+					}
+					else
+					{
+						res.StatusCode = 405;
+						res.Close();
+					}
 				}
 				else
 				{
-					res.StatusCode = 404;
-					res.Close();
+					// 2026/07/14 bAs)shirakawa 新規作成（認証ガード）
+					if (!IsAuthenticated(req))
+					{
+						SendHtml(res);
+						return;
+					}
+
+					// シンプルなルーティング
+					if (path == "/" || path == "/index.html")
+					{
+						SendHtml(res);
+					}
+					else if (path == "/screen.webp")
+					{
+						// 差分WebP方式による画面配信（静的画面は204 No Content）
+						await SendScreenDiffWebPAsync(req, res);
+					}
+					else if (path == "/control")
+					{
+						HandleControl(req, res);
+					}
+					else if (path == "/hud")
+					{
+						// モバイル端末からのHUD情報要求に対し、実際のゲーム内ステータスをJSONで返します
+						SendHudData(req, res);
+					}
+					else
+					{
+						res.StatusCode = 404;
+						res.Close();
+					}
 				}
 			}
 			catch (Exception ex)
@@ -458,6 +487,94 @@ namespace Browser
 				Console.WriteLine($"RemoteController: リクエスト処理エラー: {ex.Message}");
 				try { res.StatusCode = 500; res.Close(); } catch { }
 			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : IsAuthenticated
+		// 概要           : リクエストの認証状態を検証します。
+		//                  パスワードが空の場合は認証なし（常にtrue）を返します。
+		//                  pw クエリパラメータまたは Authorization ヘッダでパスワードを検証します。
+		//------------------------------------------------------------------------------------
+		// author         : bAs)shirakawa
+		// creation date  : 2026/07/14
+		// version        : 1.00
+		//------------------------------------------------------------------------------------
+		private bool IsAuthenticated(HttpListenerRequest req)
+		{
+			// パスワードが設定されていない場合は認証なし（常に通過）
+			if (string.IsNullOrEmpty(_password))
+				return true;
+
+			// pw クエリパラメータをチェック
+			string pw = req.QueryString["pw"];
+			if (pw == _password)
+				return true;
+
+			// Authorization ヘッダ（Basic）もチェック
+			string auth = req.Headers["Authorization"];
+			if (auth != null && auth.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
+			{
+				try
+				{
+					var bytes = Convert.FromBase64String(auth.Substring(6));
+					var decoded = Encoding.UTF8.GetString(bytes);
+					var parts = decoded.Split(':');
+					if (parts.Length == 2 && parts[1] == _password)
+						return true;
+				}
+				catch { /* 無効なBasic認証はスルー */ }
+			}
+
+			return false;
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : HandleLogin
+		// 概要           : /login エンドポイントを処理します。
+		//                  POST メソッドのみで、pw クエリパラメータでパスワードを受信します。
+		//------------------------------------------------------------------------------------
+		// author         : bAs)shirakawa
+		// creation date  : 2026/07/14
+		// version        : 1.00
+		//------------------------------------------------------------------------------------
+		private void HandleLogin(HttpListenerRequest req, HttpListenerResponse res)
+		{
+			// 認証無効（パスワード空）の場合はエラー
+			if (string.IsNullOrEmpty(_password))
+			{
+				SendJsonResponse(res, "{\"success\": false, \"error\": \"認証は有効ではありません\"}");
+				return;
+			}
+
+			string pw = req.QueryString["pw"];
+
+			// パスワード検証
+			if (pw == _password)
+			{
+				SendJsonResponse(res, "{\"success\": true}");
+			}
+			else
+			{
+				SendJsonResponse(res, "{\"success\": false, \"error\": \"パスワードが間違っています\"}");
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : SendJsonResponse
+		// 概要           : JSON レスポンスを簡単に送信するヘルパーです。
+		//------------------------------------------------------------------------------------
+		// author         : bAs)shirakawa
+		// creation date  : 2026/07/14
+		// version        : 1.00
+		//------------------------------------------------------------------------------------
+		private void SendJsonResponse(HttpListenerResponse res, string json)
+		{
+			byte[] buffer = Encoding.UTF8.GetBytes(json);
+			res.StatusCode = 200;
+			res.ContentType = "application/json; charset=utf-8";
+			res.ContentLength64 = buffer.Length;
+			res.OutputStream.Write(buffer, 0, buffer.Length);
+			res.Close();
 		}
 
 		/// <summary>
