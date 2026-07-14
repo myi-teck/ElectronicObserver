@@ -528,11 +528,22 @@ namespace Browser
 					var kancolleFrame = _parent.GetKanColleFrame();
 					kancolleFrame?.ExecuteJavaScriptAsync($"if(window._kancolleCaptureEngine) window._kancolleCaptureEngine.webpQuality = {qualityScale};");
 				}
-				#endregion
-	
-				res.StatusCode = 200;
-				res.Close();
-			}
+					#endregion
+					// 2026/07/14 myi 新規作成（ドラッグ操作対応）
+					// マウスダウン（ドラッグ開始）
+					else if (action == "mousedown")
+					{
+						TriggerMouseDown();
+					}
+					// マウスアップ（ドラッグ終了）
+					else if (action == "mouseup")
+					{
+						TriggerMouseUp();
+					}
+		
+					res.StatusCode = 200;
+					res.Close();
+				}
 
 		//====================================================================================
 		// 処理ブロック名 : GetBrowserCoords
@@ -626,6 +637,48 @@ namespace Browser
 			
 			// 2. マウスアップイベント (左ボタン) の送信
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, true, 1);
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : TriggerMouseDown
+		// 概要           : ドラッグ開始時、現在のカーソル位置で左ボタンダウンを送信
+		//                  CefEventFlags.None を使用（公式推奨パターン）
+		//------------------------------------------------------------------------------------
+		private void TriggerMouseDown()
+		{
+			if (_parent.Browser == null) return;
+
+			var browser = _parent.Browser.GetBrowser();
+			var host = browser?.GetHost();
+			if (host == null) return;
+
+			var coords = GetBrowserCoords();
+			// CefEventFlags.None を使用（公式推奨）
+			// isUp=false でダウンイベントを指定
+			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
+			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, false, 1);
+			Console.WriteLine($"RemoteController: TriggerMouseDown @ {coords.X},{coords.Y}");
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : TriggerMouseUp
+		// 概要           : ドラッグ終了時、現在のカーソル位置で左ボタンアップを送信
+		//                  CefEventFlags.None を使用（公式推奨パターン）
+		//------------------------------------------------------------------------------------
+		private void TriggerMouseUp()
+		{
+			if (_parent.Browser == null) return;
+
+			var browser = _parent.Browser.GetBrowser();
+			var host = browser?.GetHost();
+			if (host == null) return;
+
+			var coords = GetBrowserCoords();
+			// CefEventFlags.None を使用（公式推奨）
+			// isUp=true でアップイベントを指定
+			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
+			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, true, 1);
+			Console.WriteLine($"RemoteController: TriggerMouseUp @ {coords.X},{coords.Y}");
 		}
 
 		/// <summary>

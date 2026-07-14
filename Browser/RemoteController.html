@@ -88,6 +88,7 @@
             align-items: center;
             overflow: hidden;
             border-bottom: 2px solid var(--accent-color); /* ゲーム画面との明確な境界仕切り線 */
+            touch-action: none; /* ブラウザのデフォルトタッチ挙動を防止（ドラッグ操作対応） */
         }
 
         #game-screen {
@@ -2265,6 +2266,27 @@
                     <button class='settings-btn' data-zoom='5.0'>5x</button>
                 </div>
             </div>
+            <!-- ドラッグ距離閾値設定 -->
+            <div class='setting-group'>
+                <label>ドラッグ距離</label>
+                <div class='btn-group' id='drag-distance-group'>
+                    <button class='settings-btn' data-drag-distance='5'>5px</button>
+                    <button class='settings-btn active' data-drag-distance='10'>10px</button>
+                    <button class='settings-btn' data-drag-distance='15'>15px</button>
+                    <button class='settings-btn' data-drag-distance='20'>20px</button>
+                    <button class='settings-btn' data-drag-distance='30'>30px</button>
+                </div>
+            </div>
+            <!-- タップ時間閾値設定 -->
+            <div class='setting-group'>
+                <label>タップ時間</label>
+                <div class='btn-group' id='tap-timeout-group'>
+                    <button class='settings-btn' data-tap-timeout='150'>150ms</button>
+                    <button class='settings-btn' data-tap-timeout='200'>200ms</button>
+                    <button class='settings-btn active' data-tap-timeout='300'>300ms</button>
+                    <button class='settings-btn' data-tap-timeout='500'>500ms</button>
+                </div>
+            </div>
 
             <!-- ブラウザ操作設定 -->
             <div class='setting-group'>
@@ -2492,49 +2514,145 @@
         let accumulatedBytes = 0;
 
         //============================================================================================
-        // ゲーム画面タップ・クリックでクリック（タッチ＋マウスの両対応）
+        // ゲーム画面タッチ/マウス操作（2026/07/14 myi 大幅改修）
+        // タップ: touch_click / ドラッグ: mousedown→move→mouseup
         //============================================================================================
-        // 共通処理関数に抽出（タッチ・マウスで再利用）
-        function handleViewportClick(clientX, clientY) {
-            // 動的FPS制御：操作検出でタイムスタンプを更新（アクティブ状態に復帰）
+        // 状態変数
+        let viewportTouchStartX = 0;
+        let viewportTouchStartY = 0;
+        let viewportTouchStartTime = 0;
+        let isDraggingOnViewport = false;
+        let isMouseDownOnViewport = false;
+
+        // 動的FPS制御・状態バッジ更新の共通処理
+        function activateViewportFpsControl() {
             const isSlowFpsMode = (Date.now() - lastOperationTime) >= ACTIVE_TIMEOUT;
             lastOperationTime = Date.now();
-            
-            // SLEEP/IDLE状態からの即時復帰のため、直ちに画面更新をトリガー
             if (isSlowFpsMode) {
                 clearTimeout(updateTimer);
                 updateTimer = setTimeout(updateScreen, 50);
             }
-            // 即座に状態バッジをACTに復帰
             const stateBadge = document.getElementById('state-badge');
             stateBadge.textContent = 'ACT';
             stateBadge.className = 'badge';
-            
-            // クリック位置からcanvas上の割合座標を算出
+        }
+
+        // タッチ/マウス位置をカーソル座標に変換して移動
+        function handleViewportMove(clientX, clientY) {
             const rect = screen.getBoundingClientRect();
             const x = Math.max(0, Math.min(1.0, (clientX - rect.left) / rect.width));
             const y = Math.max(0, Math.min(1.0, (clientY - rect.top) / rect.height));
-            
-            // サーバーにクリックを送信
-            fetch(`/control?action=touch_click&x=${x}&y=${y}`);
-            
-            // リップルエフェクト表示
-            createViewportRipple(clientX, clientY);
+            vCursorX = x;
+            vCursorY = y;
+            updateCursorDisplay();
+            fetch(`/control?action=move&x=${x}&y=${y}`);
         }
 
-        // タッチデバイス対応
+        // ── touchstart ──
         viewport.addEventListener('touchstart', (e) => {
             const touch = e.touches[0];
-            handleViewportClick(touch.clientX, touch.clientY);
+            viewportTouchStartX = touch.clientX;
+            viewportTouchStartY = touch.clientY;
+            viewportTouchStartTime = Date.now();
+            isDraggingOnViewport = false;
+
+            // 動的FPS制御：操作検出
+            activateViewportFpsControl();
+
+            // タッチ開始位置にカーソルを即時移動
+            handleViewportMove(touch.clientX, touch.clientY);
         }, { passive: true });
 
-        // マウス対応（左クリックのみ）
+        // ── touchmove ──
+        viewport.addEventListener('touchmove', (e) => {
+            const touch = e.touches[0];
+            const dx = touch.clientX - viewportTouchStartX;
+            const dy = touch.clientY - viewportTouchStartY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            // 閾値を超えたらドラッグ判定
+            if (dist > dragThreshold && !isDraggingOnViewport) {
+                isDraggingOnViewport = true;
+                // ドラッグ開始：カーソル位置にマウスダウン
+                fetch('/control?action=mousedown');
+            }
+
+            // カーソルをタッチ位置に追従（絶対座標）
+            handleViewportMove(touch.clientX, touch.clientY);
+        }, { passive: true });
+
+        // ── touchend ──
+        viewport.addEventListener('touchend', (e) => {
+            const elapsed = Date.now() - viewportTouchStartTime;
+
+            if (isDraggingOnViewport) {
+                // ドラッグ中だった場合：マウスアップ
+                fetch('/control?action=mouseup');
+            } else if (elapsed <= tapTimeout) {
+                // 短時間だった場合：タップ（既存のtouch_click）
+                const rect = screen.getBoundingClientRect();
+                const x = Math.max(0, Math.min(1.0, (viewportTouchStartX - rect.left) / rect.width));
+                const y = Math.max(0, Math.min(1.0, (viewportTouchStartY - rect.top) / rect.height));
+                fetch(`/control?action=touch_click&x=${x}&y=${y}`);
+            }
+
+            // リップルエフェクト（タップ時のみ）
+            if (!isDraggingOnViewport) {
+                createViewportRipple(viewportTouchStartX, viewportTouchStartY);
+            }
+
+            isDraggingOnViewport = false;
+        }, { passive: true });
+
+        // ── mousedown（PCマウス） ──
         viewport.addEventListener('mousedown', (e) => {
-            if (e.button === 0) { // 左ボタン
-                e.preventDefault();
-                handleViewportClick(e.clientX, e.clientY);
+            if (e.button !== 0) return; // 左ボタンのみ
+            e.preventDefault();
+
+            isMouseDownOnViewport = true;
+            viewportTouchStartX = e.clientX;
+            viewportTouchStartY = e.clientY;
+            viewportTouchStartTime = Date.now();
+
+            // マウスダウン（ドラッグ開始の準備）
+            fetch('/control?action=mousedown');
+
+            // 動的FPS制御
+            activateViewportFpsControl();
+
+            // カーソル位置に即時移動
+            handleViewportMove(e.clientX, e.clientY);
+        });
+
+        // ── mousemove（PCマウス） ──
+        viewport.addEventListener('mousemove', (e) => {
+            if (!isMouseDownOnViewport) return;
+            handleViewportMove(e.clientX, e.clientY);
+        });
+
+        // ── mouseup（PCマウス） ──
+        viewport.addEventListener('mouseup', (e) => {
+            if (!isMouseDownOnViewport) return;
+            isMouseDownOnViewport = false;
+
+            // マウスアップ
+            fetch('/control?action=mouseup');
+
+            // タップ判定（短時間・短距離）
+            const elapsed = Date.now() - viewportTouchStartTime;
+            const dx = e.clientX - viewportTouchStartX;
+            const dy = e.clientY - viewportTouchStartY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (elapsed <= tapTimeout && dist <= dragThreshold) {
+                createViewportRipple(viewportTouchStartX, viewportTouchStartY);
             }
         });
+
+        // 既存の handleViewportClick は削除（setupViewportTouch に統合）
+        // 後方互換性のため残してはいけないので、このコメントは削除する
+
+        // ゲーム画面用リップルエフェクト生成関数
 
         // ゲーム画面用リップルエフェクト生成関数
         function createViewportRipple(clientX, clientY) {
@@ -2793,13 +2911,15 @@
             const buttons = group.querySelectorAll('.settings-btn');
             
             buttons.forEach(btn => {
-                // 各ボタンの属性（data-fps, data-quality, data-auto-fps, data-sensitivity, data-zoom, data-filter）から数値を取得します
+                // 各ボタンの属性（data-fps, data-quality, data-auto-fps, data-sensitivity, data-zoom, data-filter, data-drag-distance, data-tap-timeout）から数値を取得します
                 const fpsAttr = btn.getAttribute('data-fps');
                 const qualAttr = btn.getAttribute('data-quality');
                 const autoAttr = btn.getAttribute('data-auto-fps');
                 const sensAttr = btn.getAttribute('data-sensitivity');
                 const zoomAttr = btn.getAttribute('data-zoom');
                 const filterAttr = btn.getAttribute('data-filter');
+                const dragDistAttr = btn.getAttribute('data-drag-distance');
+                const tapTimeoutAttr = btn.getAttribute('data-tap-timeout');
                 
                 let btnValue;
                 if (fpsAttr !== null) {
@@ -2814,6 +2934,10 @@
                     btnValue = parseFloat(zoomAttr);
                 } else if (filterAttr !== null) {
                     btnValue = parseInt(filterAttr, 10);
+                } else if (dragDistAttr !== null) {
+                    btnValue = parseInt(dragDistAttr, 10);
+                } else if (tapTimeoutAttr !== null) {
+                    btnValue = parseInt(tapTimeoutAttr, 10);
                 }
                 
                 // localStorageから読み込んだ現在値と一致するボタンに active クラスを適用し、それ以外は削除
@@ -2882,6 +3006,26 @@
             localStorage.setItem('targetZoom', value.toString()); // 設定値をlocalStorageへ保存
             // 拡大率変更時に即座にタクティカルスコープを再描画
             drawMagnifier();
+        });
+
+        //================================================================================
+        // ドラッグ判定閾値（2026/07/14 myi 新規作成）
+        //================================================================================
+        // ドラッグ距離閾値（localStorageから取得、なければデフォルト10px）
+        let dragThreshold = parseInt(localStorage.getItem('dragThreshold'), 10) || 10;
+        // タップ時間閾値（localStorageから取得、なければデフォルト300ms）
+        let tapTimeout = parseInt(localStorage.getItem('tapTimeout'), 10) || 300;
+
+        // ドラッグ距離設定変更の監視および保存
+        initSettingsButtons('drag-distance-group', dragThreshold, value => {
+            dragThreshold = value;
+            localStorage.setItem('dragThreshold', value.toString());
+        });
+
+        // タップ時間設定変更の監視および保存
+        initSettingsButtons('tap-timeout-group', tapTimeout, value => {
+            tapTimeout = value;
+            localStorage.setItem('tapTimeout', value.toString());
         });
 
         //================================================================================
