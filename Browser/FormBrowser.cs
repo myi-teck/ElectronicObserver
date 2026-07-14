@@ -566,7 +566,7 @@ namespace Browser
 			InitializeBrowser();
 
 			// 2026/06/10 myi 新規作成（設定されたポート・リッスンアドレスを用いてリモート操作サーバーを開始）
-			// 2026/07/14 bAs)shirakawa 変更（パスワードパラメータの追加）
+			// 2026/07/14 myi 変更（パスワードパラメータの追加）
 			int port = Configuration.RemoteControllerPort;
 			if (port <= 0 || port > 65535)
 			{

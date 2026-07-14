@@ -1122,7 +1122,7 @@ namespace ElectronicObserver.Utility
 					// 2026/06/10 myi 新規作成（リモート操作用ポート・リッスンアドレスの初期値設定）
 					RemoteControllerPort = 8080;
 					RemoteControllerAddress = "*";
-					// 2026/07/14 bAs)shirakawa 新規作成（リモート操作用パスワードの初期値設定）
+					// 2026/07/14 myi 新規作成（リモート操作用パスワードの初期値設定）
 					RemoteControllerPassword = "";
 				}
 			}

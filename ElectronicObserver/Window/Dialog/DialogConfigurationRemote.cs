@@ -34,7 +34,7 @@ namespace ElectronicObserver.Window.Dialog
 		private TextBox textBoxCustomAddress;
 		private Button buttonAdd;
 		private Button buttonDelete;
-		// 2026/07/14 bAs)shirakawa 追加（パスワード設定用コントロール）
+		// 2026/07/14 myi 追加（パスワード設定用コントロール）
 		private Label labelPassword;
 		private TextBox textBoxPassword;
 		private Label labelNote;
@@ -55,7 +55,7 @@ namespace ElectronicObserver.Window.Dialog
 		public string ResultAddress { get; private set; }
 
 		/// <summary>
-		/// 2026/07/14 bAs)shirakawa 追加（ダイアログで確定されたパスワード）
+		/// 2026/07/14 myi 追加（ダイアログで確定されたパスワード）
 		/// </summary>
 		public string ResultPassword { get; private set; }
 
@@ -64,7 +64,7 @@ namespace ElectronicObserver.Window.Dialog
 		/// </summary>
 		/// <param name="currentPort">現在の設定値（ポート番号）</param>
 		/// <param name="currentAddress">現在の設定値（セミコロン区切りアドレス一覧）</param>
-		/// <param name="currentPassword">2026/07/14 bAs)shirakawa 追加（現在の設定値（パスワード））</param>
+		/// <param name="currentPassword">2026/07/14 myi 追加（現在の設定値（パスワード））</param>
 		public DialogConfigurationRemote(int currentPort, string currentAddress, string currentPassword)
 		{
 			// UIコントロールの構築およびレイアウト設定
@@ -105,7 +105,7 @@ namespace ElectronicObserver.Window.Dialog
 				TextAlign = HorizontalAlignment.Right
 			};
 
-			// 2026/07/14 bAs)shirakawa 追加（パスワード設定ラベル）
+			// 2026/07/14 myi 追加（パスワード設定ラベル）
 			labelPassword = new Label
 			{
 				Text = "パスワード :",
@@ -113,7 +113,7 @@ namespace ElectronicObserver.Window.Dialog
 				Size = new System.Drawing.Size(130, 15)
 			};
 
-			// 2026/07/14 bAs)shirakawa 追加（パスワード設定TextBox）
+			// 2026/07/14 myi 追加（パスワード設定TextBox）
 			textBoxPassword = new TextBox
 			{
 				Location = new System.Drawing.Point(150, 45),
@@ -217,12 +217,12 @@ namespace ElectronicObserver.Window.Dialog
 		/// </summary>
 		/// <param name="port">ポート番号</param>
 		/// <param name="addressString">セミコロン区切りアドレス一覧</param>
-		/// <param name="password">2026/07/14 bAs)shirakawa 追加（パスワード）</param>
+		/// <param name="password">2026/07/14 myi 追加（パスワード）</param>
 		private void LoadSettings(int port, string addressString, string password)
 		{
 			numericUpDownPort.Value = Math.Max(1, Math.Min(65535, port));
 
-			// 2026/07/14 bAs)shirakawa 追加（パスワードの読み込み）
+			// 2026/07/14 myi 追加（パスワードの読み込み）
 			textBoxPassword.Text = password ?? "";
 
 			// 設定されているリッスンアドレスを切り分け
@@ -305,7 +305,7 @@ namespace ElectronicObserver.Window.Dialog
 			ResultPort = (int)numericUpDownPort.Value;
 			ResultAddress = string.Join(";", checkedItems);
 
-			// 2026/07/14 bAs)shirakawa 追加（パスワードの確定）
+			// 2026/07/14 myi 追加（パスワードの確定）
 			ResultPassword = textBoxPassword.Text ?? "";
 
 			this.DialogResult = DialogResult.OK;

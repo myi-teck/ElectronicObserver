@@ -19,13 +19,13 @@
 //                  2026/05/25 myi 仮想マウスポインタとゲーム画面のアスペクト比自動補正ロジック(GetBrowserCoords)の復活・統合。
 //                  2026/05/26 myi レスポンスヘッダに charset=utf-8 を追加し、ブラウザでの日本語文字化け（?表示）を修正。
 //                  2026/05/26 myi 艦隊タブ機能（一括ストック方式）対応として、デモデータにships配列・docks配列を追加拡張。
-//                  2026/05/26 bAs)shirakawa デモ用HUDデータ(SendHudData)に受領中任務の検証用ダミーデータ(quests)を追加。
-//                  2026/05/26 bAs)shirakawa デモ用任務データ(SendHudData)のdescriptionを廃止、進捗・進捗率(progressText, progressRate)を新規定義。
-//                  2026/05/27 bAs)shirakawa サーバー主導バージョン管理によるHUD更新最適化（無駄な通信とDOM再描画をスキップする機能）を追加。
+//                  2026/05/26 myi デモ用HUDデータ(SendHudData)に受領中任務の検証用ダミーデータ(quests)を追加。
+//                  2026/05/26 myi デモ用任務データ(SendHudData)のdescriptionを廃止、進捗・進捗率(progressText, progressRate)を新規定義。
+//                  2026/05/27 myi サーバー主導バージョン管理によるHUD更新最適化（無駄な通信とDOM再描画をスキップする機能）を追加。
 //                  2026/05/27 myi デモデータに第3艦隊の入渠中（DOCKING）状態を追加し、入渠中の艦艇がいる艦隊の表示検証用としてデモデータを拡張。
 //                  2026/05/28 myi 未使用の画像サイズ縮小用定数(TargetWidth, TargetHeight)を削除。
 //                  2026/05/28 myi デモデータ(combatブロック)にdamageRate, victory, airBattleプロパティを追加。
-//                  2026/05/28 bAs)shirakawa /control APIに navigate_login, set_filter, toggle_cover アクションを追加。設定HUDからログインページ移動・プライバシーフィルター操作を可能に。
+//                  2026/05/28 myi /control APIに navigate_login, set_filter, toggle_cover アクションを追加。設定HUDからログインページ移動・プライバシーフィルター操作を可能に。
 //                  2026/05/29 myi 差分WebP方式による画面配信機能を実装（JPEG→差分WebPへ移行）。
 //                                           低解像度JPEGサムネイル比較方式を採用し、静的画面では204 No Contentで通信量ゼロを実現。
 //                                           セーフコード（Marshal.Copy）によるピクセル差分算出。
@@ -72,7 +72,7 @@ namespace Browser
 		// 2026/06/10 myi 新規作成（リッスン対象のIPアドレス設定値保持用）
 		private string _address;
 
-		// 2026/07/14 bAs)shirakawa 新規作成（リモート操作サーバーのログインパスワード保持用）
+		// 2026/07/14 myi 新規作成（リモート操作サーバーのログインパスワード保持用）
 		private string _password;
 
 		//====================================================================================
@@ -209,7 +209,7 @@ namespace Browser
 
 		/// <summary>
 		/// 2026/06/10 myi 新規作成（リッスンアドレスパラメータの追加）
-		/// 2026/07/14 bAs)shirakawa 変更（パスワードパラメータの追加）
+		/// 2026/07/14 myi 変更（パスワードパラメータの追加）
 		/// </summary>
 		public RemoteController(FormBrowser parent, int port = 8080, string address = "*", string password = "")
 		{
@@ -433,7 +433,7 @@ namespace Browser
 			{
 				string path = req.Url.AbsolutePath.ToLower();
 
-				// 2026/07/14 bAs)shirakawa 新規作成（ログインエンドポイント）
+				// 2026/07/14 myi 新規作成（ログインエンドポイント）
 				if (path == "/login")
 				{
 					// ログインはPOST専用
@@ -449,7 +449,7 @@ namespace Browser
 				}
 				else
 				{
-					// 2026/07/14 bAs)shirakawa 新規作成（認証ガード）
+					// 2026/07/14 myi 新規作成（認証ガード）
 					if (!IsAuthenticated(req))
 					{
 						SendHtml(res);
@@ -495,7 +495,7 @@ namespace Browser
 		//                  パスワードが空の場合は認証なし（常にtrue）を返します。
 		//                  pw クエリパラメータまたは Authorization ヘッダでパスワードを検証します。
 		//------------------------------------------------------------------------------------
-		// author         : bAs)shirakawa
+		// author         : myi
 		// creation date  : 2026/07/14
 		// version        : 1.00
 		//------------------------------------------------------------------------------------
@@ -533,7 +533,7 @@ namespace Browser
 		// 概要           : /login エンドポイントを処理します。
 		//                  POST メソッドのみで、pw クエリパラメータでパスワードを受信します。
 		//------------------------------------------------------------------------------------
-		// author         : bAs)shirakawa
+		// author         : myi
 		// creation date  : 2026/07/14
 		// version        : 1.00
 		//------------------------------------------------------------------------------------
@@ -563,7 +563,7 @@ namespace Browser
 		// 処理ブロック名 : SendJsonResponse
 		// 概要           : JSON レスポンスを簡単に送信するヘルパーです。
 		//------------------------------------------------------------------------------------
-		// author         : bAs)shirakawa
+		// author         : myi
 		// creation date  : 2026/07/14
 		// version        : 1.00
 		//------------------------------------------------------------------------------------

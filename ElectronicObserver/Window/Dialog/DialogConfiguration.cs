@@ -33,7 +33,7 @@ namespace ElectronicObserver.Window.Dialog
 		// 2026/06/10 myi 新規作成（遠隔操作サーバー設定保持用メンバ変数およびUIコントロール）
 		private int _remoteControllerPort;
 		private string _remoteControllerAddress;
-		// 2026/07/14 bAs)shirakawa 追加（遠隔操作サーバーのパスワード設定保持用メンバ変数）
+		// 2026/07/14 myi 追加（遠隔操作サーバーのパスワード設定保持用メンバ変数）
 		private string _remoteControllerPassword;
 		private System.Windows.Forms.Button FormBrowser_RemoteControllerSettingButton;
 
@@ -546,7 +546,7 @@ namespace ElectronicObserver.Window.Dialog
 			// 2026/06/10 myi 新規作成（遠隔操作用の設定ロード）
 			_remoteControllerPort = config.FormBrowser.RemoteControllerPort;
 			_remoteControllerAddress = config.FormBrowser.RemoteControllerAddress;
-			// 2026/07/14 bAs)shirakawa 追加（遠隔操作用パスワードの設定ロード）
+			// 2026/07/14 myi 追加（遠隔操作用パスワードの設定ロード）
 			_remoteControllerPassword = config.FormBrowser.RemoteControllerPassword;
 
 			//finalize
@@ -793,7 +793,7 @@ namespace ElectronicObserver.Window.Dialog
 			// 2026/06/10 myi 新規作成（遠隔操作用の設定保存）
 			config.FormBrowser.RemoteControllerPort = _remoteControllerPort;
 			config.FormBrowser.RemoteControllerAddress = _remoteControllerAddress;
-			// 2026/07/14 bAs)shirakawa 追加（遠隔操作用パスワードの設定保存）
+			// 2026/07/14 myi 追加（遠隔操作用パスワードの設定保存）
 			config.FormBrowser.RemoteControllerPassword = _remoteControllerPassword;
 		}
 
@@ -1024,14 +1024,14 @@ namespace ElectronicObserver.Window.Dialog
 		/// </summary>
 		private void FormBrowser_RemoteControllerSettingButton_Click(object sender, EventArgs e)
 		{
-			// 2026/07/14 bAs)shirakawa 変更（パスワード引数を追加）
+			// 2026/07/14 myi 変更（パスワード引数を追加）
 			using (var dialog = new DialogConfigurationRemote(_remoteControllerPort, _remoteControllerAddress, _remoteControllerPassword))
 			{
 				if (dialog.ShowDialog(this) == System.Windows.Forms.DialogResult.OK)
 				{
 					_remoteControllerPort = dialog.ResultPort;
 					_remoteControllerAddress = dialog.ResultAddress;
-					// 2026/07/14 bAs)shirakawa 追加（パスワードの確定）
+					// 2026/07/14 myi 追加（パスワードの確定）
 					_remoteControllerPassword = dialog.ResultPassword;
 				}
 			}
