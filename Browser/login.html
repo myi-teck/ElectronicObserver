@@ -1,0 +1,198 @@
+<!--
+  [AI IMPORTANT INSTRUCTION]
+  This file MUST be saved in "UTF-8 with BOM" (UTF-8 signature)
+  encoding to prevent Japanese character corruption
+  (all characters turning into '?').
+  Ensure that you preserve the UTF-8 BOM when saving.
+-->
+<!DOCTYPE html>
+<html lang='ja'>
+<head>
+    <meta charset='UTF-8' />
+    <meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover' />
+    <title>NERV REMOTE CONTROL — Login</title>
+    <style>
+        /* ── 1. デザインシステム ──────────────────────────────── */
+        :root {
+            --bg-color:       #030805 ;
+            --accent-color:   #00ff66 ;
+            --accent-glow:    rgba(0,255,102,.4) ;
+            --text-color:     #a3f7bf ;
+        }
+
+        /* ── 2. リセット ────────────────────────────────────── */
+        * { margin:0; padding:0; box-sizing:border-box;
+             -webkit-tap-highlight-color:transparent; }
+
+        body {
+            background: var(--bg-color) ;
+            color:      var(--text-color) ;
+            font-family: 'Play','Consolas','Courier New',monospace ;
+            height: 100dvh ;
+            display: flex ;
+            justify-content: center ;
+            align-items: center ;
+        }
+
+        /* ── 3. ログインボックス ────────────────────────────── */
+        #login-box {
+            background: rgba(3,8,5,.95) ;
+            border:     2px solid var(--accent-color) ;
+            border-radius: 8px ;
+            padding:    30px 40px ;
+            box-shadow: 0 0 30px var(--accent-glow),
+                        inset 0 0 15px rgba(0,255,102,.05) ;
+            text-align: center ;
+            min-width:  320px ;
+        }
+
+        #login-box .login-title {
+            font-size: 18px ;
+            color:     var(--accent-color) ;
+            text-transform: uppercase ;
+            letter-spacing: 0.3em ;
+            font-weight: bold ;
+            margin-bottom: 8px ;
+            text-shadow: 0 0 8px var(--accent-glow) ;
+        }
+
+        #login-box .login-subtitle {
+            font-size: 11px ;
+            color:     rgba(163,247,191,.6) ;
+            letter-spacing: 0.15em ;
+            margin-bottom: 24px ;
+            text-transform: uppercase ;
+        }
+
+        #login-password-field {
+            width: 100% ;
+            padding: 10px 14px ;
+            background: rgba(0,255,102,.05) ;
+            border: 1px solid rgba(0,255,102,.3) ;
+            border-radius: 4px ;
+            color: var(--text-color) ;
+            font-family: 'Consolas','Courier New',monospace ;
+            font-size: 14px ;
+            outline: none ;
+            transition: border-color .2s, box-shadow .2s ;
+            text-align: center ;
+        }
+
+        #login-password-field:focus {
+            border-color: var(--accent-color) ;
+            box-shadow:   0 0 12px var(--accent-glow) ;
+        }
+
+        #login-password-field::placeholder {
+            color: rgba(163,247,191,.3) ;
+        }
+
+        #login-btn {
+            width: 100% ;
+            padding: 12px 0 ;
+            background: rgba(0,255,102,.12) ;
+            border: 1px solid var(--accent-color) ;
+            border-radius: 4px ;
+            color: var(--accent-color) ;
+            font-family: 'Consolas','Courier New',monospace ;
+            font-size: 14px ;
+            font-weight: bold ;
+            letter-spacing: 0.2em ;
+            text-transform: uppercase ;
+            cursor: pointer ;
+            transition: background .2s, box-shadow .2s ;
+        }
+
+        #login-btn:hover {
+            background: rgba(0,255,102,.25) ;
+            box-shadow:   0 0 15px var(--accent-glow) ;
+        }
+
+        #login-btn:active {
+            transform: scale(0.98) ;
+        }
+
+        #login-error {
+            margin-top: 14px ;
+            font-size: 11px ;
+            color:     #ef4444 ;
+            text-shadow: 0 0 4px rgba(239,68,68,.5) ;
+            min-height: 16px ;
+        }
+    </style>
+</head>
+<body>
+
+    <div id='login-box'>
+        <div class='login-title'>NERV REMOTE CONTROL</div>
+        <div class='login-subtitle'>Authentication Required</div>
+        <input type='password' id='login-password-field' placeholder='Enter Password' autocomplete='off' />
+        <button id='login-btn'>Login</button>
+        <div id='login-error'></div>
+    </div>
+
+    <script>
+        (function () {
+            'use strict';
+
+            // DOM 要素の取得
+            const loginPasswordField = document.getElementById('login-password-field');
+            const loginBtn = document.getElementById('login-btn');
+            const loginError = document.getElementById('login-error');
+
+            // ── 初期化 ─────────────────────────────────────────
+            loginPasswordField.focus();
+
+            // ── ログイン処理 ───────────────────────────────────
+            async function attemptLogin(password) {
+                try {
+                    const response = await fetch('/login', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded'
+                        },
+                        body: 'password=' + encodeURIComponent(password)
+                    });
+
+                    // サーバーが 302 リダイレクトを返す場合はそのまま追随
+                    if (response.redirected || response.status === 302) {
+                        // 成功 → Cookie(session_id)が自動で設定される
+                        window.location.href = response.url || '/';
+                        return;
+                    }
+
+                    // JSON レスポンス（エラー等）の処理
+                    const data = await response.json();
+                    if (data.success) {
+                        // 成功 → ルートへ遷移（後方互換用）
+                        window.location.href = '/';
+                    } else {
+                        loginError.textContent = data.error || 'ログインに失敗しました';
+                    }
+                } catch (error) {
+                    loginError.textContent = '通信エラーが発生しました';
+                    console.error('Login error:', error);
+                }
+            }
+
+            // ── イベントリスナー ───────────────────────────────
+            loginBtn.addEventListener('click', function () {
+                const password = loginPasswordField.value.trim();
+                if (!password) {
+                    loginError.textContent = 'パスワードを入力してください';
+                    return;
+                }
+                loginError.textContent = '';
+                attemptLogin(password);
+            });
+
+            loginPasswordField.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') {
+                    loginBtn.click();
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

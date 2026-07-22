@@ -44,6 +44,7 @@
 //============================================================================================
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -74,6 +75,85 @@ namespace Browser
 
 		// 2026/07/14 myi 新規作成（リモート操作サーバーのログインパスワード保持用）
 		private string _password;
+
+		// 2026/07/22 myi 新規作成（ブルートフォース対策：IPアドレスごとのログイン失敗追跡）
+		private readonly ConcurrentDictionary<string, (int count, DateTime lastAttempt)> _loginAttempts = new();
+		private const int MaxLoginAttempts = 5;
+		private const int LoginBlockMinutes = 15;
+
+		//====================================================================================
+		// セッション管理
+		//------------------------------------------------------------------------------------
+		/// <summary>
+		/// セッション情報を保持するクラス
+		/// </summary>
+		private class SessionInfo
+		{
+			public string SessionId { get; set; }
+			public DateTime CreatedAt { get; set; }
+			public DateTime LastAccessedAt { get; set; }
+
+			public SessionInfo(string sessionId)
+			{
+				SessionId = sessionId;
+				CreatedAt = DateTime.UtcNow;
+				LastAccessedAt = DateTime.UtcNow;
+			}
+
+			public void Touch()
+			{
+				LastAccessedAt = DateTime.UtcNow;
+			}
+		}
+
+		/// <summary>
+		/// リフレッシュトークンの情報を保持するクラス
+		/// </summary>
+		private class RefreshTokenInfo
+		{
+			public string RefreshToken { get; set; }
+			public string SessionId { get; set; }      // 関連するセッションID
+			public DateTime CreatedAt { get; set; }
+			public DateTime ExpiresAt { get; set; }    // 有効期限（発行から30日）
+
+			// 2026/07/22 myi 新規作成（Grace Period: 並行リクエストによるRace Condition対策）
+			public DateTime? RevokedAt { get; set; }        // 破棄された日時（null = 未破棄）
+			public string ReplacedByToken { get; set; }     // 置き換えられた新トークン
+
+			public RefreshTokenInfo(string refreshToken, string sessionId)
+			{
+				RefreshToken = refreshToken;
+				SessionId = sessionId;
+				CreatedAt = DateTime.UtcNow;
+				ExpiresAt = DateTime.UtcNow.AddDays(30);  // 30日有効
+			}
+
+			public bool IsExpired()
+			{
+				return DateTime.UtcNow > ExpiresAt;
+			}
+
+			// 2026/07/22 myi 新規作成（Grace Period内なら有効とみなす）
+			public bool IsValid()
+			{
+				return !IsExpired() && (RevokedAt == null || DateTime.UtcNow - RevokedAt.Value < TimeSpan.FromSeconds(10));
+			}
+		}
+
+		// インメモリセッションストア（スレッドセーフ）
+		private readonly ConcurrentDictionary<string, SessionInfo> _sessions = new();
+
+		// リフレッシュトークンストア（スレッドセーフ）
+		private readonly ConcurrentDictionary<string, RefreshTokenInfo> _refreshTokens = new();
+
+		// セッションのアイドルタイムアウト（30分）
+		private const int SessionTimeoutMinutes = 30;
+
+		// リフレッシュトークンの有効期間（30日）
+		private const int RefreshTokenDays = 30;
+
+		// 2026/07/22 myi 新規作成（クリーンアップ最適化：前回実行時刻を保持）
+		private DateTime _lastCleanupTime = DateTime.MinValue;
 
 		//====================================================================================
 		// 差分WebP方式用列挙型・クラス
@@ -433,10 +513,21 @@ namespace Browser
 			{
 				string path = req.Url.AbsolutePath.ToLower();
 
-				// 2026/07/14 myi 新規作成（ログインエンドポイント）
+				// 期限切れセッションのクリーンアップ（5分間隔で実行）
+				CleanupExpiredSessionsIfNeeded();
+
+				// ── 公開エンドポイント（認証不要） ──────────────────────
+
+				// /login-page : ログインページHTMLを返却
+				if (path == "/login-page")
+				{
+					SendLoginPage(res);
+					return;
+				}
+
+				// /login : ログイン認証処理（POST専用）
 				if (path == "/login")
 				{
-					// ログインはPOST専用
 					if (req.HttpMethod == "POST")
 					{
 						HandleLogin(req, res);
@@ -446,40 +537,67 @@ namespace Browser
 						res.StatusCode = 405;
 						res.Close();
 					}
+					return;
 				}
-				else
+	
+				// /logout : ログアウト処理（POST専用）
+				if (path == "/logout")
 				{
-					// 2026/07/14 myi 新規作成（認証ガード）
-					if (!IsAuthenticated(req))
+					if (req.HttpMethod == "POST")
 					{
-						SendHtml(res);
-						return;
-					}
-
-					// シンプルなルーティング
-					if (path == "/" || path == "/index.html")
-					{
-						SendHtml(res);
-					}
-					else if (path == "/screen.webp")
-					{
-						// 差分WebP方式による画面配信（静的画面は204 No Content）
-						await SendScreenDiffWebPAsync(req, res);
-					}
-					else if (path == "/control")
-					{
-						HandleControl(req, res);
-					}
-					else if (path == "/hud")
-					{
-						// モバイル端末からのHUD情報要求に対し、実際のゲーム内ステータスをJSONで返します
-						SendHudData(req, res);
+						HandleLogout(req, res);
 					}
 					else
 					{
-						res.StatusCode = 404;
+						res.StatusCode = 405;
 						res.Close();
 					}
+					return;
+				}
+	
+				// ── 認証ガード（認証が必要） ─────────────────────────────
+
+				// 認証が必要か確認
+				if (!IsAuthenticated(req, res))
+				{
+					// APIリクエストには401を返す（クライアントでハンドリングしやすくするため）
+					if (path == "/screen.webp" || path == "/hud" || path == "/control")
+					{
+						res.StatusCode = 401;
+						res.Close();
+						return;
+					}
+
+					// HTMLページへのアクセスはログインページへ302リダイレクト
+					Redirect(res, "/login-page");
+					return;
+				}
+
+				// ── 認証済みリクエストのルーティング ─────────────────────
+
+				// シンプルなルーティング
+				if (path == "/" || path == "/index.html")
+				{
+					SendHtml(res);
+				}
+				else if (path == "/screen.webp")
+				{
+					// 差分WebP方式による画面配信（静的画面は204 No Content）
+					await SendScreenDiffWebPAsync(req, res);
+				}
+				else if (path == "/control")
+				{
+					HandleControl(req, res);
+				}
+				else if (path == "/hud")
+				{
+					// モバイル端末からのHUD情報要求に対し、実際のゲーム内ステータスをJSONで返します
+					SendHudData(req, res);
+				}
+				else
+				{
+					res.StatusCode = 404;
+					res.Close();
 				}
 			}
 			catch (Exception ex)
@@ -492,50 +610,275 @@ namespace Browser
 		//====================================================================================
 		// 処理ブロック名 : IsAuthenticated
 		// 概要           : リクエストの認証状態を検証します。
+		//                  Cookie (session_id) に基づいてセッションの有効性を確認します。
 		//                  パスワードが空の場合は認証なし（常にtrue）を返します。
-		//                  pw クエリパラメータまたは Authorization ヘッダでパスワードを検証します。
+		//                  session_id が期限切れの場合、refresh_token で自動再発行を試行します。
+		//                  Grace Period: 旧トークンは破棄されてから10秒間は有効とみなし、
+		//                  並行リクエストによるRace Conditionを防ぎます。
 		//------------------------------------------------------------------------------------
 		// author         : myi
 		// creation date  : 2026/07/14
-		// version        : 1.00
+		// version        : 4.00 (Grace Period対応, 無効トークン検知時のCookie消去対応)
 		//------------------------------------------------------------------------------------
-		private bool IsAuthenticated(HttpListenerRequest req)
+		private bool IsAuthenticated(HttpListenerRequest req, HttpListenerResponse res)
 		{
 			// パスワードが設定されていない場合は認証なし（常に通過）
 			if (string.IsNullOrEmpty(_password))
 				return true;
 
-			// pw クエリパラメータをチェック
-			string pw = req.QueryString["pw"];
-			if (pw == _password)
-				return true;
+			string sessionId = GetCookieValue(req, "session_id");
 
-			// Authorization ヘッダ（Basic）もチェック
-			string auth = req.Headers["Authorization"];
-			if (auth != null && auth.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
+			// session_id がある場合は通常検証
+			if (!string.IsNullOrEmpty(sessionId) && _sessions.TryGetValue(sessionId, out SessionInfo session))
 			{
-				try
+				if (DateTime.UtcNow - session.LastAccessedAt <= TimeSpan.FromMinutes(SessionTimeoutMinutes))
 				{
-					var bytes = Convert.FromBase64String(auth.Substring(6));
-					var decoded = Encoding.UTF8.GetString(bytes);
-					var parts = decoded.Split(':');
-					if (parts.Length == 2 && parts[1] == _password)
-						return true;
+					session.Touch();
+					return true;
 				}
-				catch { /* 無効なBasic認証はスルー */ }
+				// session_id は期限切れ → 削除してリフレッシュを試行
+				_sessions.TryRemove(sessionId, out _);
+			}
+
+			// session_id が無効な場合、refresh_token で自動再発行を試行
+			string refreshToken = GetCookieValue(req, "refresh_token");
+			if (!string.IsNullOrEmpty(refreshToken))
+			{
+				if (_refreshTokens.TryGetValue(refreshToken, out RefreshTokenInfo refreshTokenInfo))
+				{
+					if (refreshTokenInfo.IsValid())
+					{
+						// Grace Period 内なら、旧トークンとして有効（並行リクエスト許容）
+						if (refreshTokenInfo.RevokedAt.HasValue)
+						{
+							// 旧トークンだがGrace Period内 → 新トークンに置き換えて認証OK
+							SetSessionCookie(res, refreshTokenInfo.SessionId);
+							SetRefreshTokenCookie(res, refreshTokenInfo.ReplacedByToken);
+							return true;
+						}
+
+						// 有効なトークン → トークンローテーション（Grace Period対応）
+						// 旧トークンのRevokedAtを設定して即削除せず、Grace Periodを設ける
+						refreshTokenInfo.RevokedAt = DateTime.UtcNow;
+
+						// 新しいトークンペアを発行
+						string newSessionId = Guid.NewGuid().ToString("N");
+						string newRefreshToken = Guid.NewGuid().ToString("N");
+						_sessions.TryAdd(newSessionId, new SessionInfo(newSessionId));
+
+						// 新トークンのReplacedByTokenに自身を設定（循環参照防止のためnull）
+						_refreshTokens.TryAdd(newRefreshToken, new RefreshTokenInfo(newRefreshToken, newSessionId));
+
+						// 旧トークンのReplacedByTokenに新トークンを設定
+						refreshTokenInfo.ReplacedByToken = newRefreshToken;
+
+						// 旧リフレッシュトークンに紐づく旧セッションを削除
+						_sessions.TryRemove(refreshTokenInfo.SessionId, out _);
+
+						// 新しいCookieをレスポンスに付与
+						SetSessionCookie(res, newSessionId);
+						SetRefreshTokenCookie(res, newRefreshToken);
+
+						return true;
+					}
+
+					// refresh_token も期限切れ（またはGrace Period外） → 削除
+					_refreshTokens.TryRemove(refreshToken, out _);
+
+					// 2026/07/22 myi 新規追加（P0: 無効トークン検知時のCookie消去）
+					// ブラウザの無効Cookieを消去して、次回以降の同じ401エラーの繰り返しを防ぐ
+					ClearCookie(res, "session_id");
+					ClearCookie(res, "refresh_token");
+				}
+				else
+				{
+					// 2026/07/22 myi 修正（P0: ストアにトークンが存在しない場合のCookie消去）
+					// クライアントが保持するCookieはサーバー側のストアに存在しない無効なトークンであるため、
+					// ブラウザのCookieを消去して次回以降の同じ401エラーの繰り返しを防ぐ
+					ClearCookie(res, "session_id");
+					ClearCookie(res, "refresh_token");
+				}
 			}
 
 			return false;
 		}
 
 		//====================================================================================
+		// 処理ブロック名 : GetCookieValue
+		// 概要           : リクエストのCookieから指定された名前の値を抽出します。
+		//------------------------------------------------------------------------------------
+		private string GetCookieValue(HttpListenerRequest req, string name)
+		{
+			var cookie = req.Cookies[name];
+			return cookie?.Value;
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : Redirect
+		// 概要           : HTTP 302 リダイレクト応答を送信します。
+		//------------------------------------------------------------------------------------
+		private void Redirect(HttpListenerResponse res, string url)
+		{
+			res.StatusCode = 302;
+			res.Headers["Location"] = url;
+			res.Close();
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : SetSessionCookie
+		// 概要           : セッションIDをCookieとして設定するSet-Cookieヘッダを付与します。
+		//                  HttpOnlyおよびSameSite=Strictを設定し、XSS・CSRFを緩和します。
+		//------------------------------------------------------------------------------------
+		private void SetSessionCookie(HttpListenerResponse res, string sessionId)
+		{
+			var cookie = new System.Net.Cookie("session_id", sessionId)
+			{
+				HttpOnly = true,
+				SameSite = SameSiteMode.Strict,
+				Path = "/",
+				// Expires を設定しない → セッションCookie化（ブラウザを閉じると消える）
+			};
+			res.AppendCookie(cookie);
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : SetRefreshTokenCookie
+		// 概要           : リフレッシュトークンをCookieとして設定するSet-Cookieヘッダを付与します。
+		//                  HttpOnlyおよびSameSite=Strictを設定し、XSS・CSRFを緩和します。
+		//------------------------------------------------------------------------------------
+		private void SetRefreshTokenCookie(HttpListenerResponse res, string refreshToken)
+		{
+			var cookie = new System.Net.Cookie("refresh_token", refreshToken)
+			{
+				HttpOnly = true,
+				SameSite = SameSiteMode.Strict,
+				Path = "/",
+				Expires = DateTime.UtcNow.AddDays(RefreshTokenDays)  // 30日間有効
+			};
+			res.AppendCookie(cookie);
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : ClearCookie
+		// 概要           : 指定されたCookieを消去するSet-Cookieヘッダを付与します。
+		//                  Expiresを過去に設定することでブラウザがCookieを削除します。
+		//------------------------------------------------------------------------------------
+		private void ClearCookie(HttpListenerResponse res, string name)
+		{
+			var cookie = new System.Net.Cookie(name, "")
+			{
+				HttpOnly = true,
+				SameSite = SameSiteMode.Strict,
+				Path = "/",
+				Expires = DateTime.UtcNow.AddDays(-1)  // 過去に設定して消去
+			};
+			res.AppendCookie(cookie);
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : HandleLogout
+		// 概要           : /logout エンドポイントを処理します。
+		//                  POST メソッドのみで、セッションIDとリフレッシュトークンの両方を破棄します。
+		//                  破棄後、Cookieを消去してログインページへ302リダイレクトします。
+		//------------------------------------------------------------------------------------
+		private void HandleLogout(HttpListenerRequest req, HttpListenerResponse res)
+		{
+			// session_id を破棄
+			string sessionId = GetCookieValue(req, "session_id");
+			if (!string.IsNullOrEmpty(sessionId))
+			{
+				_sessions.TryRemove(sessionId, out _);
+			}
+
+			// refresh_token を破棄
+			string refreshToken = GetCookieValue(req, "refresh_token");
+			if (!string.IsNullOrEmpty(refreshToken))
+			{
+				_refreshTokens.TryRemove(refreshToken, out _);
+			}
+
+			// Cookie を消去
+			ClearCookie(res, "session_id");
+			ClearCookie(res, "refresh_token");
+
+			// ログインページへリダイレクト
+			Redirect(res, "/login-page");
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : CleanupExpiredSessionsIfNeeded
+		// 概要           : 前回実行から5分以上経過している場合にのみCleanupExpiredSessions()を実行します。
+		//                  /screen.webp や /hud などの高頻度エンドポイントで無駄な走査を防ぎます。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/22
+		// version        : 1.00 (5分間隔のスキップ条件追加)
+		//------------------------------------------------------------------------------------
+		private void CleanupExpiredSessionsIfNeeded()
+		{
+			if ((DateTime.UtcNow - _lastCleanupTime).TotalMinutes < 5)
+				return;
+
+			_lastCleanupTime = DateTime.UtcNow;
+			CleanupExpiredSessions();
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : CleanupExpiredSessions
+		// 概要           : 期限切れのセッションおよびリフレッシュトークンをストアから削除します。
+		//                  CleanupExpiredSessionsIfNeeded() から呼び出してください。
+		//------------------------------------------------------------------------------------
+		private void CleanupExpiredSessions()
+		{
+			// セッションのクリーンアップ
+			var cutoff = DateTime.UtcNow.AddMinutes(-SessionTimeoutMinutes);
+			var expiredSessionKeys = new List<string>();
+			foreach (var kvp in _sessions)
+			{
+				if (kvp.Value.LastAccessedAt < cutoff)
+				{
+					expiredSessionKeys.Add(kvp.Key);
+				}
+			}
+			foreach (var key in expiredSessionKeys)
+			{
+				_sessions.TryRemove(key, out _);
+			}
+
+			// リフレッシュトークンのクリーンアップ
+			var expiredRefreshKeys = new List<string>();
+			foreach (var kvp in _refreshTokens)
+			{
+				// 2026/07/22 myi 修正（P2: Grace Periodトークンのクリーンアップ実装）
+				// 有効期限切れのトークンに加え、RevokedAtが設定されており10秒以上経過した
+				// グレース期間トークンもクリーンアップ対象に含める（メモリリーク防止）
+				bool isExpired = kvp.Value.IsExpired();
+				bool isRevokedAndPastGracePeriod = kvp.Value.RevokedAt.HasValue &&
+					(DateTime.UtcNow - kvp.Value.RevokedAt.Value) > TimeSpan.FromSeconds(10);
+				if (isExpired || isRevokedAndPastGracePeriod)
+				{
+					expiredRefreshKeys.Add(kvp.Key);
+				}
+			}
+			foreach (var key in expiredRefreshKeys)
+			{
+				_refreshTokens.TryRemove(key, out _);
+			}
+		}
+
+		//====================================================================================
 		// 処理ブロック名 : HandleLogin
 		// 概要           : /login エンドポイントを処理します。
-		//                  POST メソッドのみで、pw クエリパラメータでパスワードを受信します。
+		//                  POST メソッドのみで、POSTボディからパスワードを受信します。
+		//                  クエリパラメータからのパスワード取得はセキュリティの観点から廃止しました。
+		//                  成功時：セッションIDを発行し、Cookieを設定して302リダイレクト。
+		//                  失敗時：エラーJSONを返却。
+		//                  ブルートフォース対策として、IPアドレスごとの失敗回数を追跡し、
+		//                  一定回数を超えると一定時間リクエストをブロックします。
 		//------------------------------------------------------------------------------------
 		// author         : myi
 		// creation date  : 2026/07/14
-		// version        : 1.00
+		// version        : 3.00 (クエリパラメータ認証廃止, ブルートフォース対策, 定数時間比較導入)
 		//------------------------------------------------------------------------------------
 		private void HandleLogin(HttpListenerRequest req, HttpListenerResponse res)
 		{
@@ -546,17 +889,136 @@ namespace Browser
 				return;
 			}
 
-			string pw = req.QueryString["pw"];
+			// ブルートフォース対策：IPアドレスの取得
+			string clientIp = req.RemoteEndPoint.Address.ToString();
 
-			// パスワード検証
-			if (pw == _password)
+			// ブロックチェック
+			if (IsIpBlocked(clientIp))
 			{
-				SendJsonResponse(res, "{\"success\": true}");
+				SendJsonResponse(res, "{\"success\": false, \"error\": \"ログイン失敗が多いため一時的にブロックされています\"}");
+				return;
+			}
+
+			// POSTボディからパスワードを取得（クエリパラメータからの取得は廃止）
+			string pw = null;
+			try
+			{
+				using (var reader = new StreamReader(req.InputStream, req.ContentEncoding))
+				{
+					string body = reader.ReadToEnd();
+					// application/x-www-form-urlencoded の場合
+					if (!string.IsNullOrEmpty(body))
+					{
+						var pairs = body.Split('&');
+						foreach (var pair in pairs)
+						{
+							var kv = pair.Split('=');
+							if (kv.Length == 2 && Uri.UnescapeDataString(kv[0]) == "password")
+							{
+								pw = Uri.UnescapeDataString(kv[1]);
+								break;
+							}
+						}
+					}
+				}
+			}
+			catch { /* ボディ解析エラー */ }
+
+			// パスワードが空の場合は失敗としてカウント
+			if (string.IsNullOrEmpty(pw))
+			{
+				RecordLoginFailure(clientIp);
+				SendJsonResponse(res, "{\"success\": false, \"error\": \"パスワードが間違っています\"}");
+				return;
+			}
+
+			// 定数時間比較でパスワード検証（タイミング攻撃対策）
+			if (ConstantTimeEquals(pw, _password))
+			{
+				// 成功時は失敗履歴をクリア
+				_loginAttempts.TryRemove(clientIp, out _);
+
+				// セッションIDとリフレッシュトークンを生成してストアに登録
+				string sessionId = Guid.NewGuid().ToString("N");
+				string refreshToken = Guid.NewGuid().ToString("N");
+				_sessions.TryAdd(sessionId, new SessionInfo(sessionId));
+				_refreshTokens.TryAdd(refreshToken, new RefreshTokenInfo(refreshToken, sessionId));
+	
+				// Cookieを設定し、302リダイレクト
+				SetSessionCookie(res, sessionId);
+				SetRefreshTokenCookie(res, refreshToken);
+				Redirect(res, "/");
 			}
 			else
 			{
+				RecordLoginFailure(clientIp);
 				SendJsonResponse(res, "{\"success\": false, \"error\": \"パスワードが間違っています\"}");
 			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : ConstantTimeEquals
+		// 概要           : 2つの文字列を定数時間で比較します。
+		//                  タイミング攻撃を防ぐために、すべての文字を走査します。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/22
+		// version        : 1.00
+		//------------------------------------------------------------------------------------
+		private static bool ConstantTimeEquals(string a, string b)
+		{
+			if (a == null && b == null) return true;
+			if (a == null || b == null) return false;
+			if (a.Length != b.Length) return false;
+
+			int result = 0;
+			for (int i = 0; i < a.Length; i++)
+			{
+				result |= a[i] ^ b[i];
+			}
+			return result == 0;
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : IsIpBlocked
+		// 概要           : 指定されたIPアドレスがブルートフォースブロック対象かどうかを確認します。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/22
+		// version        : 1.00
+		//------------------------------------------------------------------------------------
+		private bool IsIpBlocked(string ip)
+		{
+			if (!_loginAttempts.TryGetValue(ip, out var attempt))
+				return false;
+
+			// ブロック時間が経過している場合はカウンタをリセット
+			if (DateTime.UtcNow - attempt.lastAttempt > TimeSpan.FromMinutes(LoginBlockMinutes))
+			{
+				_loginAttempts.TryRemove(ip, out _);
+				return false;
+			}
+
+			// 最大失敗回数を超えている場合はブロック
+			return attempt.count >= MaxLoginAttempts;
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : RecordLoginFailure
+		// 概要           : 指定されたIPアドレスのログイン失敗を記録します。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/22
+		// version        : 1.00
+		//------------------------------------------------------------------------------------
+		private void RecordLoginFailure(string ip)
+		{
+			var now = DateTime.UtcNow;
+			var existing = _loginAttempts.AddOrUpdate(
+				ip,
+				newValue: (1, now),
+				(updateOldValue, k) => (updateOldValue.count + 1, now)
+			);
 		}
 
 		//====================================================================================
@@ -577,6 +1039,21 @@ namespace Browser
 			res.Close();
 		}
 
+		//====================================================================================
+		// 処理ブロック名 : ApplySecurityHeaders
+		// 概要           : レスポンスに基本的なセキュリティヘッダーを付与します。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/22
+		// version        : 1.00
+		//------------------------------------------------------------------------------------
+		private void ApplySecurityHeaders(HttpListenerResponse res)
+		{
+			res.Headers["X-Frame-Options"] = "DENY";
+			res.Headers["X-Content-Type-Options"] = "nosniff";
+			res.Headers["Content-Security-Policy"] = "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline';";
+		}
+
 		/// <summary>
 		/// メインUI（HTML/JS/CSS）を送信します。
 		/// </summary>
@@ -587,9 +1064,90 @@ namespace Browser
 
 			// レスポンスのContent-TypeヘッダにUTF-8文字コードを明示的に付与
 			res.ContentType = "text/html; charset=utf-8";
+			ApplySecurityHeaders(res);
 			res.ContentLength64 = buffer.Length;
 			res.OutputStream.Write(buffer, 0, buffer.Length);
 			res.Close();
+		}
+
+		/// <summary>
+		/// ログインページ（login.html）を送信します。
+		/// </summary>
+		private void SendLoginPage(HttpListenerResponse res)
+		{
+			string html = GetLoginPageContent();
+			byte[] buffer = Encoding.UTF8.GetBytes(html);
+
+			res.ContentType = "text/html; charset=utf-8";
+			ApplySecurityHeaders(res);
+			res.ContentLength64 = buffer.Length;
+			res.OutputStream.Write(buffer, 0, buffer.Length);
+			res.Close();
+		}
+
+		/// <summary>
+		/// ログインページ（login.html）のコンテンツを取得します。
+		/// 外部ファイルが存在する場合はそれを優先し、存在しない場合はインラインHTMLを返します。
+		/// </summary>
+		private string GetLoginPageContent()
+		{
+			var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+
+			// 探索候補パス
+			var pathsToSearch = new List<string>
+			{
+				Path.Combine(baseDir, "login.html"),
+				Path.Combine(baseDir, "Settings", "login.html"),
+			};
+
+			// ソースフォルダからの探索（RemoteController.htmlと同様のロジック）
+			var dir = new DirectoryInfo(baseDir);
+			while (dir != null)
+			{
+				try
+				{
+					var testPath = Path.Combine(dir.FullName, "Browser", "login.html");
+					if (File.Exists(testPath))
+					{
+						pathsToSearch.Insert(0, testPath);
+						break;
+					}
+				}
+				catch { }
+				dir = dir.Parent;
+			}
+
+			foreach (var path in pathsToSearch)
+			{
+				try
+				{
+					if (File.Exists(path))
+					{
+						return File.ReadAllText(path, Encoding.UTF8);
+					}
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"RemoteController: ログインページ読み込みエラー ({path}): {ex.Message}");
+				}
+			}
+
+			// ファイルが見つからない場合はエラーHTMLを返す
+			return $@"<!DOCTYPE html>
+<html lang='ja'>
+<head>
+		  <meta charset='UTF-8'>
+		  <title>Login Error</title>
+		  <style>
+		      body {{ background-color: #0f172a; color: #f8fafc; font-family: sans-serif; padding: 40px; text-align: center; }}
+		      h1 {{ color: #ef4444; }}
+		  </style>
+</head>
+<body>
+		  <h1>ログインページが見つかりません</h1>
+		  <p>login.html を適切な場所に配置してください。</p>
+</body>
+</html>";
 		}
 
 
@@ -1345,6 +1903,8 @@ namespace Browser
 			_isRunning = false;
 			_listener?.Stop();
 			_listener?.Close();
+			_sessions.Clear();
+			_refreshTokens.Clear();
 		}
 	}
 }
