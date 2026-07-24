@@ -76,8 +76,16 @@ namespace Browser
 		// 2026/07/14 myi 新規作成（リモート操作サーバーのログインパスワード保持用）
 		private string _password;
 
+		// 2026/07/23 追記（パスワード更新処理のロックオブジェクト）
+		/// <summary>
+		/// パスワード更新および認証チェックのアトミックな処理を保護するロックオブジェクト。
+		/// volatileだけでは UpdatePassword 内のセッション破棄とパスワード変更の原子性が
+		/// 保証されないため、専用のロックを導入する。
+		/// </summary>
+		private readonly object _passwordLock = new object();
+
 		// 2026/07/22 myi 新規作成（ブルートフォース対策：IPアドレスごとのログイン失敗追跡）
-		private readonly ConcurrentDictionary<string, (int count, DateTime lastAttempt)> _loginAttempts = new();
+		private readonly ConcurrentDictionary<string, (int count, DateTime lastAttempt)> _loginAttempts = new ConcurrentDictionary<string, (int count, DateTime lastAttempt)>();
 		private const int MaxLoginAttempts = 5;
 		private const int LoginBlockMinutes = 15;
 
@@ -141,10 +149,10 @@ namespace Browser
 		}
 
 		// インメモリセッションストア（スレッドセーフ）
-		private readonly ConcurrentDictionary<string, SessionInfo> _sessions = new();
+		private readonly ConcurrentDictionary<string, SessionInfo> _sessions = new ConcurrentDictionary<string, SessionInfo>();
 
 		// リフレッシュトークンストア（スレッドセーフ）
-		private readonly ConcurrentDictionary<string, RefreshTokenInfo> _refreshTokens = new();
+		private readonly ConcurrentDictionary<string, RefreshTokenInfo> _refreshTokens = new ConcurrentDictionary<string, RefreshTokenInfo>();
 
 		// セッションのアイドルタイムアウト（30分）
 		private const int SessionTimeoutMinutes = 30;
@@ -154,6 +162,27 @@ namespace Browser
 
 		// 2026/07/22 myi 新規作成（クリーンアップ最適化：前回実行時刻を保持）
 		private DateTime _lastCleanupTime = DateTime.MinValue;
+
+		//====================================================================================
+		// パスワード更新
+		//------------------------------------------------------------------------------------
+		/// <summary>
+		/// リモート操作サーバーのログインパスワードを更新します。
+		/// 空文字列を設定すると認証が無効化されます。
+		/// パスワード変更時には既存セッション・リフレッシュトークンを全破棄し、
+		/// 旧セッションによる不正アクセスを防止します。
+		/// </summary>
+		/// <param name="newPassword">新しいパスワード（空文字列で認証無効化）</param>
+		public void UpdatePassword(string newPassword)
+		{
+			lock (_passwordLock)
+			{
+				_password = newPassword;
+				// パスワード変更時に既存セッションを全破棄（セッションハイジャック防止）
+				_sessions.Clear();
+				_refreshTokens.Clear();
+			}
+		}
 
 		//====================================================================================
 		// 差分WebP方式用列挙型・クラス
@@ -623,7 +652,12 @@ namespace Browser
 		private bool IsAuthenticated(HttpListenerRequest req, HttpListenerResponse res)
 		{
 			// パスワードが設定されていない場合は認証なし（常に通過）
-			if (string.IsNullOrEmpty(_password))
+			bool passwordIsEmpty;
+			lock (_passwordLock)
+			{
+				passwordIsEmpty = string.IsNullOrEmpty(_password);
+			}
+			if (passwordIsEmpty)
 				return true;
 
 			string sessionId = GetCookieValue(req, "session_id");
@@ -732,12 +766,12 @@ namespace Browser
 		private void SetSessionCookie(HttpListenerResponse res, string sessionId)
 		{
 			var cookie = new System.Net.Cookie("session_id", sessionId)
-			{
-				HttpOnly = true,
-				SameSite = SameSiteMode.Strict,
-				Path = "/",
-				// Expires を設定しない → セッションCookie化（ブラウザを閉じると消える）
-			};
+				{
+					HttpOnly = true,
+					Path = "/",
+					// Expires を設定しない → セッションCookie化（ブラウザを閉じると消える）
+					// Note: SameSite は .NET Framework 4.8 の System.Net.Cookie ではサポートされていない
+				};
 			res.AppendCookie(cookie);
 		}
 
@@ -749,12 +783,12 @@ namespace Browser
 		private void SetRefreshTokenCookie(HttpListenerResponse res, string refreshToken)
 		{
 			var cookie = new System.Net.Cookie("refresh_token", refreshToken)
-			{
-				HttpOnly = true,
-				SameSite = SameSiteMode.Strict,
-				Path = "/",
-				Expires = DateTime.UtcNow.AddDays(RefreshTokenDays)  // 30日間有効
-			};
+				{
+					HttpOnly = true,
+					Path = "/",
+					Expires = DateTime.UtcNow.AddDays(RefreshTokenDays)  // 30日間有効
+					// Note: SameSite は .NET Framework 4.8 の System.Net.Cookie ではサポートされていない
+				};
 			res.AppendCookie(cookie);
 		}
 
@@ -766,12 +800,12 @@ namespace Browser
 		private void ClearCookie(HttpListenerResponse res, string name)
 		{
 			var cookie = new System.Net.Cookie(name, "")
-			{
-				HttpOnly = true,
-				SameSite = SameSiteMode.Strict,
-				Path = "/",
-				Expires = DateTime.UtcNow.AddDays(-1)  // 過去に設定して消去
-			};
+				{
+					HttpOnly = true,
+					Path = "/",
+					Expires = DateTime.UtcNow.AddDays(-1)  // 過去に設定して消去
+					// Note: SameSite は .NET Framework 4.8 の System.Net.Cookie ではサポートされていない
+				};
 			res.AppendCookie(cookie);
 		}
 
@@ -933,27 +967,39 @@ namespace Browser
 			}
 
 			// 定数時間比較でパスワード検証（タイミング攻撃対策）
-			if (ConstantTimeEquals(pw, _password))
-			{
-				// 成功時は失敗履歴をクリア
-				_loginAttempts.TryRemove(clientIp, out _);
-
-				// セッションIDとリフレッシュトークンを生成してストアに登録
-				string sessionId = Guid.NewGuid().ToString("N");
-				string refreshToken = Guid.NewGuid().ToString("N");
-				_sessions.TryAdd(sessionId, new SessionInfo(sessionId));
-				_refreshTokens.TryAdd(refreshToken, new RefreshTokenInfo(refreshToken, sessionId));
+			// ロックを使用してパスワード検証とセッション発行をアトミックに実行し、
+			// UpdatePassword とのレースコンディションを防止する。
+				bool isPasswordMatch;
+				string newSessionId = null;
+				string newRefreshToken = null;
 	
-				// Cookieを設定し、302リダイレクト
-				SetSessionCookie(res, sessionId);
-				SetRefreshTokenCookie(res, refreshToken);
-				Redirect(res, "/");
-			}
-			else
-			{
-				RecordLoginFailure(clientIp);
-				SendJsonResponse(res, "{\"success\": false, \"error\": \"パスワードが間違っています\"}");
-			}
+				lock (_passwordLock)
+				{
+					isPasswordMatch = ConstantTimeEquals(pw, _password);
+					if (isPasswordMatch)
+					{
+						newSessionId = Guid.NewGuid().ToString("N");
+						newRefreshToken = Guid.NewGuid().ToString("N");
+						_sessions.TryAdd(newSessionId, new SessionInfo(newSessionId));
+						_refreshTokens.TryAdd(newRefreshToken, new RefreshTokenInfo(newRefreshToken, newSessionId));
+					}
+				}
+	
+				if (isPasswordMatch)
+				{
+					// 成功時は失敗履歴をクリア
+					_loginAttempts.TryRemove(clientIp, out _);
+	
+					// Cookieを設定し、302リダイレクト
+					SetSessionCookie(res, newSessionId);
+					SetRefreshTokenCookie(res, newRefreshToken);
+					Redirect(res, "/");
+				}
+				else
+				{
+					RecordLoginFailure(clientIp);
+					SendJsonResponse(res, "{\"success\": false, \"error\": \"パスワードが間違っています\"}");
+				}
 		}
 
 		//====================================================================================
@@ -1015,10 +1061,10 @@ namespace Browser
 		{
 			var now = DateTime.UtcNow;
 			var existing = _loginAttempts.AddOrUpdate(
-				ip,
-				newValue: (1, now),
-				(updateOldValue, k) => (updateOldValue.count + 1, now)
-			);
+					ip,
+					key => (1, now),
+					(key, oldValue) => (oldValue.count + 1, now)
+				);
 		}
 
 		//====================================================================================
@@ -1051,7 +1097,7 @@ namespace Browser
 		{
 			res.Headers["X-Frame-Options"] = "DENY";
 			res.Headers["X-Content-Type-Options"] = "nosniff";
-			res.Headers["Content-Security-Policy"] = "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline';";
+			res.Headers["Content-Security-Policy"] = "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' blob: data:;";
 		}
 
 		/// <summary>

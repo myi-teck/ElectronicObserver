@@ -257,6 +257,8 @@ namespace ElectronicObserver.Window
 				// 2026/06/10 myi 新規作成（遠隔操作用の設定コピー）
 				config.RemoteControllerPort = c.RemoteControllerPort;
 				config.RemoteControllerAddress = c.RemoteControllerAddress;
+				// 2026/07/23 追記（パスワードの設定コピー）
+				config.RemoteControllerPassword = c.RemoteControllerPassword;
 				return config;
 			}
 		}
@@ -292,6 +294,8 @@ namespace ElectronicObserver.Window
 			// 2026/06/10 myi 新規作成（遠隔操作用の設定書き戻し）
 			c.RemoteControllerPort = config.RemoteControllerPort;
 			c.RemoteControllerAddress = config.RemoteControllerAddress;
+			// 2026/07/23 追記（パスワードの設定書き戻し）
+			c.RemoteControllerPassword = config.RemoteControllerPassword;
 			//Utility.Configuration.Config.Debug.EnableDebugMenu = config.EnableDebugMenu;
 
 			// volume

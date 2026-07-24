@@ -692,6 +692,15 @@ namespace Browser
 
 			UpdateColorFilterMenu();
 			ApplyColorFilter();
+
+			// 2026/07/23 追記（遠隔操作サーバー設定の動的更新）
+			// 注意: _remoteController がまだ生成されていない（null）場合、
+			// ConfigurationChanged は RemoteController 構築前に発生し得るため、
+			// ガード句で安全に処理する。
+			if (_remoteController != null)
+			{
+				_remoteController.UpdatePassword(conf.RemoteControllerPassword);
+			}
 		}
 
 		private void ConfigurationUpdated()

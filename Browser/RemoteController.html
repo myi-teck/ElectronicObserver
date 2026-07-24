@@ -1,4 +1,4 @@
-<!--
+﻿<!--
   [AI IMPORTANT INSTRUCTION]
   This file MUST be saved in "UTF-8 with BOM" (UTF-8 signature) encoding to prevent Japanese character corruption (all characters turning into '?').
   Ensure that you preserve the UTF-8 BOM when saving. After editing, verify that no '?' replacements occurred.
@@ -199,25 +199,19 @@
             font-weight: bold;
         }
 
-        /* 
-         * 5. タップ・操作フィードバック
-         * タッチ箇所に波紋を生成するアニメーション。
+        /*
+         * 5. カーソル色反転エフェクト
+         * クリック/タッチ時に仮想カーソルの色を反転（白）させる。
          */
-        .ripple {
-            position: absolute;
-            width: 40px;
-            height: 40px;
-            background: rgba(0, 255, 102, 0.15);
-            border: 2px solid var(--accent-color);
-            border-radius: 50%;
-            transform: scale(0);
-            animation: ripple-animation 0.4s cubic-bezier(0.1, 0.8, 0.3, 1);
-            pointer-events: none;
-            box-shadow: 0 0 10px var(--accent-glow);
+        #virtual-cursor.cursor-invert {
+            background: #ffffff;
+            border-color: #ffffff;
+            box-shadow: 0 0 8px #ffffff;
+            transition: all 0.1s ease-out;
         }
 
-        @keyframes ripple-animation {
-            to { transform: scale(3.5); opacity: 0; }
+        #virtual-cursor.cursor-invert::after {
+            background: #030805;
         }
 
         /*
@@ -2204,6 +2198,175 @@
             background: #ff6600; /* 点灯状態：鮮烈なアンバーオレンジで発光 */
             box-shadow: 0 0 3px rgba(255, 102, 0, 0.85); /* ネオン感を引き出すグロー効果 */
         }
+
+        /* =====================================================================
+         * 縦画面（Portrait）時のデフォルト隠しスタイル
+         * 横画面時のみ表示される要素をデフォルトで隠す
+         * ===================================================================== */
+
+        /* トグルボタン: 縦画面時は非表示 */
+        #trackpad-toggle {
+            display: none;
+        }
+
+        /* 半透明オーバーレイ: 縦画面時は非表示・無効化 */
+        #trackpad-overlay {
+            visibility: hidden;
+            pointer-events: none;
+            opacity: 0;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 99;
+            transition: opacity 0.3s ease, visibility 0.3s ease;
+        }
+
+        /* =====================================================================
+         * 横画面（Landscape）時のレイアウトオーバーライド
+         * ===================================================================== */
+        @media (orientation: landscape) {
+
+            /* 横画面用CSSカスタムプロパティ */
+            :root {
+                --panel-width: 340px;
+            }
+
+            /* body: 縦スタック → 横並列（ゲーム画面 + 操作パネル）に変更 */
+            body {
+                flex-direction: row;
+            }
+
+            /* -----------------------------------------------------------------
+             * ゲーム画面（#viewport）の最適化
+             * ----------------------------------------------------------------- */
+            #viewport {
+                flex: 1;
+                width: auto;
+                height: 100dvh;
+                border-bottom: none;
+                border-right: 2px solid var(--accent-color);
+            }
+
+            #game-screen {
+                max-width: none;
+                max-height: 100dvh;
+                width: auto;
+                height: 100dvh;
+                object-fit: contain;
+            }
+
+            /* -----------------------------------------------------------------
+             * 操作パネル（#trackpad-area）の折り畳み
+             * ----------------------------------------------------------------- */
+            #trackpad-area {
+                flex: 0 0 0;
+                position: fixed;
+                right: 0;
+                top: 0;
+                bottom: 0;
+                width: var(--panel-width);
+                max-width: 80vw;
+                transform: translateX(100%);
+                transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                z-index: 100;
+                background: var(--bg-color);
+                box-shadow: -4px 0 20px rgba(0, 0, 0, 0.6);
+            }
+
+            /* 展開状態（JSによるクラス付与で切り替え） */
+            #trackpad-area.panel-expanded {
+                transform: translateX(0);
+            }
+
+            /* -----------------------------------------------------------------
+             * 折り畳み/展開トグルボタン
+             * ----------------------------------------------------------------- */
+            #trackpad-toggle {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                position: fixed;
+                right: 0;
+                top: 50%;
+                transform: translateY(-50%);
+                width: 24px;
+                height: 80px;
+                background: rgba(3, 8, 5, 0.9);
+                border: 1px solid var(--glass-border);
+                border-right: none;
+                border-radius: 4px 0 0 4px;
+                color: var(--accent-color);
+                font-size: 12px;
+                cursor: pointer;
+                z-index: 101;
+                transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                            background 0.15s ease;
+                -webkit-tap-highlight-color: transparent;
+                box-shadow: -2px 0 8px rgba(0, 0, 0, 0.4);
+            }
+
+            #trackpad-toggle:hover {
+                background: rgba(0, 255, 102, 0.1);
+            }
+
+            #trackpad-toggle:active {
+                transform: translateY(-50%) scale(0.95);
+            }
+
+            /* 展開時: ボタンをパネル右端に移動 */
+            #trackpad-toggle.panel-expanded {
+                right: var(--panel-width);
+            }
+
+            #trackpad-toggle .toggle-icon {
+                transition: transform 0.3s ease;
+                display: inline-block;
+            }
+
+            /* 展開時: アイコンを反転（◀ → ▶） */
+            #trackpad-toggle.panel-expanded .toggle-icon {
+                transform: scaleX(-1);
+            }
+
+            /* -----------------------------------------------------------------
+             * 半透明オーバーレイ（パネル展開時の背景を暗くする）
+             * ----------------------------------------------------------------- */
+            #trackpad-overlay {
+                /* position/background/z-index/transition はデフォルトブロックで定義済み */
+            }
+
+            /* 展開時: オーバーレイを表示（visibility + opacity でフェードアニメーション有効） */
+            #trackpad-overlay.overlay-visible {
+                visibility: visible;
+                pointer-events: auto;
+                opacity: 1;
+            }
+
+            /* -----------------------------------------------------------------
+             * 横画面時の #click-btn のレイアウト調整
+             * ----------------------------------------------------------------- */
+            #click-btn {
+                height: 60px;
+                font-size: 16px;
+            }
+
+            /* -----------------------------------------------------------------
+             * 横画面時の HUD レイアウト調整
+             * ----------------------------------------------------------------- */
+            #hud-container {
+                right: 4px;
+                left: 4px;
+            }
+
+            /* 拡大鏡のサイズ調整（横画面時はやや小さめ） */
+            .magnifier-container {
+                width: 200px;
+                height: 200px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -2484,6 +2647,14 @@
         </button>
     </div>
 
+    <!-- 半透明オーバーレイ（横画面時のみ機能） -->
+    <div id='trackpad-overlay' class='trackpad-overlay' aria-hidden='true'></div>
+
+    <!-- 折り畳み/展開トグルボタン（横画面時のみ表示） -->
+    <button id='trackpad-toggle' class='trackpad-toggle-btn' aria-label='操作パネルの表示/非表示' aria-expanded='false'>
+        <span class='toggle-icon'>◀</span>
+    </button>
+
     <script>
         const screen = document.getElementById('game-screen');
 
@@ -2561,6 +2732,9 @@
             // 動的FPS制御：操作検出
             activateViewportFpsControl();
 
+            // カーソル色反転
+            cursor.classList.add('cursor-invert');
+
             // タッチ開始位置にカーソルを即時移動
             handleViewportMove(touch.clientX, touch.clientY);
         }, { passive: true });
@@ -2585,6 +2759,9 @@
 
         // ── touchend ──
         viewport.addEventListener('touchend', (e) => {
+            // カーソル色反転解除
+            cursor.classList.remove('cursor-invert');
+
             const elapsed = Date.now() - viewportTouchStartTime;
 
             if (isDraggingOnViewport) {
@@ -2596,11 +2773,6 @@
                 const x = Math.max(0, Math.min(1.0, (viewportTouchStartX - rect.left) / rect.width));
                 const y = Math.max(0, Math.min(1.0, (viewportTouchStartY - rect.top) / rect.height));
                 fetch(`/control?action=touch_click&x=${x}&y=${y}`);
-            }
-
-            // リップルエフェクト（タップ時のみ）
-            if (!isDraggingOnViewport) {
-                createViewportRipple(viewportTouchStartX, viewportTouchStartY);
             }
 
             isDraggingOnViewport = false;
@@ -2622,6 +2794,9 @@
             // 動的FPS制御
             activateViewportFpsControl();
 
+            // カーソル色反転
+            cursor.classList.add('cursor-invert');
+
             // カーソル位置に即時移動
             handleViewportMove(e.clientX, e.clientY);
         });
@@ -2634,6 +2809,9 @@
 
         // ── mouseup（PCマウス） ──
         viewport.addEventListener('mouseup', (e) => {
+            // カーソル色反転解除
+            cursor.classList.remove('cursor-invert');
+
             if (!isMouseDownOnViewport) return;
             isMouseDownOnViewport = false;
 
@@ -2647,34 +2825,14 @@
             const dist = Math.sqrt(dx * dx + dy * dy);
 
             if (elapsed <= tapTimeout && dist <= dragThreshold) {
-                createViewportRipple(viewportTouchStartX, viewportTouchStartY);
+                // タップ判定（リップルエフェクトは削除済み）
             }
         });
 
-        // 既存の handleViewportClick は削除（setupViewportTouch に統合）
-        // 後方互換性のため残してはいけないので、このコメントは削除する
-
-        // ゲーム画面用リップルエフェクト生成関数
-
-        // ゲーム画面用リップルエフェクト生成関数
-        function createViewportRipple(clientX, clientY) {
-            const ripple = document.createElement('div');
-            ripple.style.position = 'absolute';
-            ripple.style.left = (clientX - viewport.getBoundingClientRect().left - 20) + 'px';
-            ripple.style.top = (clientY - viewport.getBoundingClientRect().top - 20) + 'px';
-            ripple.style.width = '40px';
-            ripple.style.height = '40px';
-            ripple.style.background = 'rgba(0, 255, 102, 0.3)';
-            ripple.style.border = '2px solid var(--accent-color)';
-            ripple.style.borderRadius = '50%';
-            ripple.style.transform = 'scale(0)';
-            ripple.style.animation = 'ripple-animation 0.4s cubic-bezier(0.1, 0.8, 0.3, 1)';
-            ripple.style.pointerEvents = 'none';
-            ripple.style.boxShadow = '0 0 10px var(--accent-glow)';
-            ripple.style.zIndex = '20';
-            viewport.appendChild(ripple);
-            setTimeout(() => ripple.remove(), 400);
-        }
+        // ── pointerleave（カーソルが画面外に出た場合のクラスクリーンアップ） ──
+        viewport.addEventListener('pointerleave', () => {
+            cursor.classList.remove('cursor-invert');
+        });
 
         //============================================================================================
         // 艦隊詳細HUDの現在表示中艦隊ID（ダブルタップで1→2→3→4→1とサイクル切り替え）
@@ -4221,7 +4379,7 @@
             lastX = e.clientX;
             lastY = e.clientY;
             pad.setPointerCapture(e.pointerId);
-            createRipple(e);
+            cursor.classList.add('cursor-invert');
             
             // すでに開始されているタイマーがあれば確実にリセット・クリア
             if (magnifierTimer) {
@@ -4239,6 +4397,7 @@
 
         // トラックパッド操作終了（指を離したとき）に拡大表示パネルを非表示にし、保留中の表示タイマーもクリアします
         pad.addEventListener('pointerup', e => {
+            cursor.classList.remove('cursor-invert');
             if (magnifierTimer) {
                 clearTimeout(magnifierTimer);
                 magnifierTimer = null;
@@ -4251,6 +4410,7 @@
 
         // トラックパッド操作キャンセル（システム割り込み等の発生時）に拡大表示パネルを非表示にし、保留中の表示タイマーもクリアします
         pad.addEventListener('pointercancel', e => {
+            cursor.classList.remove('cursor-invert');
             if (magnifierTimer) {
                 clearTimeout(magnifierTimer);
                 magnifierTimer = null;
@@ -4259,6 +4419,11 @@
             if (magnifier) {
                 magnifier.classList.remove('visible');
             }
+        });
+
+        // トラックパッド pointerleave（カーソルが画面外に出た場合のクラスクリーンアップ）
+        pad.addEventListener('pointerleave', () => {
+            cursor.classList.remove('cursor-invert');
         });
 
         // トラックパッド操作 (ドラッグ操作による相対移動量を絶対割合座標へと変換して送信します)
@@ -4316,16 +4481,6 @@
             stateBadge.className = 'badge';
             fetch('/control?action=click');
         });
-
-        function createRipple(e) {
-            const ripple = document.createElement('div');
-            ripple.className = 'ripple';
-            const rect = pad.getBoundingClientRect();
-            ripple.style.left = (e.clientX - rect.left - 20) + 'px';
-            ripple.style.top = (e.clientY - rect.top - 20) + 'px';
-            pad.appendChild(ripple);
-            setTimeout(() => ripple.remove(), 400);
-        }
 
         //============================================================================================
         // 艦隊ステータスHUDのシングルクリック/シングルタップで艦隊詳細HUDを切り替え
@@ -4405,6 +4560,79 @@
             });
         }, 5000);
 
+
+        //============================================================================================
+        // 横画面（Landscape）用：操作パネルの折り畳み/展開トグル
+        // IIFE内に完全に閉じ込め、グローバルスコープへの漏洩を防止
+        //============================================================================================
+        (function initTrackpadPanel() {
+            // --- 内部状態（IIFE内に閉じ込める）---
+            let isExpanded = false;
+
+            // --- DOM要素の取得 ---
+            const toggleBtn = document.getElementById('trackpad-toggle');
+            const trackpadArea = document.getElementById('trackpad-area');
+            const overlay = document.getElementById('trackpad-overlay');
+            if (!toggleBtn || !trackpadArea) return;
+
+            // --- パネルを閉じる専用関数 ---
+            function closePanel() {
+                if (!isExpanded) return; // ガード: 既に閉じている場合はスキップ
+                isExpanded = false;
+                trackpadArea.classList.remove('panel-expanded');
+                toggleBtn.classList.remove('panel-expanded');
+                toggleBtn.setAttribute('aria-expanded', 'false');
+                if (overlay) {
+                    overlay.classList.remove('overlay-visible');
+                    overlay.setAttribute('aria-hidden', 'true');
+                }
+            }
+
+            // --- パネルを切り替える関数 ---
+            function togglePanel(e) {
+                if (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+                isExpanded = !isExpanded;
+
+                if (isExpanded) {
+                    trackpadArea.classList.add('panel-expanded');
+                    toggleBtn.classList.add('panel-expanded');
+                    toggleBtn.setAttribute('aria-expanded', 'true');
+                    if (overlay) {
+                        overlay.classList.add('overlay-visible');
+                        overlay.setAttribute('aria-hidden', 'false');
+                    }
+                } else {
+                    closePanel();
+                }
+            }
+
+            // --- イベントリスナー ---
+            toggleBtn.addEventListener('click', togglePanel);
+            toggleBtn.addEventListener('pointerdown', e => e.stopPropagation());
+
+            // オーバーレイクリックでパネルを閉じる（擬似イベント不使用）
+            if (overlay) {
+                overlay.addEventListener('click', () => {
+                    closePanel();
+                });
+            }
+
+            // --- 画面回転時にパネル状態をリセット ---
+            function resetPanelState() {
+                closePanel();
+            }
+
+            // モダン: screen.orientation API（推奨）
+            if (screen && screen.orientation) {
+                screen.orientation.addEventListener('change', resetPanelState);
+            }
+
+            // フォールバック: legacy orientationchange イベント
+            window.addEventListener('orientationchange', resetPanelState);
+        })();
 
     </script>
 </body>
