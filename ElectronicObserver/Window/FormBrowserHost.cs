@@ -4,7 +4,6 @@ using ElectronicObserver.Data.Battle;
 using ElectronicObserver.Observer;
 using ElectronicObserver.Resource;
 using ElectronicObserver.Utility.Mathematics;
-using mshtml;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;

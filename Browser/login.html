@@ -1,149 +1,232 @@
-<!--
-  [AI IMPORTANT INSTRUCTION]
-  This file MUST be saved in "UTF-8 with BOM" (UTF-8 signature)
-  encoding to prevent Japanese character corruption
-  (all characters turning into '?').
-  Ensure that you preserve the UTF-8 BOM when saving.
--->
 <!DOCTYPE html>
-<html lang='ja'>
+<html lang='en'>
 <head>
     <meta charset='UTF-8' />
     <meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover' />
-    <title>NERV REMOTE CONTROL — Login</title>
+    <title>IMPERIAL NAVY HEADQUARTERS NETWORK — Login</title>
     <style>
-        /* ── 1. デザインシステム ──────────────────────────────── */
         :root {
-            --bg-color:       #030805 ;
-            --accent-color:   #00ff66 ;
-            --accent-glow:    rgba(0,255,102,.4) ;
-            --text-color:     #a3f7bf ;
+            --bg-color:       #001133 ;
+            --box-bg:         #00081d ;
+            --border-color:   #ffffff ;
+            --text-color:     #ffffff ;
+            --dim-text:       rgba(255, 255, 255, 0.75) ;
+            --error-color:    #ff6666 ;
         }
 
-        /* ── 2. リセット ────────────────────────────────────── */
         * { margin:0; padding:0; box-sizing:border-box;
              -webkit-tap-highlight-color:transparent; }
 
         body {
             background: var(--bg-color) ;
             color:      var(--text-color) ;
-            font-family: 'Play','Consolas','Courier New',monospace ;
+            font-family: 'Consolas', 'Courier New', monospace ;
             height: 100dvh ;
             display: flex ;
             justify-content: center ;
             align-items: center ;
+            padding: 20px ;
         }
 
-        /* ── 3. ログインボックス ────────────────────────────── */
         #login-box {
-            background: rgba(3,8,5,.95) ;
-            border:     2px solid var(--accent-color) ;
-            border-radius: 8px ;
-            padding:    30px 40px ;
-            box-shadow: 0 0 30px var(--accent-glow),
-                        inset 0 0 15px rgba(0,255,102,.05) ;
+            background: var(--box-bg) ;
+            border:     2px solid var(--border-color) ;
+            padding:    20px 25px ;
+            box-shadow: none ;
             text-align: center ;
-            min-width:  320px ;
+            width:      100% ;
+            max-width:  540px ;
+            font-size:  13px ;
+            line-height: 1.5 ;
         }
 
-        #login-box .login-title {
-            font-size: 18px ;
-            color:     var(--accent-color) ;
-            text-transform: uppercase ;
-            letter-spacing: 0.3em ;
+        .logo-container {
+            display: flex ;
+            justify-content: center ;
+            align-items: center ;
+            margin-top: 5px ;
+            margin-bottom: 10px ;
+        }
+
+        .crest-logo {
+            width: 68px ;
+            height: 68px ;
+        }
+
+        .terminal-divider {
+            color: var(--dim-text) ;
+            overflow: hidden ;
+            white-space: nowrap ;
+            margin: 10px 0 ;
+            user-select: none ;
+            letter-spacing: -0.5px ;
+        }
+
+        .warning-title {
+            font-size: 13px ;
             font-weight: bold ;
-            margin-bottom: 8px ;
-            text-shadow: 0 0 8px var(--accent-glow) ;
+            letter-spacing: 0.08em ;
+            margin-bottom: 6px ;
+            color: var(--text-color) ;
         }
 
-        #login-box .login-subtitle {
+        .motto {
             font-size: 11px ;
-            color:     rgba(163,247,191,.6) ;
-            letter-spacing: 0.15em ;
-            margin-bottom: 24px ;
-            text-transform: uppercase ;
+            color: var(--dim-text) ;
+            margin: 8px 0 ;
+            font-style: italic ;
+            letter-spacing: 0.03em ;
+        }
+
+        .form-row {
+            display: flex ;
+            align-items: center ;
+            justify-content: center ;
+            margin: 14px 0 ;
+            font-size: 13px ;
+        }
+
+        .form-row label {
+            width: 110px ;
+            text-align: right ;
+            padding-right: 10px ;
+            white-space: pre ;
+            font-weight: bold ;
         }
 
         #login-password-field {
-            width: 100% ;
-            padding: 10px 14px ;
-            background: rgba(0,255,102,.05) ;
-            border: 1px solid rgba(0,255,102,.3) ;
-            border-radius: 4px ;
+            background: transparent ;
+            border: 1px solid var(--border-color) ;
             color: var(--text-color) ;
-            font-family: 'Consolas','Courier New',monospace ;
+            font-family: 'Consolas', 'Courier New', monospace ;
             font-size: 14px ;
+            padding: 5px 10px ;
+            width: 210px ;
             outline: none ;
-            transition: border-color .2s, box-shadow .2s ;
             text-align: center ;
+            letter-spacing: 0.1em ;
         }
 
         #login-password-field:focus {
-            border-color: var(--accent-color) ;
-            box-shadow:   0 0 12px var(--accent-glow) ;
+            background: transparent ;
+            box-shadow: none ;
         }
 
         #login-password-field::placeholder {
-            color: rgba(163,247,191,.3) ;
+            color: rgba(255, 255, 255, 0.35) ;
         }
 
         #login-btn {
-            width: 100% ;
-            padding: 12px 0 ;
-            background: rgba(0,255,102,.12) ;
-            border: 1px solid var(--accent-color) ;
-            border-radius: 4px ;
-            color: var(--accent-color) ;
-            font-family: 'Consolas','Courier New',monospace ;
-            font-size: 14px ;
+            background: transparent ;
+            border: 1px solid var(--border-color) ;
+            color: var(--text-color) ;
+            font-family: 'Consolas', 'Courier New', monospace ;
+            font-size: 13px ;
             font-weight: bold ;
-            letter-spacing: 0.2em ;
-            text-transform: uppercase ;
+            padding: 8px 16px ;
+            margin-top: 10px ;
             cursor: pointer ;
-            transition: background .2s, box-shadow .2s ;
+            width: 100% ;
+            letter-spacing: 0.1em ;
+            transition: background 0.15s, color 0.15s ;
         }
 
         #login-btn:hover {
-            background: rgba(0,255,102,.25) ;
-            box-shadow:   0 0 15px var(--accent-glow) ;
+            background: var(--text-color) ;
+            color: var(--box-bg) ;
         }
 
         #login-btn:active {
-            transform: scale(0.98) ;
+            transform: scale(0.99) ;
         }
 
         #login-error {
-            margin-top: 14px ;
-            font-size: 11px ;
-            color:     #ef4444 ;
-            text-shadow: 0 0 4px rgba(239,68,68,.5) ;
-            min-height: 16px ;
+            margin-top: 10px ;
+            font-size: 12px ;
+            color: var(--error-color) ;
+            min-height: 18px ;
+            font-weight: bold ;
         }
     </style>
 </head>
 <body>
 
     <div id='login-box'>
-        <div class='login-title'>NERV REMOTE CONTROL</div>
-        <div class='login-subtitle'>Authentication Required</div>
-        <input type='password' id='login-password-field' placeholder='Enter Password' autocomplete='off' />
-        <button id='login-btn'>Login</button>
+        <div class='logo-container'>
+            <svg class='crest-logo' viewBox='0 0 100 100' width='68' height='68'>
+                <defs>
+                    <g id='petal-front'>
+                        <path d='M 48.5,42 C 47,29 42,12 45.5,7 C 47.5,4.5 52.5,4.5 54.5,7 C 58,12 53,29 51.5,42 Z' fill='#00081d' stroke='#ffffff' stroke-width='1.4' />
+                    </g>
+                    <g id='petal-back'>
+                        <path d='M 46,11.5 C 47.5,8 52.5,8 54,11.5 Z' fill='#00081d' stroke='#ffffff' stroke-width='1.2' />
+                    </g>
+                </defs>
+                <g>
+                    <use href='#petal-back' transform='rotate(11.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(33.75 50 50)' />
+                    <use href='#petal-back' transform='rotate(56.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(78.75 50 50)' />
+                    <use href='#petal-back' transform='rotate(101.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(123.75 50 50)' />
+                    <use href='#petal-back' transform='rotate(146.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(168.75 50 50)' />
+                    <use href='#petal-back' transform='rotate(191.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(213.75 50 50)' />
+                    <use href='#petal-back' transform='rotate(236.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(258.75 50 50)' />
+                    <use href='#petal-back' transform='rotate(281.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(303.75 50 50)' />
+                    <use href='#petal-back' transform='rotate(326.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(348.75 50 50)' />
+
+                    <use href='#petal-front' transform='rotate(0 50 50)' />
+                    <use href='#petal-front' transform='rotate(22.5 50 50)' />
+                    <use href='#petal-front' transform='rotate(45 50 50)' />
+                    <use href='#petal-front' transform='rotate(67.5 50 50)' />
+                    <use href='#petal-front' transform='rotate(90 50 50)' />
+                    <use href='#petal-front' transform='rotate(112.5 50 50)' />
+                    <use href='#petal-front' transform='rotate(135 50 50)' />
+                    <use href='#petal-front' transform='rotate(157.5 50 50)' />
+                    <use href='#petal-front' transform='rotate(180 50 50)' />
+                    <use href='#petal-front' transform='rotate(202.5 50 50)' />
+                    <use href='#petal-front' transform='rotate(225 50 50)' />
+                    <use href='#petal-front' transform='rotate(247.5 50 50)' />
+                    <use href='#petal-front' transform='rotate(270 50 50)' />
+                    <use href='#petal-front' transform='rotate(292.5 50 50)' />
+                    <use href='#petal-front' transform='rotate(315 50 50)' />
+                    <use href='#petal-front' transform='rotate(337.5 50 50)' />
+
+                    <circle cx='50' cy='50' r='8.5' fill='#00081d' stroke='#ffffff' stroke-width='1.8' />
+                </g>
+            </svg>
+        </div>
+
+        <div class='terminal-divider'>==================================================</div>
+        <div class='warning-title'>[ WARNING: IMPERIAL NAVY HEADQUARTERS NETWORK ]</div>
+        <div class='motto'>"THE EMPIRE EXPECTS YOU TO DO YOUR DUTY TO HIS MAJESTY."</div>
+        <div class='terminal-divider'>==================================================</div>
+
+        <div class='form-row'>
+            <label>PASSWORD :</label>
+            <input type='password' id='login-password-field' placeholder='[                ]' autocomplete='off' />
+        </div>
+
+        <button id='login-btn'>[ AUTHENTICATE ]</button>
         <div id='login-error'></div>
+        <div class='terminal-divider'>==================================================</div>
     </div>
 
     <script>
         (function () {
             'use strict';
 
-            // DOM 要素の取得
             const loginPasswordField = document.getElementById('login-password-field');
             const loginBtn = document.getElementById('login-btn');
             const loginError = document.getElementById('login-error');
 
-            // ── 初期化 ─────────────────────────────────────────
             loginPasswordField.focus();
 
-            // ── ログイン処理 ───────────────────────────────────
             async function attemptLogin(password) {
                 try {
                     const response = await fetch('/login', {
@@ -154,32 +237,27 @@
                         body: 'password=' + encodeURIComponent(password)
                     });
 
-                    // サーバーが 302 リダイレクトを返す場合はそのまま追随
                     if (response.redirected || response.status === 302) {
-                        // 成功 → Cookie(session_id)が自動で設定される
                         window.location.href = response.url || '/';
                         return;
                     }
 
-                    // JSON レスポンス（エラー等）の処理
                     const data = await response.json();
                     if (data.success) {
-                        // 成功 → ルートへ遷移（後方互換用）
                         window.location.href = '/';
                     } else {
-                        loginError.textContent = data.error || 'ログインに失敗しました';
+                        loginError.textContent = data.error || 'AUTHENTICATION FAILED';
                     }
                 } catch (error) {
-                    loginError.textContent = '通信エラーが発生しました';
+                    loginError.textContent = 'NETWORK ERROR';
                     console.error('Login error:', error);
                 }
             }
 
-            // ── イベントリスナー ───────────────────────────────
             loginBtn.addEventListener('click', function () {
                 const password = loginPasswordField.value.trim();
                 if (!password) {
-                    loginError.textContent = 'パスワードを入力してください';
+                    loginError.textContent = 'PASSWORD REQUIRED';
                     return;
                 }
                 loginError.textContent = '';
