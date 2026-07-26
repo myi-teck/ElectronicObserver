@@ -4,6 +4,7 @@ using ElectronicObserver.Data.Battle;
 using ElectronicObserver.Observer;
 using ElectronicObserver.Resource;
 using ElectronicObserver.Utility.Mathematics;
+using mshtml;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -256,8 +257,6 @@ namespace ElectronicObserver.Window
 				// 2026/06/10 myi 新規作成（遠隔操作用の設定コピー）
 				config.RemoteControllerPort = c.RemoteControllerPort;
 				config.RemoteControllerAddress = c.RemoteControllerAddress;
-				// 2026/07/23 追記（パスワードの設定コピー）
-				config.RemoteControllerPassword = c.RemoteControllerPassword;
 				return config;
 			}
 		}
@@ -293,8 +292,6 @@ namespace ElectronicObserver.Window
 			// 2026/06/10 myi 新規作成（遠隔操作用の設定書き戻し）
 			c.RemoteControllerPort = config.RemoteControllerPort;
 			c.RemoteControllerAddress = config.RemoteControllerAddress;
-			// 2026/07/23 追記（パスワードの設定書き戻し）
-			c.RemoteControllerPassword = config.RemoteControllerPassword;
 			//Utility.Configuration.Config.Debug.EnableDebugMenu = config.EnableDebugMenu;
 
 			// volume
@@ -1125,7 +1122,7 @@ namespace ElectronicObserver.Window
 							$"\"id\":{q.QuestID}," +
 							$"\"name\":\"{EscapeJson(q.Name)}\"," +
 							$"\"progressText\":\"{EscapeJson(progressText)}\"," +
-							$"\"progressRate\":{progressRate.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}," +
+							$"\"progressRate\":{progressRate:F2}," +
 							$"\"state\":{q.State}" +
 							"}");
 					}
@@ -1191,14 +1188,14 @@ namespace ElectronicObserver.Window
 			// --- 状態情報 ---
 			sb.Append($"\"hp\":{ship.HPCurrent},");
 			sb.Append($"\"maxHp\":{ship.HPMax},");
-			sb.Append($"\"hpRate\":{ship.HPRate.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)},");
+			sb.Append($"\"hpRate\":{ship.HPRate},");
 			sb.Append($"\"condition\":{ship.Condition},");
 			sb.Append($"\"fuel\":{ship.Fuel},");
 			sb.Append($"\"ammo\":{ship.Ammo},");
 			sb.Append($"\"fuelMax\":{ship.FuelMax},");
 			sb.Append($"\"ammoMax\":{ship.AmmoMax},");
-			sb.Append($"\"fuelRate\":{ship.FuelRate.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)},");
-			sb.Append($"\"ammoRate\":{ship.AmmoRate.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)},");
+			sb.Append($"\"fuelRate\":{ship.FuelRate},");
+			sb.Append($"\"ammoRate\":{ship.AmmoRate},");
 
 			// --- 装備情報（固定4スロット） ---
 			sb.Append("\"equipment\":[");
