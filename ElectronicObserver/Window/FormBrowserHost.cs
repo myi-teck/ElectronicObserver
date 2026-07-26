@@ -1125,7 +1125,7 @@ namespace ElectronicObserver.Window
 							$"\"id\":{q.QuestID}," +
 							$"\"name\":\"{EscapeJson(q.Name)}\"," +
 							$"\"progressText\":\"{EscapeJson(progressText)}\"," +
-							$"\"progressRate\":{progressRate:F2}," +
+							$"\"progressRate\":{progressRate.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}," +
 							$"\"state\":{q.State}" +
 							"}");
 					}
@@ -1191,14 +1191,14 @@ namespace ElectronicObserver.Window
 			// --- 状態情報 ---
 			sb.Append($"\"hp\":{ship.HPCurrent},");
 			sb.Append($"\"maxHp\":{ship.HPMax},");
-			sb.Append($"\"hpRate\":{ship.HPRate},");
+			sb.Append($"\"hpRate\":{ship.HPRate.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)},");
 			sb.Append($"\"condition\":{ship.Condition},");
 			sb.Append($"\"fuel\":{ship.Fuel},");
 			sb.Append($"\"ammo\":{ship.Ammo},");
 			sb.Append($"\"fuelMax\":{ship.FuelMax},");
 			sb.Append($"\"ammoMax\":{ship.AmmoMax},");
-			sb.Append($"\"fuelRate\":{ship.FuelRate},");
-			sb.Append($"\"ammoRate\":{ship.AmmoRate},");
+			sb.Append($"\"fuelRate\":{ship.FuelRate.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)},");
+			sb.Append($"\"ammoRate\":{ship.AmmoRate.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)},");
 
 			// --- 装備情報（固定4スロット） ---
 			sb.Append("\"equipment\":[");

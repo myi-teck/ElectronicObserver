@@ -3360,6 +3360,13 @@
                 const response = await fetch(url, { signal: controller.signal });
                 clearTimeout(timeoutId); // 正常に応答を受信したためタイムアウトタイマーをクリア
 
+                // Session expired (401) 検知時にリダイレクトし、ポーリングループを停止
+                if (response.status === 401) {
+                    console.warn("Screen: Session expired. Redirecting to login...");
+                    window.location.href = '/login-page';
+                    return;
+                }
+
                 // ─── 204 No Content の場合は差分なし → 描画をスキップしてタイマーへ
                 if (response.status === 204) {
                     isFirstWebpRequest = false; // 204応答であっても初期通信は成立したためフラグを下げる
@@ -3876,6 +3883,19 @@
                 // 各HUDブロックの前回適用バージョンをパラメータに付与して要求
                 const params = `materialVer=${hudVersions.material}&fleetsVer=${hudVersions.fleets}&battleVer=${hudVersions.battle}&combatVer=${hudVersions.combat}&questsVer=${hudVersions.quests}&logsVer=${hudVersions.logs}`;
                 const response = await fetch(`/hud?${params}&t=${Date.now()}`);
+
+                // Session expired (401) 検知時にリダイレクトし、ポーリングループを停止
+                if (response.status === 401) {
+                    console.warn("HUD: Session expired. Redirecting to login...");
+                    window.location.href = '/login-page';
+                    return;
+                }
+
+                // データ未同期（204）の場合はHUDを更新せず、次回のポーリングで再試行
+                if (response.status === 204) {
+                    return;
+                }
+
                 if (!response.ok) throw new Error("HUD fetch failed");
                 const data = await response.json();
 
