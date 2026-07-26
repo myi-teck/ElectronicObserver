@@ -17,6 +17,11 @@ namespace BrowserLib
 		private string ServerUrl;
 		private ChannelFactory<ClientType> PipeFactory;
 		private NetNamedPipeBinding Binding = new NetNamedPipeBinding();
+		
+		/// <summary>
+		/// Connect() 内の PipeFactory/Proxy 操作を保護するロックオブジェクト
+		/// </summary>
+		private readonly object _pipeLock = new object();
 
 		/// <summary>
 		/// サーバ側オブジェクトへの通信インターフェース
@@ -49,17 +54,39 @@ namespace BrowserLib
 		/// <summary>
 		/// サーバに接続
 		/// </summary>
-		public void Connect(string to)
+		/// <param name="to">接続先アドレス</param>
+		/// <param name="forceRecreate">既存の ChannelFactory を破棄して再作成するか</param>
+		public void Connect(string to, bool forceRecreate = false)
 		{
-			if (Proxy == null)
+			// スレッドセーフな Connect 処理
+			lock (_pipeLock)
 			{
-				ServerUrl = to;
-				if (PipeFactory == null)
+				if (forceRecreate)
 				{
-					PipeFactory = new ChannelFactory<ClientType>(Binding, new EndpointAddress(ServerUrl));
+					// 既存の ChannelFactory を破棄
+					if (PipeFactory != null)
+					{
+						try { PipeFactory.Abort(); } catch { }
+						PipeFactory = null;
+					}
+					// 既存の Proxy も破棄
+					if (Proxy != null)
+					{
+						try { ((IClientChannel)Proxy).Abort(); } catch { }
+						Proxy = null;
+					}
 				}
-				Proxy = PipeFactory.CreateChannel();
-				Closed = false;
+
+				if (Proxy == null)
+				{
+					ServerUrl = to;
+					if (PipeFactory == null)
+					{
+						PipeFactory = new ChannelFactory<ClientType>(Binding, new EndpointAddress(ServerUrl));
+					}
+					Proxy = PipeFactory.CreateChannel();
+					Closed = false;
+				}
 			}
 		}
 
@@ -124,7 +151,7 @@ namespace BrowserLib
 							Faulted(cex);
 							break;
 						}
-						Connect(ServerUrl);
+						Connect(ServerUrl, forceRecreate: true);
 					}
 				}
 			}

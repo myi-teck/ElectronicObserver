@@ -415,6 +415,9 @@ namespace Browser
 		private RemoteController _remoteController;
 
 		private string ProxySettings = null;
+	
+		// InitializeBrowser 呼び出しの排他ロック用オブジェクト
+		private readonly object _initBrowserLock = new object();
 
 
 		private bool _styleSheetApplied;
@@ -543,9 +546,14 @@ namespace Browser
 				this, typeof(BrowserLib.IBrowser), ServerUri + "Browser", "Browser");
 			BrowserHost.Connect(ServerUri + "/BrowserHost");
 			BrowserHost.Faulted += BrowserHostChannel_Faulted;
-
-
-			ConfigurationChanged(BrowserHost.Proxy.Configuration);
+	
+	
+			// BrowserHost.Proxy.Configuration が null の可能性があるため、null チェックを追加
+			var configuration = BrowserHost.Proxy.Configuration;
+			if (configuration != null)
+			{
+				ConfigurationChanged(configuration);
+			}
 
 
 			// ウィンドウの親子設定＆ホストプロセスから接続してもらう
@@ -563,9 +571,9 @@ namespace Browser
 			BrowserHost.AsyncRemoteRun(() => BrowserHost.Proxy.GetIconResource());
 
 
-			InitializeBrowser();
-
 			// 2026/06/10 myi 新規作成（設定されたポート・リッスンアドレスを用いてリモート操作サーバーを開始）
+			// Note: CefSharp の初期化(InitializeBrowser)は、本体から WCF で SetProxy が届いたタイミングで
+			// プロキシ設定(proxy-server)付きで実行されるため、ここでの早期呼び出しは行わない。
 			// 2026/07/14 myi 変更（パスワードパラメータの追加）
 			int port = Configuration.RemoteControllerPort;
 			if (port <= 0 || port > 65535)
@@ -596,41 +604,45 @@ namespace Browser
 			if (ProxySettings == null)
 				return;
 
-
-			var settings = new CefSettings()
+			// Cef.Initialize はプロセス内で一度しか呼べないので、既に初期化済みか確認する
+			if (Cef.IsInitialized == false)
 			{
-				BrowserSubprocessPath = Path.Combine(
-						AppDomain.CurrentDomain.SetupInformation.ApplicationBase,
-						Environment.Is64BitProcess ? "x64" : "x86",
-						"CefSharp.BrowserSubprocess.exe"),
-				CachePath = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), BrowserCachePath),
-				Locale = "ja",
-				AcceptLanguageList = "ja,en-US,en",        // todo: いる？
-				LogSeverity = Configuration.SavesBrowserLog ? LogSeverity.Error : LogSeverity.Disable,
-				LogFile = Configuration.SavesBrowserLog
-					? Path.Combine(AppDomain.CurrentDomain.SetupInformation.ApplicationBase, "BrowserLog.log")
-					: string.Empty,
-			};
+				var settings = new CefSettings()
+				{
+					BrowserSubprocessPath = Path.Combine(
+							AppDomain.CurrentDomain.SetupInformation.ApplicationBase,
+							Environment.Is64BitProcess ? "x64" : "x86",
+							"CefSharp.BrowserSubprocess.exe"),
+					CachePath = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), BrowserCachePath),
+					Locale = "ja",
+					AcceptLanguageList = "ja,en-US,en",        // todo: いる？
+					LogSeverity = Configuration.SavesBrowserLog ? LogSeverity.Error : LogSeverity.Disable,
+					LogFile = Configuration.SavesBrowserLog
+						? Path.Combine(AppDomain.CurrentDomain.SetupInformation.ApplicationBase, "BrowserLog.log")
+						: string.Empty,
+				};
 
-			if (!Configuration.HardwareAccelerationEnabled)
-				settings.DisableGpuAcceleration();
+				if (!Configuration.HardwareAccelerationEnabled)
+					settings.DisableGpuAcceleration();
 
-			settings.CefCommandLineArgs.Add("proxy-server", ProxySettings);
-			if (Configuration.ForceColorProfile)
-				settings.CefCommandLineArgs.Add("force-color-profile", "srgb");
+				settings.CefCommandLineArgs.Add("proxy-server", ProxySettings);
+				settings.CefCommandLineArgs.Add("ignore-certificate-errors", "1");
+				if (Configuration.ForceColorProfile)
+					settings.CefCommandLineArgs.Add("force-color-profile", "srgb");
 
-			// --------------------------------------------------------------------------------------------
-			// 遠隔操作時のために、バックグラウンド（最小化や他のウィンドウに隠れた状態）
-			// でも描画・JavaScriptを停止・制限させない設定
-			// --------------------------------------------------------------------------------------------
-			settings.CefCommandLineArgs.Add("disable-background-timer-throttling", "1");
-			settings.CefCommandLineArgs.Add("disable-backgrounding-occluded-windows", "1");
-			settings.CefCommandLineArgs.Add("disable-renderer-backgrounding", "1");
-			// Chrome 87以降で導入された ネイティブウィンドウの隠蔽検知 による描画停止を無効化
-			settings.CefCommandLineArgs.Add("disable-features", "CalculateNativeWinOcclusion,RendererBackgrounding");
+				// --------------------------------------------------------------------------------------------
+				// 遠隔操作時のために、バックグラウンド（最小化や他のウィンドウに隠れた状態）
+				// でも描画・JavaScriptを停止・制限させない設定
+				// --------------------------------------------------------------------------------------------
+				settings.CefCommandLineArgs.Add("disable-background-timer-throttling", "1");
+				settings.CefCommandLineArgs.Add("disable-backgrounding-occluded-windows", "1");
+				settings.CefCommandLineArgs.Add("disable-renderer-backgrounding", "1");
+				// Chrome 87以降で導入された ネイティブウィンドウの隠蔽検知 による描画停止を無効化
+				settings.CefCommandLineArgs.Add("disable-features", "CalculateNativeWinOcclusion,RendererBackgrounding");
 
-			CefSharpSettings.SubprocessExitIfParentProcessClosed = true;
-			Cef.Initialize(settings, false, (IBrowserProcessHandler)null);
+				CefSharpSettings.SubprocessExitIfParentProcessClosed = true;
+				Cef.Initialize(settings, false, (IBrowserProcessHandler)null);
+			}
 
 
 			var requestHandler = new CustomRequestHandler(pixiSettingEnabled: Configuration.PreserveDrawingBuffer);
@@ -680,6 +692,13 @@ namespace Browser
 
 		public void ConfigurationChanged(BrowserLib.BrowserConfiguration conf)
 		{
+			// WCF サービス経由で呼び出される可能性があるため、UI スレッドにディスパッチする
+			if (this.InvokeRequired)
+			{
+				this.BeginInvoke((Action)(() => ConfigurationChanged(conf)));
+				return;
+			}
+
 			Configuration = conf;
 
 			SizeAdjuster.AutoScroll = Configuration.IsScrollable;
@@ -692,6 +711,15 @@ namespace Browser
 
 			UpdateColorFilterMenu();
 			ApplyColorFilter();
+
+			// 2026/07/23 追記（遠隔操作サーバー設定の動的更新）
+			// 注意: _remoteController がまだ生成されていない（null）場合、
+			// ConfigurationChanged は RemoteController 構築前に発生し得るため、
+			// ガード句で安全に処理する。
+			if (_remoteController != null)
+			{
+				_remoteController.UpdatePassword(conf.RemoteControllerPassword);
+			}
 		}
 
 		private void ConfigurationUpdated()
@@ -1140,7 +1168,7 @@ namespace Browser
 		/// <param name="ignoreCache">キャッシュを無視するか。</param>
 		public void RefreshBrowser(bool ignoreCache)
 		{
-			if (!Configuration.AppliesStyleSheet)
+			if (!Configuration?.AppliesStyleSheet ?? false)
 				StyleSheetApplied = false;
 
 			// UI スレッドで実行する（WCF 等から来る可能性に対応）
@@ -1150,39 +1178,27 @@ namespace Browser
 				return;
 			}
 
+			if (Browser == null)
+				return;
+
 			try
 			{
 				// キャッシュ無視モードはフルリロード（Cef の API に合わせる）
 				if (ignoreCache)
 				{
-					Browser.Reload(true);
+					Browser?.Reload(true);
 					return;
 				}
 
 				// 通常はメインフレームだけリロードして副次的な負荷を減らす
-				var mainFrame = GetMainFrame();
-				if (mainFrame != null)
-				{
-					try
-					{
-						// IFrame に Reload() は存在しないため、フレーム側で location.reload() を実行する
-						mainFrame.ExecuteJavaScriptAsync("location.reload();");
-						return;
-					}
-					catch
-					{
-						// フレーム経由で失敗したらフォールバック
-					}
-				}
-
-				// フォールバック：ブラウザ全体をリロード
-				Browser.Reload(false);
+				GetMainFrame()?.ExecuteJavaScriptAsync("location.reload();");
+				return;
 			}
 			catch (Exception ex)
 			{
 				// 応急処置としてログを残しておく
 				AddLog(1, "RefreshBrowser failed: " + ex.Message);
-				try { Browser.Reload(ignoreCache); } catch { }
+				Browser?.Reload(ignoreCache);
 			}
 		}
 
@@ -1489,15 +1505,25 @@ namespace Browser
 			ushort port;
 			if (ushort.TryParse(proxy, out port))
 			{
-				ProxySettings = "http=127.0.0.1:" + port;           // todo: 動くには動くが正しいかわからない
+				ProxySettings = "http=127.0.0.1:" + port;
+			}
+			else if (!string.IsNullOrEmpty(proxy) && !proxy.Contains("="))
+			{
+				ProxySettings = $"http={proxy};https={proxy}";
 			}
 			else
 			{
-				//WinInetUtil.SetProxyInProcess(proxy, "local");
 				ProxySettings = proxy;
 			}
 
-			InitializeBrowser();
+			if (this.InvokeRequired)
+			{
+				this.Invoke((Action)(() => InitializeBrowser()));
+			}
+			else
+			{
+				InitializeBrowser();
+			}
 
 			BrowserHost.AsyncRemoteRun(() => BrowserHost.Proxy.SetProxyCompleted());
 		}
@@ -1851,6 +1877,9 @@ namespace Browser
 
 		private void FormBrowser_Activated(object sender, EventArgs e)
 		{
+			if (Browser == null)
+				return;
+
 			Browser.Focus();
 		}
 

@@ -4,7 +4,6 @@ using ElectronicObserver.Data.Battle;
 using ElectronicObserver.Observer;
 using ElectronicObserver.Resource;
 using ElectronicObserver.Utility.Mathematics;
-using mshtml;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -53,6 +52,19 @@ namespace ElectronicObserver.Window
 		/// モバイル遠隔操作画面へ定期的にHUDデータを同期するためのタイマー
 		/// </summary>
 		private Timer _hudTimer;
+
+		/// <summary>
+		/// 再接続を抑制するための最終再接続試行時刻
+		/// </summary>
+		private DateTime _lastReconnectAttempt = DateTime.MinValue;
+		/// <summary>
+		/// 再接続試行のインターバル（5秒）
+		/// </summary>
+		private readonly TimeSpan ReconnectInterval = TimeSpan.FromSeconds(5);
+		/// <summary>
+		/// 再接続試行のロックオブジェクト（_lastReconnectAttempt および BrowserProcess.HasExited アクセス保護用）
+		/// </summary>
+		private readonly object _reconnectLock = new object();
 
 
 
@@ -257,6 +269,8 @@ namespace ElectronicObserver.Window
 				// 2026/06/10 myi 新規作成（遠隔操作用の設定コピー）
 				config.RemoteControllerPort = c.RemoteControllerPort;
 				config.RemoteControllerAddress = c.RemoteControllerAddress;
+				// 2026/07/23 追記（パスワードの設定コピー）
+				config.RemoteControllerPassword = c.RemoteControllerPassword;
 				return config;
 			}
 		}
@@ -292,6 +306,8 @@ namespace ElectronicObserver.Window
 			// 2026/06/10 myi 新規作成（遠隔操作用の設定書き戻し）
 			c.RemoteControllerPort = config.RemoteControllerPort;
 			c.RemoteControllerAddress = config.RemoteControllerAddress;
+			// 2026/07/23 追記（パスワードの設定書き戻し）
+			c.RemoteControllerPassword = config.RemoteControllerPassword;
 			//Utility.Configuration.Config.Debug.EnableDebugMenu = config.EnableDebugMenu;
 
 			// volume
@@ -523,6 +539,16 @@ namespace ElectronicObserver.Window
 			if (Browser.Proxy == null)
 			{
 				Utility.ErrorReporter.SendErrorReport(e, "ブラウザプロセスが予期せず終了しました。");
+				// BrowserProcess.HasExited アクセスをロックで保護
+				lock (_reconnectLock)
+				{
+					// プロセス存命確認
+					if (BrowserProcess != null && !BrowserProcess.HasExited)
+					{
+						// プロセスが存命の場合は再接続を促す（SyncHudData で自動処理される）
+						Utility.Logger.Add(1, "ブラウザプロセスは存命です。次回HUD同期時に再接続を試行します。");
+					}
+				}
 			}
 			else
 			{
@@ -648,8 +674,58 @@ namespace ElectronicObserver.Window
 		/// </summary>
 		private void SyncHudData()
 		{
-			if (Browser == null || Browser.Closed || Browser.Proxy == null)
+			if (Browser == null || Browser.Closed)
 				return;
+
+			// プロキシが null の場合、再接続を試みる
+			if (Browser.Proxy == null)
+			{
+				lock (_reconnectLock)
+				{
+					// 再接続レート制限：5秒以内の再接続試行はスキップ
+					if (DateTime.UtcNow - _lastReconnectAttempt < ReconnectInterval)
+						return;
+
+					_lastReconnectAttempt = DateTime.UtcNow;
+
+					// ブラウザプロセスが存命か確認（ロック内で保護）
+					if (BrowserProcess == null || BrowserProcess.HasExited)
+					{
+						// プロセスが終了している場合は再接続不可能
+						Utility.Logger.Add(1, "ブラウザプロセスが終了しているため、HUDデータ同期をスキップします。");
+						return;
+					}
+				}
+
+				try
+				{
+					// ChannelFactory を再作成して再接続
+					Browser.Connect(ServerUri + "Browser/Browser", forceRecreate: true);
+				}
+				catch (Exception ex)
+				{
+					Utility.Logger.Add(1, $"ブラウザ再接続失敗: {ex.Message}");
+					return;
+				}
+
+				// 再接続後も Proxy が null ならスキップ
+				if (Browser.Proxy == null)
+					return;
+
+				// 再接続成功時のログ出力
+				Utility.Logger.Add(2, "ブラウザへの再接続に成功しました。HUDデータ同期を再開します。");
+
+				// 再接続後の状態整合性確保（SetProxy 再設定）- 同期実行でプロキシ設定完了を保証
+				try
+				{
+					Browser.Proxy.SetProxy(BuildDownstreamProxy());
+				}
+				catch (Exception proxyEx)
+				{
+					Utility.Logger.Add(1, $"再接続後のプロキシ設定失敗: {proxyEx.Message}");
+					// プロキシ設定の失敗は致命的ではないため、HUD同期は継続する
+				}
+			}
 
 			try
 			{
@@ -1122,7 +1198,7 @@ namespace ElectronicObserver.Window
 							$"\"id\":{q.QuestID}," +
 							$"\"name\":\"{EscapeJson(q.Name)}\"," +
 							$"\"progressText\":\"{EscapeJson(progressText)}\"," +
-							$"\"progressRate\":{progressRate:F2}," +
+							$"\"progressRate\":{progressRate.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}," +
 							$"\"state\":{q.State}" +
 							"}");
 					}
@@ -1188,14 +1264,14 @@ namespace ElectronicObserver.Window
 			// --- 状態情報 ---
 			sb.Append($"\"hp\":{ship.HPCurrent},");
 			sb.Append($"\"maxHp\":{ship.HPMax},");
-			sb.Append($"\"hpRate\":{ship.HPRate},");
+			sb.Append($"\"hpRate\":{ship.HPRate.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)},");
 			sb.Append($"\"condition\":{ship.Condition},");
 			sb.Append($"\"fuel\":{ship.Fuel},");
 			sb.Append($"\"ammo\":{ship.Ammo},");
 			sb.Append($"\"fuelMax\":{ship.FuelMax},");
 			sb.Append($"\"ammoMax\":{ship.AmmoMax},");
-			sb.Append($"\"fuelRate\":{ship.FuelRate},");
-			sb.Append($"\"ammoRate\":{ship.AmmoRate},");
+			sb.Append($"\"fuelRate\":{ship.FuelRate.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)},");
+			sb.Append($"\"ammoRate\":{ship.AmmoRate.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)},");
 
 			// --- 装備情報（固定4スロット） ---
 			sb.Append("\"equipment\":[");
