@@ -1,4 +1,4 @@
-﻿<!--
+<!--
   [AI IMPORTANT INSTRUCTION]
   This file MUST be saved in "UTF-8 with BOM" (UTF-8 signature) encoding to prevent Japanese character corruption (all characters turning into '?').
   Ensure that you preserve the UTF-8 BOM when saving. After editing, verify that no '?' replacements occurred.
@@ -197,21 +197,6 @@
             letter-spacing: 0.3em;
             text-transform: uppercase;
             font-weight: bold;
-        }
-
-        /*
-         * 5. カーソル色反転エフェクト
-         * クリック/タッチ時に仮想カーソルの色を反転（白）させる。
-         */
-        #virtual-cursor.cursor-invert {
-            background: #ffffff;
-            border-color: #ffffff;
-            box-shadow: 0 0 8px #ffffff;
-            transition: all 0.1s ease-out;
-        }
-
-        #virtual-cursor.cursor-invert::after {
-            background: #030805;
         }
 
         /*
@@ -2717,8 +2702,8 @@
             const y = Math.max(0, Math.min(1.0, (clientY - rect.top) / rect.height));
             vCursorX = x;
             vCursorY = y;
-            updateCursorDisplay();
-            fetch(`/control?action=move&x=${x}&y=${y}`);
+            scheduleCursorUpdate();
+            sendMoveControl(x, y);
         }
 
         // ── touchstart ──
@@ -2731,9 +2716,6 @@
 
             // 動的FPS制御：操作検出
             activateViewportFpsControl();
-
-            // カーソル色反転
-            cursor.classList.add('cursor-invert');
 
             // タッチ開始位置にカーソルを即時移動
             handleViewportMove(touch.clientX, touch.clientY);
@@ -2759,9 +2741,6 @@
 
         // ── touchend ──
         viewport.addEventListener('touchend', (e) => {
-            // カーソル色反転解除
-            cursor.classList.remove('cursor-invert');
-
             const elapsed = Date.now() - viewportTouchStartTime;
 
             if (isDraggingOnViewport) {
@@ -2794,9 +2773,6 @@
             // 動的FPS制御
             activateViewportFpsControl();
 
-            // カーソル色反転
-            cursor.classList.add('cursor-invert');
-
             // カーソル位置に即時移動
             handleViewportMove(e.clientX, e.clientY);
         });
@@ -2809,9 +2785,6 @@
 
         // ── mouseup（PCマウス） ──
         viewport.addEventListener('mouseup', (e) => {
-            // カーソル色反転解除
-            cursor.classList.remove('cursor-invert');
-
             if (!isMouseDownOnViewport) return;
             isMouseDownOnViewport = false;
 
@@ -2827,11 +2800,6 @@
             if (elapsed <= tapTimeout && dist <= dragThreshold) {
                 // タップ判定（リップルエフェクトは削除済み）
             }
-        });
-
-        // ── pointerleave（カーソルが画面外に出た場合のクラスクリーンアップ） ──
-        viewport.addEventListener('pointerleave', () => {
-            cursor.classList.remove('cursor-invert');
         });
 
         //============================================================================================
@@ -4378,6 +4346,44 @@
         // 画像ロード完了時の drawMagnifier 呼び出しは不要（canvas に変更したため削除）
         // 代わりに updateScreenDiff / updateScreenLegacy の img.onload 内で drawMagnifier() を呼び出す
 
+        //============================================================================================
+        // 移動制御通信の最適化（In-Flight 制御によるパケット詰まり・通信遅延の防止）
+        //============================================================================================
+        let isMoveSending = false;
+        let pendingMoveCoords = null;
+
+        function sendMoveControl(x, y) {
+            if (isMoveSending) {
+                pendingMoveCoords = { x, y };
+                return;
+            }
+            isMoveSending = true;
+            fetch(`/control?action=move&x=${x}&y=${y}`)
+                .catch(() => {})
+                .finally(() => {
+                    isMoveSending = false;
+                    if (pendingMoveCoords) {
+                        const next = pendingMoveCoords;
+                        pendingMoveCoords = null;
+                        sendMoveControl(next.x, next.y);
+                    }
+                });
+        }
+
+        //============================================================================================
+        // 仮想カーソル表示＆拡大鏡描画の requestAnimationFrame 同期化（描画遅延のゼロ化）
+        //============================================================================================
+        let isCursorUpdatePending = false;
+
+        function scheduleCursorUpdate() {
+            if (isCursorUpdatePending) return;
+            isCursorUpdatePending = true;
+            requestAnimationFrame(() => {
+                isCursorUpdatePending = false;
+                updateCursorDisplay();
+            });
+        }
+
         // カーソル表示更新
         function updateCursorDisplay() {
             const rect = screen.getBoundingClientRect();
@@ -4399,7 +4405,6 @@
             lastX = e.clientX;
             lastY = e.clientY;
             pad.setPointerCapture(e.pointerId);
-            cursor.classList.add('cursor-invert');
             
             // すでに開始されているタイマーがあれば確実にリセット・クリア
             if (magnifierTimer) {
@@ -4417,7 +4422,6 @@
 
         // トラックパッド操作終了（指を離したとき）に拡大表示パネルを非表示にし、保留中の表示タイマーもクリアします
         pad.addEventListener('pointerup', e => {
-            cursor.classList.remove('cursor-invert');
             if (magnifierTimer) {
                 clearTimeout(magnifierTimer);
                 magnifierTimer = null;
@@ -4430,7 +4434,6 @@
 
         // トラックパッド操作キャンセル（システム割り込み等の発生時）に拡大表示パネルを非表示にし、保留中の表示タイマーもクリアします
         pad.addEventListener('pointercancel', e => {
-            cursor.classList.remove('cursor-invert');
             if (magnifierTimer) {
                 clearTimeout(magnifierTimer);
                 magnifierTimer = null;
@@ -4441,14 +4444,8 @@
             }
         });
 
-        // トラックパッド pointerleave（カーソルが画面外に出た場合のクラスクリーンアップ）
-        pad.addEventListener('pointerleave', () => {
-            cursor.classList.remove('cursor-invert');
-        });
-
-        // トラックパッド操作 (ドラッグ操作による相対移動量を絶対割合座標へと変換して送信します)
+        // トラックパッド操作 (ポインタ移動による相対移動量を絶対割合座標へと変換して送信します)
         pad.addEventListener('pointermove', e => {
-            if (e.buttons === 0) return;
             // 動的FPS制御：操作検出でタイムスタンプを更新（アクティブ状態に復帰）
             const isSlowFpsMode = (Date.now() - lastOperationTime) >= ACTIVE_TIMEOUT;
             lastOperationTime = Date.now();
@@ -4474,12 +4471,11 @@
             vCursorX = Math.max(0, Math.min(1.0, vCursorX + dx * sensitivity));
             vCursorY = Math.max(0, Math.min(1.0, vCursorY + dy * sensitivity));
             
-            // クライアント側のポインタ表示を即座に更新 (操作のラグをゼロに)
-            updateCursorDisplay();
+            // クライアント側のポインタ表示を rAF 同期で遅延ゼロ更新
+            scheduleCursorUpdate();
             
-            // サーバー側には最新の「絶対割合座標 (x, y)」を送信します。
-            // 相対移動量(dx, dy)ではなく絶対座標を送ることで、通信遅延やパケットロスによるポインタのズレ蓄積を防ぎ、自動補正されます。
-            fetch(`/control?action=move&x=${vCursorX}&y=${vCursorY}`);
+            // サーバー側には最新の「絶対割合座標 (x, y)」を通信最適化関数経由で送信
+            sendMoveControl(vCursorX, vCursorY);
         });
 
         // クリックボタン操作

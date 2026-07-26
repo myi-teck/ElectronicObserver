@@ -674,58 +674,8 @@ namespace ElectronicObserver.Window
 		/// </summary>
 		private void SyncHudData()
 		{
-			if (Browser == null || Browser.Closed)
+			if (Browser == null || Browser.Closed || Browser.Proxy == null)
 				return;
-
-			// プロキシが null の場合、再接続を試みる
-			if (Browser.Proxy == null)
-			{
-				lock (_reconnectLock)
-				{
-					// 再接続レート制限：5秒以内の再接続試行はスキップ
-					if (DateTime.UtcNow - _lastReconnectAttempt < ReconnectInterval)
-						return;
-
-					_lastReconnectAttempt = DateTime.UtcNow;
-
-					// ブラウザプロセスが存命か確認（ロック内で保護）
-					if (BrowserProcess == null || BrowserProcess.HasExited)
-					{
-						// プロセスが終了している場合は再接続不可能
-						Utility.Logger.Add(1, "ブラウザプロセスが終了しているため、HUDデータ同期をスキップします。");
-						return;
-					}
-				}
-
-				try
-				{
-					// ChannelFactory を再作成して再接続
-					Browser.Connect(ServerUri + "Browser/Browser", forceRecreate: true);
-				}
-				catch (Exception ex)
-				{
-					Utility.Logger.Add(1, $"ブラウザ再接続失敗: {ex.Message}");
-					return;
-				}
-
-				// 再接続後も Proxy が null ならスキップ
-				if (Browser.Proxy == null)
-					return;
-
-				// 再接続成功時のログ出力
-				Utility.Logger.Add(2, "ブラウザへの再接続に成功しました。HUDデータ同期を再開します。");
-
-				// 再接続後の状態整合性確保（SetProxy 再設定）- 同期実行でプロキシ設定完了を保証
-				try
-				{
-					Browser.Proxy.SetProxy(BuildDownstreamProxy());
-				}
-				catch (Exception proxyEx)
-				{
-					Utility.Logger.Add(1, $"再接続後のプロキシ設定失敗: {proxyEx.Message}");
-					// プロキシ設定の失敗は致命的ではないため、HUD同期は継続する
-				}
-			}
 
 			try
 			{

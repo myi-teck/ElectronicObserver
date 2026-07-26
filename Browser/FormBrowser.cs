@@ -626,7 +626,6 @@ namespace Browser
 					settings.DisableGpuAcceleration();
 
 				settings.CefCommandLineArgs.Add("proxy-server", ProxySettings);
-				settings.CefCommandLineArgs.Add("ignore-certificate-errors", "1");
 				if (Configuration.ForceColorProfile)
 					settings.CefCommandLineArgs.Add("force-color-profile", "srgb");
 
