@@ -99,6 +99,12 @@
             transition: filter 0.2s ease; /* フィルター切り替え時のアニメーション */
         }
 
+        /* [FIX] 2026/07/27 オーバーレイ方式をフィルター方式へ変更
+         * パネル展開時にビューポートにbrightnessフィルターを適用して暗くする */
+        #viewport.overlay-active {
+            filter: brightness(0.3);
+        }
+
         /*
          * ゲーム画面用クライアントサイドフィルター
          * 2026/06/01 myi 新規作成（差分WebP方式に伴うフィルタークライアント化対応）
@@ -344,7 +350,7 @@
             align-content: flex-start;
             justify-content: flex-start;
             gap: 2px;
-            z-index: 5;
+            z-index: 100; /* [FIX] 2026/07/27 5→100に引き上げ。オーバーレイ(z-index:99)より前面にHUDを配置し、暗いフィルター遮蔽を防ぐ */
             pointer-events: none; /* ドラッグ操作を妨げないようにする */
         }
 
@@ -2194,20 +2200,8 @@
             display: none;
         }
 
-        /* 半透明オーバーレイ: 縦画面時は非表示・無効化 */
-        #trackpad-overlay {
-            visibility: hidden;
-            pointer-events: none;
-            opacity: 0;
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0, 0, 0, 0.5);
-            z-index: 99;
-            transition: opacity 0.3s ease, visibility 0.3s ease;
-        }
+        /* [FIX] 2026/07/27 半透明オーバーレイ方式をフィルター方式へ変更
+         * 縦画面時は非表示・無効化 → #viewport.overlay-active クラスによるフィルター方式へ置き換え */
 
         /* =====================================================================
          * 横画面（Landscape）時のレイアウトオーバーライド
@@ -2256,7 +2250,7 @@
                 max-width: 80vw;
                 transform: translateX(100%);
                 transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-                z-index: 100;
+                z-index: 98; /* [FIX] Step 3: パネルを背面へ移動（ボタン(1000) > オーバーレイ(99) > パネル(98) の階層構造を明確化） */
                 background: var(--bg-color);
                 box-shadow: -4px 0 20px rgba(0, 0, 0, 0.6);
             }
@@ -2286,11 +2280,15 @@
                 color: var(--accent-color);
                 font-size: 12px;
                 cursor: pointer;
-                z-index: 101;
+                z-index: 1000;
                 transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1),
                             background 0.15s ease;
                 -webkit-tap-highlight-color: transparent;
                 box-shadow: -2px 0 8px rgba(0, 0, 0, 0.4);
+                /* [FIX] Step 2: touch-actionを指定し、300msタップ遅延・ジェスチャ干渉を排除 */
+                touch-action: manipulation;
+                /* [FIX] 最前面配置を確定 */
+                pointer-events: auto;
             }
 
             #trackpad-toggle:hover {
@@ -2316,19 +2314,8 @@
                 transform: scaleX(-1);
             }
 
-            /* -----------------------------------------------------------------
-             * 半透明オーバーレイ（パネル展開時の背景を暗くする）
-             * ----------------------------------------------------------------- */
-            #trackpad-overlay {
-                /* position/background/z-index/transition はデフォルトブロックで定義済み */
-            }
-
-            /* 展開時: オーバーレイを表示（visibility + opacity でフェードアニメーション有効） */
-            #trackpad-overlay.overlay-visible {
-                visibility: visible;
-                pointer-events: auto;
-                opacity: 1;
-            }
+            /* [FIX] 2026/07/27 半透明オーバーレイ方式をフィルター方式へ変更
+             * #trackpad-overlay 関連のCSS定義を削除し、#viewport.overlay-active クラスによるフィルター方式へ置き換え */
 
             /* -----------------------------------------------------------------
              * 横画面時の #click-btn のレイアウト調整
@@ -2632,8 +2619,7 @@
         </button>
     </div>
 
-    <!-- 半透明オーバーレイ（横画面時のみ機能） -->
-    <div id='trackpad-overlay' class='trackpad-overlay' aria-hidden='true'></div>
+    <!-- [FIX] 2026/07/27 #trackpad-overlay 要素を削除。フィルター方式へ変更 -->
 
     <!-- 折り畳み/展開トグルボタン（横画面時のみ表示） -->
     <button id='trackpad-toggle' class='trackpad-toggle-btn' aria-label='操作パネルの表示/非表示' aria-expanded='false'>
@@ -3861,7 +3847,6 @@
 
                 // データ未同期（204）の場合はHUDを更新せず、次回のポーリングで再試行
                 if (response.status === 204) {
-                    console.log("[HUD] Data not synchronized yet (204). Will retry on next poll.");
                     return;
                 }
 
@@ -4589,19 +4574,22 @@
             // --- DOM要素の取得 ---
             const toggleBtn = document.getElementById('trackpad-toggle');
             const trackpadArea = document.getElementById('trackpad-area');
-            const overlay = document.getElementById('trackpad-overlay');
+            // [FIX] 2026/07/27 overlay要素の取得を削除。フィルター方式へ変更
+            const viewport = document.getElementById('viewport');
             if (!toggleBtn || !trackpadArea) return;
 
             // --- パネルを閉じる専用関数 ---
+            // [FIX] 2026/07/27 togglePanel()内でisExpandedが先にトグルされるため、
+            //  呼び出し時にisExpandedがfalseになっている。ガード条件を削除して
+            //  無条件にクラス削除処理を実行するように修正。
             function closePanel() {
-                if (!isExpanded) return; // ガード: 既に閉じている場合はスキップ
                 isExpanded = false;
                 trackpadArea.classList.remove('panel-expanded');
                 toggleBtn.classList.remove('panel-expanded');
                 toggleBtn.setAttribute('aria-expanded', 'false');
-                if (overlay) {
-                    overlay.classList.remove('overlay-visible');
-                    overlay.setAttribute('aria-hidden', 'true');
+                // [FIX] 2026/07/27 オーバーレイ方式をフィルター方式へ変更
+                if (viewport) {
+                    viewport.classList.remove('overlay-active');
                 }
             }
 
@@ -4617,9 +4605,9 @@
                     trackpadArea.classList.add('panel-expanded');
                     toggleBtn.classList.add('panel-expanded');
                     toggleBtn.setAttribute('aria-expanded', 'true');
-                    if (overlay) {
-                        overlay.classList.add('overlay-visible');
-                        overlay.setAttribute('aria-hidden', 'false');
+                    // [FIX] 2026/07/27 オーバーレイ方式をフィルター方式へ変更
+                    if (viewport) {
+                        viewport.classList.add('overlay-active');
                     }
                 } else {
                     closePanel();
@@ -4627,15 +4615,23 @@
             }
 
             // --- イベントリスナー ---
-            toggleBtn.addEventListener('click', togglePanel);
-            toggleBtn.addEventListener('pointerdown', e => e.stopPropagation());
+            toggleBtn.addEventListener('click', (e) => {
+                togglePanel(e);
+            });
+            // [FIX] 2026/07/27 トグルボタンのpointerdownでstopPropagationを追加
+            // 親要素(#trackpad)のsetPointerCaptureを阻止し、clickイベントが正しく発火するようにする
+            toggleBtn.addEventListener('pointerdown', e => {
+                e.stopPropagation();
+            });
+            // [FIX] Step 1: stopPropagation()を削除し、タッチイベントチェーンを修復（pointerdown→pointerup→click）
 
-            // オーバーレイクリックでパネルを閉じる（擬似イベント不使用）
-            if (overlay) {
-                overlay.addEventListener('click', () => {
-                    closePanel();
-                });
-            }
+            // [FIX] 2026/07/27 オーバーレイのpointer-eventsをnone化したため、clickイベントは発生しない。
+            // 不要なイベントハンドラを削除。
+            // if (overlay) {
+            //     overlay.addEventListener('click', () => {
+            //         closePanel();
+            //     });
+            // }
 
             // --- 画面回転時にパネル状態をリセット ---
             function resetPanelState() {
