@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.Serialization;
@@ -137,6 +137,24 @@ namespace BrowserLib
 		public bool AppliesStyleSheet { get; set; }
 
 		/// <summary>
+		/// カラーフィルタ(グレースケール)を適用するか
+		/// </summary>
+		[DataMember]
+		public bool AppliesColorFilter { get; set; }
+
+		/// <summary>
+		/// 適用するブラウザカラーフィルタ・プライバシーフィルタのモード
+		/// </summary>
+		[DataMember]
+		public int ColorFilterMode { get; set; }
+
+		/// <summary>
+		/// ホバー時のみ表示するカバー機能（目隠し）を適用するか
+		/// </summary>
+		[DataMember]
+		public bool AppliesHoverCover { get; set; }
+
+		/// <summary>
 		/// DMMによるページ更新ダイアログを表示するか
 		/// </summary>
 		[DataMember]
@@ -207,5 +225,23 @@ namespace BrowserLib
 		/// </summary>
 		[DataMember]
 		public bool EnableDebugMenu { get; set; }
+
+		/// <summary>
+		/// リモート操作サーバーのポート番号
+		/// </summary>
+		[DataMember]
+		public int RemoteControllerPort { get; set; }
+
+		/// <summary>
+		/// リモート操作サーバーのリッスンIPアドレス
+		/// </summary>
+		[DataMember]
+		public string RemoteControllerAddress { get; set; }
+
+		/// <summary>
+		/// リモート操作サーバーのログインパスワード（空=認証なし）
+		/// </summary>
+		[DataMember]
+		public string RemoteControllerPassword { get; set; }
 	}
 }

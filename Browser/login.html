@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+    <meta charset='UTF-8' />
+    <meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover' />
+    <title>IMPERIAL NAVY HEADQUARTERS NETWORK — Login</title>
+    <style>
+        :root {
+            --bg-color:       #001133 ;
+            --box-bg:         #00081d ;
+            --border-color:   #ffffff ;
+            --text-color:     #ffffff ;
+            --dim-text:       rgba(255, 255, 255, 0.75) ;
+            --error-color:    #ff6666 ;
+        }
+
+        * { margin:0; padding:0; box-sizing:border-box;
+             -webkit-tap-highlight-color:transparent; }
+
+        body {
+            background: var(--bg-color) ;
+            color:      var(--text-color) ;
+            font-family: 'Consolas', 'Courier New', monospace ;
+            height: 100dvh ;
+            display: flex ;
+            justify-content: center ;
+            align-items: center ;
+            padding: 20px ;
+        }
+
+        #login-box {
+            background: var(--box-bg) ;
+            border:     2px solid var(--border-color) ;
+            padding:    20px 25px ;
+            box-shadow: none ;
+            text-align: center ;
+            width:      100% ;
+            max-width:  540px ;
+            font-size:  13px ;
+            line-height: 1.5 ;
+        }
+
+        .logo-container {
+            display: flex ;
+            justify-content: center ;
+            align-items: center ;
+            margin-top: 5px ;
+            margin-bottom: 10px ;
+        }
+
+        .crest-logo {
+            width: 68px ;
+            height: 68px ;
+        }
+
+        .terminal-divider {
+            color: var(--dim-text) ;
+            overflow: hidden ;
+            white-space: nowrap ;
+            margin: 10px 0 ;
+            user-select: none ;
+            letter-spacing: -0.5px ;
+        }
+
+        .warning-title {
+            font-size: 13px ;
+            font-weight: bold ;
+            letter-spacing: 0.08em ;
+            margin-bottom: 6px ;
+            color: var(--text-color) ;
+        }
+
+        .motto {
+            font-size: 11px ;
+            color: var(--dim-text) ;
+            margin: 8px 0 ;
+            font-style: italic ;
+            letter-spacing: 0.03em ;
+        }
+
+        .form-row {
+            display: flex ;
+            align-items: center ;
+            justify-content: center ;
+            margin: 14px 0 ;
+            font-size: 13px ;
+        }
+
+        .form-row label {
+            width: 110px ;
+            text-align: right ;
+            padding-right: 10px ;
+            white-space: pre ;
+            font-weight: bold ;
+        }
+
+        #login-password-field {
+            background: transparent ;
+            border: 1px solid var(--border-color) ;
+            color: var(--text-color) ;
+            font-family: 'Consolas', 'Courier New', monospace ;
+            font-size: 14px ;
+            padding: 5px 10px ;
+            width: 210px ;
+            outline: none ;
+            text-align: center ;
+            letter-spacing: 0.1em ;
+        }
+
+        #login-password-field:focus {
+            background: transparent ;
+            box-shadow: none ;
+        }
+
+        #login-password-field::placeholder {
+            color: rgba(255, 255, 255, 0.35) ;
+        }
+
+        #login-btn {
+            background: transparent ;
+            border: 1px solid var(--border-color) ;
+            color: var(--text-color) ;
+            font-family: 'Consolas', 'Courier New', monospace ;
+            font-size: 13px ;
+            font-weight: bold ;
+            padding: 8px 16px ;
+            margin-top: 10px ;
+            cursor: pointer ;
+            width: 100% ;
+            letter-spacing: 0.1em ;
+            transition: background 0.15s, color 0.15s ;
+        }
+
+        #login-btn:hover {
+            background: var(--text-color) ;
+            color: var(--box-bg) ;
+        }
+
+        #login-btn:active {
+            transform: scale(0.99) ;
+        }
+
+        #login-error {
+            margin-top: 10px ;
+            font-size: 12px ;
+            color: var(--error-color) ;
+            min-height: 18px ;
+            font-weight: bold ;
+        }
+    </style>
+</head>
+<body>
+
+    <div id='login-box'>
+        <div class='logo-container'>
+            <svg class='crest-logo' viewBox='0 0 100 100' width='68' height='68'>
+                <defs>
+                    <g id='petal-front'>
+                        <path d='M 48.5,42 C 47,29 42,12 45.5,7 C 47.5,4.5 52.5,4.5 54.5,7 C 58,12 53,29 51.5,42 Z' fill='#00081d' stroke='#ffffff' stroke-width='1.4' />
+                    </g>
+                    <g id='petal-back'>
+                        <path d='M 46,11.5 C 47.5,8 52.5,8 54,11.5 Z' fill='#00081d' stroke='#ffffff' stroke-width='1.2' />
+                    </g>
+                </defs>
+                <g>
+                    <use href='#petal-back' transform='rotate(11.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(33.75 50 50)' />
+                    <use href='#petal-back' transform='rotate(56.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(78.75 50 50)' />
+                    <use href='#petal-back' transform='rotate(101.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(123.75 50 50)' />
+                    <use href='#petal-back' transform='rotate(146.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(168.75 50 50)' />
+                    <use href='#petal-back' transform='rotate(191.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(213.75 50 50)' />
+                    <use href='#petal-back' transform='rotate(236.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(258.75 50 50)' />
+                    <use href='#petal-back' transform='rotate(281.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(303.75 50 50)' />
+                    <use href='#petal-back' transform='rotate(326.25 50 50)' />
+                    <use href='#petal-back' transform='rotate(348.75 50 50)' />
+
+                    <use href='#petal-front' transform='rotate(0 50 50)' />
+                    <use href='#petal-front' transform='rotate(22.5 50 50)' />
+                    <use href='#petal-front' transform='rotate(45 50 50)' />
+                    <use href='#petal-front' transform='rotate(67.5 50 50)' />
+                    <use href='#petal-front' transform='rotate(90 50 50)' />
+                    <use href='#petal-front' transform='rotate(112.5 50 50)' />
+                    <use href='#petal-front' transform='rotate(135 50 50)' />
+                    <use href='#petal-front' transform='rotate(157.5 50 50)' />
+                    <use href='#petal-front' transform='rotate(180 50 50)' />
+                    <use href='#petal-front' transform='rotate(202.5 50 50)' />
+                    <use href='#petal-front' transform='rotate(225 50 50)' />
+                    <use href='#petal-front' transform='rotate(247.5 50 50)' />
+                    <use href='#petal-front' transform='rotate(270 50 50)' />
+                    <use href='#petal-front' transform='rotate(292.5 50 50)' />
+                    <use href='#petal-front' transform='rotate(315 50 50)' />
+                    <use href='#petal-front' transform='rotate(337.5 50 50)' />
+
+                    <circle cx='50' cy='50' r='8.5' fill='#00081d' stroke='#ffffff' stroke-width='1.8' />
+                </g>
+            </svg>
+        </div>
+
+        <div class='terminal-divider'>==================================================</div>
+        <div class='warning-title'>[ WARNING: IMPERIAL NAVY HEADQUARTERS NETWORK ]</div>
+        <div class='motto'>"THE EMPIRE EXPECTS YOU TO DO YOUR DUTY TO HIS MAJESTY."</div>
+        <div class='terminal-divider'>==================================================</div>
+
+        <div class='form-row'>
+            <label>PASSWORD :</label>
+            <input type='password' id='login-password-field' placeholder='[                ]' autocomplete='off' />
+        </div>
+
+        <button id='login-btn'>[ AUTHENTICATE ]</button>
+        <div id='login-error'></div>
+        <div class='terminal-divider'>==================================================</div>
+    </div>
+
+    <script>
+        (function () {
+            'use strict';
+
+            const loginPasswordField = document.getElementById('login-password-field');
+            const loginBtn = document.getElementById('login-btn');
+            const loginError = document.getElementById('login-error');
+
+            loginPasswordField.focus();
+
+            async function attemptLogin(password) {
+                try {
+                    const response = await fetch('/login', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded'
+                        },
+                        body: 'password=' + encodeURIComponent(password)
+                    });
+
+                    if (response.redirected || response.status === 302) {
+                        window.location.href = response.url || '/';
+                        return;
+                    }
+
+                    const data = await response.json();
+                    if (data.success) {
+                        window.location.href = '/';
+                    } else {
+                        loginError.textContent = data.error || 'AUTHENTICATION FAILED';
+                    }
+                } catch (error) {
+                    loginError.textContent = 'NETWORK ERROR';
+                    console.error('Login error:', error);
+                }
+            }
+
+            loginBtn.addEventListener('click', function () {
+                const password = loginPasswordField.value.trim();
+                if (!password) {
+                    loginError.textContent = 'PASSWORD REQUIRED';
+                    return;
+                }
+                loginError.textContent = '';
+                attemptLogin(password);
+            });
+
+            loginPasswordField.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') {
+                    loginBtn.click();
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

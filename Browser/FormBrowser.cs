@@ -1,4 +1,4 @@
-﻿using Browser.CefOp;
+using Browser.CefOp;
 using BrowserLib;
 using CefSharp;
 using CefSharp.WinForms;
@@ -260,6 +260,141 @@ namespace Browser
 			})();
 			";
 
+		/// <summary>
+		/// WebGLバッファクリア（真っ黒画面）問題を回避するため、ブラウザの描画フレーム（requestAnimationFrame）に完全同期して
+		/// 軽量差分判定を行い、かつメインスレッドをブロックしない非同期toBlob + FileReaderによるバックグラウンドWebPキャッシュを行い、
+		/// C#からの要求時にその最新キャッシュを非同期引き抜きするハイブリッドJavaScriptスクリプト。
+		/// 変化がない場合はWebPエンコードを完全にスキップし、変化時のみ描画スレッドを占有せずバックグラウンドでWebP化を行います。
+		/// 2026/06/02 myi 変更（同期toDataURLを完全廃止し、非同期toBlobによるバックグラウンドエンコードと多重起動防止を実装）
+		/// </summary>
+		internal string CaptureEngineScript => @"
+			(function() {
+				// 二重登録 of 防止
+				if (window._kancolleCaptureEngine) return;
+
+				window._kancolleCaptureEngine = {
+					webpQuality: 0.6,      // WebP圧縮品質（初期値60%、スライダーとリアルタイム連動）
+					lastWebp: null,        // 最新のエンコード済みWebP画像キャッシュ
+					lastThumbData: null,    // 前フレームの極小サムネイルImageData（差分判定用）
+					hasNewFrame: false,    // 未取得 of 新しいフレームがあるかを示すフラグ
+					lastCaptureTime: 0,
+					intervalMs: 100,       // 10 FPS (100msに1回キャプチャと差分判定を行う)
+					isEncoding: false,     // バックグラウンドでのエンコード実行中排他ロックフラグ
+
+					start: function() {
+						const canvas = document.querySelector('canvas');
+						if (!canvas) {
+							// canvas が未生成の場合は150ms待って再試行
+							setTimeout(() => this.start(), 150);
+							return;
+						}
+
+						// 差分判定および縮小処理用の極小インメモリ canvas を初期化
+						const thumbCanvas = document.createElement('canvas');
+						thumbCanvas.width = 160;
+						thumbCanvas.height = 96;
+						const thumbCtx = thumbCanvas.getContext('2d');
+
+						// WebGLのpreserveDrawingBuffer=falseによるバッファ即時クリアを克服するため、
+						// requestAnimationFrame 同期ループを用いて、描画完了直後のバッファがある瞬間をフックする
+						const loop = () => {
+							const now = Date.now();
+							// 100ms周期に達し、かつ現在エンコード中でない場合のみ処理を実行
+							if (now - this.lastCaptureTime >= this.intervalMs && !this.isEncoding) {
+								try {
+									if (thumbCtx) {
+										// 現在のゲーム画面の縮小コピーを描画
+										thumbCtx.drawImage(canvas, 0, 0, 160, 96);
+										const currThumbData = thumbCtx.getImageData(0, 0, 160, 96);
+
+										let hasDiff = false;
+										if (!this.lastThumbData) {
+											// 初回起動時は必ず差分ありと判定
+											hasDiff = true;
+										} else {
+											const d1 = this.lastThumbData.data;
+											const d2 = currThumbData.data;
+											// RGBのピクセル差分をループ比較（しきい値8でアンチエイリアスの微小ノイズを許容）
+											for (let i = 0; i < d1.length; i += 4) {
+												if (Math.abs(d1[i] - d2[i]) > 8 ||
+													Math.abs(d1[i+1] - d2[i+1]) > 8 ||
+													Math.abs(d1[i+2] - d2[i+2]) > 8) {
+													hasDiff = true;
+													break;
+												}
+											}
+										}
+
+										// 差分が検出された場合のみ、WebGLバッファが生きているこの描画フレーム内で非同期エンコードを開始
+										if (hasDiff) {
+											this.isEncoding = true; // 排他ロックを確保
+											this.lastThumbData = currThumbData;
+
+											// 非同期で WebP Blob へエンコード（完全にバックグラウンドスレッドで処理）
+											canvas.toBlob((blob) => {
+												if (!blob) {
+													this.isEncoding = false;
+													return;
+												}
+												// FileReaderを使って非同期に Base64 DataURL へ変換し、完了後にキャッシュを更新
+												const reader = new FileReader();
+												reader.onloadend = () => {
+													this.lastWebp = reader.result;
+													this.hasNewFrame = true;
+													this.isEncoding = false; // 排他ロックを解放
+												};
+												reader.onerror = () => {
+													this.isEncoding = false;
+												};
+												reader.readAsDataURL(blob);
+											}, 'image/webp', this.webpQuality);
+										}
+									}
+									this.lastCaptureTime = now;
+								} catch (e) {
+									console.error('Capture loop error:', e);
+									this.isEncoding = false;
+								}
+							}
+							requestAnimationFrame(loop);
+						};
+						requestAnimationFrame(loop);
+					},
+
+					// C# から EvaluateScriptAsync で呼び出され、キャッシュデータを引き抜くメソッド
+					pull: function(force) {
+						// 初回ロード時等で lastWebp キャッシュがまだ無い場合は、その場で一度強制的にエンコードを試みる（フォールバック）
+						if (!this.lastWebp) {
+							const canvas = document.querySelector('canvas');
+							if (canvas) {
+								try {
+									this.lastWebp = canvas.toDataURL('image/webp', this.webpQuality);
+									this.hasNewFrame = true;
+								} catch (e) {
+									return ['error', e.toString()];
+								}
+							}
+						}
+
+						// クライアントの初期化要求（force = true）時は、未取得フラグにかかわらず現在のキャッシュを強制返却
+						if (force && this.lastWebp) {
+							return ['full', this.lastWebp];
+						}
+
+						// 新しい差分フレームがキャッシュされている場合はそれを返却し、取得済みフラグを下げる
+						if (this.hasNewFrame && this.lastWebp) {
+							this.hasNewFrame = false;
+							return ['full', this.lastWebp];
+						}
+
+						// 変化がない場合は、余分なデータ転送を避けるため none を返却
+						return ['none', ''];
+					}
+				};
+				window._kancolleCaptureEngine.start();
+			})();
+			";
+
 		private bool RestoreStyleSheet = false;
 
 		// FormBrowserHostの通信サーバ
@@ -275,9 +410,27 @@ namespace Browser
 		private IntPtr HostWindow;
 
 
-		private ChromiumWebBrowser Browser = null;
+		internal ChromiumWebBrowser Browser = null;
+
+		private volatile RemoteController _remoteController;
+
+		// 2026/07/26 myi 新規作成（RemoteController 初期化前のHUDデータバッファ）
+		/// <summary>
+		/// _remoteController が null の間に到着したHUDデータをバッファリングします。
+		/// _remoteController が初期化された後にフラッシュされます。
+		/// </summary>
+		private string _bufferedHudJson = null;
+
+		// 2026/07/26 myi 新規作成（HUDデータバッファの同期用ロック）
+		/// <summary>
+		/// _bufferedHudJson へのアクセスを同期するためのロックオブジェクトです。
+		/// </summary>
+		private readonly object _hudBufferLock = new object();
 
 		private string ProxySettings = null;
+	
+		// InitializeBrowser 呼び出しの排他ロック用オブジェクト
+		private readonly object _initBrowserLock = new object();
 
 
 		private bool _styleSheetApplied;
@@ -341,6 +494,9 @@ namespace Browser
 		{
 			InitializeComponent();
 
+			// 拡張メニューの初期化 (タグ付けと共通イベントの適用)
+			InitializeColorFilterMenu();
+
 			ServerUri = serverUri;
 			StyleSheetApplied = false;
 
@@ -403,9 +559,14 @@ namespace Browser
 				this, typeof(BrowserLib.IBrowser), ServerUri + "Browser", "Browser");
 			BrowserHost.Connect(ServerUri + "/BrowserHost");
 			BrowserHost.Faulted += BrowserHostChannel_Faulted;
-
-
-			ConfigurationChanged(BrowserHost.Proxy.Configuration);
+	
+	
+			// BrowserHost.Proxy.Configuration が null の可能性があるため、null チェックを追加
+			var configuration = BrowserHost.Proxy.Configuration;
+			if (configuration != null)
+			{
+				ConfigurationChanged(configuration);
+			}
 
 
 			// ウィンドウの親子設定＆ホストプロセスから接続してもらう
@@ -423,7 +584,9 @@ namespace Browser
 			BrowserHost.AsyncRemoteRun(() => BrowserHost.Proxy.GetIconResource());
 
 
-			InitializeBrowser();
+			// Note: RemoteController の初期化は、プロキシ設定付きで Cef.Initialize が実行される
+			// InitializeBrowser() 内で行います。FormBrowser_Load で生成すると CefSharp の型ロードに伴い
+			// Cef.Initialize がプロキシ無しのデフォルト設定で早期初期化されてしまうのを防ぎます。
 		}
 
 
@@ -439,30 +602,44 @@ namespace Browser
 			if (ProxySettings == null)
 				return;
 
-
-			var settings = new CefSettings()
+			// Cef.Initialize はプロセス内で一度しか呼べないので、既に初期化済みか確認する
+			if (Cef.IsInitialized == false)
 			{
-				BrowserSubprocessPath = Path.Combine(
-						AppDomain.CurrentDomain.SetupInformation.ApplicationBase,
-						Environment.Is64BitProcess ? "x64" : "x86",
-						"CefSharp.BrowserSubprocess.exe"),
-				CachePath = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), BrowserCachePath),
-				Locale = "ja",
-				AcceptLanguageList = "ja,en-US,en",        // todo: いる？
-				LogSeverity = Configuration.SavesBrowserLog ? LogSeverity.Error : LogSeverity.Disable,
-				LogFile = Configuration.SavesBrowserLog
-					? Path.Combine(AppDomain.CurrentDomain.SetupInformation.ApplicationBase, "BrowserLog.log")
-					: string.Empty,
-			};
+				var settings = new CefSettings()
+				{
+					BrowserSubprocessPath = Path.Combine(
+							AppDomain.CurrentDomain.SetupInformation.ApplicationBase,
+							Environment.Is64BitProcess ? "x64" : "x86",
+							"CefSharp.BrowserSubprocess.exe"),
+					CachePath = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), BrowserCachePath),
+					Locale = "ja",
+					AcceptLanguageList = "ja,en-US,en",        // todo: いる？
+					LogSeverity = Configuration.SavesBrowserLog ? LogSeverity.Error : LogSeverity.Disable,
+					LogFile = Configuration.SavesBrowserLog
+						? Path.Combine(AppDomain.CurrentDomain.SetupInformation.ApplicationBase, "BrowserLog.log")
+						: string.Empty,
+				};
 
-			if (!Configuration.HardwareAccelerationEnabled)
-				settings.DisableGpuAcceleration();
+				if (!Configuration.HardwareAccelerationEnabled)
+					settings.DisableGpuAcceleration();
 
-			settings.CefCommandLineArgs.Add("proxy-server", ProxySettings);
-			if (Configuration.ForceColorProfile)
-				settings.CefCommandLineArgs.Add("force-color-profile", "srgb");
-			CefSharpSettings.SubprocessExitIfParentProcessClosed = true;
-			Cef.Initialize(settings, false, (IBrowserProcessHandler)null);
+				settings.CefCommandLineArgs.Add("proxy-server", ProxySettings);
+				if (Configuration.ForceColorProfile)
+					settings.CefCommandLineArgs.Add("force-color-profile", "srgb");
+
+				// --------------------------------------------------------------------------------------------
+				// 遠隔操作時のために、バックグラウンド（最小化や他のウィンドウに隠れた状態）
+				// でも描画・JavaScriptを停止・制限させない設定
+				// --------------------------------------------------------------------------------------------
+				settings.CefCommandLineArgs.Add("disable-background-timer-throttling", "1");
+				settings.CefCommandLineArgs.Add("disable-backgrounding-occluded-windows", "1");
+				settings.CefCommandLineArgs.Add("disable-renderer-backgrounding", "1");
+				// Chrome 87以降で導入された ネイティブウィンドウの隠蔽検知 による描画停止を無効化
+				settings.CefCommandLineArgs.Add("disable-features", "CalculateNativeWinOcclusion,RendererBackgrounding");
+
+				CefSharpSettings.SubprocessExitIfParentProcessClosed = true;
+				Cef.Initialize(settings, false, (IBrowserProcessHandler)null);
+			}
 
 
 			var requestHandler = new CustomRequestHandler(pixiSettingEnabled: Configuration.PreserveDrawingBuffer);
@@ -482,6 +659,27 @@ namespace Browser
 			Browser.FrameLoadEnd += Browser_FrameLoadEnd;
 			Browser.IsBrowserInitializedChanged += Browser_IsBrowserInitializedChanged;
 			SizeAdjuster.Controls.Add(Browser);
+
+			// 遠隔操作サーバーの起動（Cef.Initialize 完了後に安全に生成）
+			if (_remoteController == null)
+			{
+				int port = Configuration.RemoteControllerPort;
+				if (port <= 0 || port > 65535) port = 8080;
+				string address = string.IsNullOrEmpty(Configuration.RemoteControllerAddress) ? "*" : Configuration.RemoteControllerAddress;
+				string password = Configuration.RemoteControllerPassword;
+
+				lock (_hudBufferLock)
+				{
+					_remoteController = new RemoteController(this, port, address, password);
+					_remoteController.Start();
+
+					if (_bufferedHudJson != null)
+					{
+						_remoteController.UpdateHudData(_bufferedHudJson);
+						_bufferedHudJson = null;
+					}
+				}
+			}
 		}
 
 
@@ -491,6 +689,7 @@ namespace Browser
 			{
 				BrowserHost.Close();
 				HeartbeatTimer.Stop();
+				_remoteController?.Dispose();
 				Cef.Shutdown();
 				Application.Exit();
 			}
@@ -511,6 +710,13 @@ namespace Browser
 
 		public void ConfigurationChanged(BrowserLib.BrowserConfiguration conf)
 		{
+			// WCF サービス経由で呼び出される可能性があるため、UI スレッドにディスパッチする
+			if (this.InvokeRequired)
+			{
+				this.BeginInvoke((Action)(() => ConfigurationChanged(conf)));
+				return;
+			}
+
 			Configuration = conf;
 
 			SizeAdjuster.AutoScroll = Configuration.IsScrollable;
@@ -520,6 +726,18 @@ namespace Browser
 			ToolMenu.Dock = (DockStyle)Configuration.ToolMenuDockStyle;
 			ToolMenu.Visible = Configuration.IsToolMenuVisible;
 			ToolMenu_Other_ClearCache.Visible = conf.EnableDebugMenu;
+
+			UpdateColorFilterMenu();
+			ApplyColorFilter();
+
+			// 2026/07/23 追記（遠隔操作サーバー設定の動的更新）
+			// 注意: _remoteController がまだ生成されていない（null）場合、
+			// ConfigurationChanged は RemoteController 構築前に発生し得るため、
+			// ガード句で安全に処理する。
+			if (_remoteController != null)
+			{
+				_remoteController.UpdatePassword(conf.RemoteControllerPassword);
+			}
 		}
 
 		private void ConfigurationUpdated()
@@ -527,12 +745,30 @@ namespace Browser
 			BrowserHost.AsyncRemoteRun(() => BrowserHost.Proxy.ConfigurationUpdated(Configuration));
 		}
 
+		/// <summary>
+		/// リモートコントローラーからログインページへ移動します。
+		/// </summary>
+		public void NavigateToLoginPage()
+		{
+			Navigate(Configuration.LogInPageURL);
+		}
+
+		/// <summary>
+		/// リモートコントローラーからプライバシーフィルターモードを設定します。
+		/// </summary>
+		public void SetFilterMode(int mode)
+		{
+			Configuration.ColorFilterMode = mode;
+			ApplyColorFilter();
+			ConfigurationUpdated();
+		}
+
 		private void AddLog(int priority, string message)
 		{
 			BrowserHost.AsyncRemoteRun(() => BrowserHost.Proxy.AddLog(priority, message));
 		}
 
-		private void SendErrorReport(string exceptionName, string message)
+		internal void SendErrorReport(string exceptionName, string message)
 		{
 			BrowserHost.AsyncRemoteRun(() => BrowserHost.Proxy.SendErrorReport(exceptionName, message));
 		}
@@ -545,6 +781,7 @@ namespace Browser
 			//ロード直後の適用ではレイアウトがなぜか崩れるのでこのタイミングでも適用
 			ApplyStyleSheet();
 			ApplyZoom();
+			ApplyColorFilter();
 			DestroyDMMreloadDialog();
 
 			//起動直後はまだ音声が鳴っていないのでミュートできないため、この時点で有効化
@@ -554,6 +791,15 @@ namespace Browser
 
 		private void SizeAdjuster_SizeChanged(object sender, EventArgs e)
 		{
+			// 最小化や非表示時はブラウザコントロールのサイズ変更をスキップする
+			// 理由：最小化やドッキング解除による一時的な非表示などを行うと、SizeAdjusterのサイズが
+			//       極小（0×0や1×1など）になり、Browser.Sizeも連動して極小化される。
+			//       これによりCEFのビューポートも縮小され、リモート操作(RemoteController)の
+			//       SendMouseClickEventに渡す座標がビューポート外となり、クリックが一切効かなくなる。
+			//       そのため、極小サイズ時はサイズ変更処理を行わず、以前の正常なサイズを維持する。
+			if (SizeAdjuster.Width <= 10 || SizeAdjuster.Height <= 10)
+				return;
+
 			if (!StyleSheetApplied)
 			{
 				if (Browser != null)
@@ -602,6 +848,7 @@ namespace Browser
 					// DOM が完成した後に確実に適用
 					ApplyStyleSheet();
 					ApplyZoom();
+					ApplyColorFilter();
 					DestroyDMMreloadDialog();
 				}
 				catch (Exception ex)
@@ -612,11 +859,11 @@ namespace Browser
 		}
 
 
-		private bool IsBrowserInitialized =>
+		internal bool IsBrowserInitialized =>
 			Browser != null &&
 			Browser.IsBrowserInitialized;
 
-		private IFrame GetMainFrame()
+		internal IFrame GetMainFrame()
 		{
 			if (!IsBrowserInitialized)
 				return null;
@@ -630,7 +877,7 @@ namespace Browser
 			return null;
 		}
 
-		private IFrame GetGameFrame()
+		internal IFrame GetGameFrame()
 		{
 			if (!IsBrowserInitialized)
 				return null;
@@ -645,7 +892,7 @@ namespace Browser
 			return null;
 		}
 
-		private IFrame GetKanColleFrame()
+		internal IFrame GetKanColleFrame()
 		{
 			if (!IsBrowserInitialized)
 				return null;
@@ -773,6 +1020,66 @@ namespace Browser
 			}
 		}
 
+		private BrowserPrivacyFilterManager _privacyFilterManager;
+		internal BrowserPrivacyFilterManager PrivacyFilterManager => _privacyFilterManager ?? (_privacyFilterManager = new BrowserPrivacyFilterManager(this));
+
+		/// <summary>
+		/// プライバシーフィルタ(カラーフィルタや目隠し設定等)を適用または解除します。
+		/// </summary>
+		public void ApplyColorFilter()
+		{
+			PrivacyFilterManager.ApplyFilter(Configuration.ColorFilterMode, Configuration.AppliesHoverCover);
+		}
+
+		private void InitializeColorFilterMenu()
+		{
+			// UIアイテムにモード番号をTagとして持たせ、排他選択のイベントハンドラを登録する
+			ToolMenu_ColorFilter_None.Tag = 0;
+			ToolMenu_ColorFilter_Grayscale.Tag = 1;
+			ToolMenu_ColorFilter_LowContrast.Tag = 4;
+
+			var items = new[] {
+				ToolMenu_ColorFilter_None,
+				ToolMenu_ColorFilter_Grayscale,
+				ToolMenu_ColorFilter_LowContrast
+			};
+
+			foreach (var item in items)
+			{
+				item.Click += ToolMenu_ColorFilter_Item_Click;
+			}
+
+			// カバー機能（ホバー時のみ表示）は独立のトグルスイッチとして別登録
+			ToolMenu_ColorFilter_HoverCover.Click += ToolMenu_ColorFilter_HoverCover_Click;
+		}
+
+		private void ToolMenu_ColorFilter_Item_Click(object sender, EventArgs e)
+		{
+			if (sender is ToolStripMenuItem item && item.Tag is int mode)
+			{
+				Configuration.ColorFilterMode = mode;
+				UpdateColorFilterMenu();
+				ApplyColorFilter();
+				ConfigurationUpdated();
+			}
+		}
+
+		private void ToolMenu_ColorFilter_HoverCover_Click(object sender, EventArgs e)
+		{
+			Configuration.AppliesHoverCover = ToolMenu_ColorFilter_HoverCover.Checked;
+			ApplyColorFilter(); // ColorFilter処理も再評価・再適用する可能性があるため共通メソッドを呼ぶ
+			ConfigurationUpdated();
+		}
+
+		private void UpdateColorFilterMenu()
+		{
+			ToolMenu_ColorFilter_None.Checked = (Configuration.ColorFilterMode == 0);
+			ToolMenu_ColorFilter_Grayscale.Checked = (Configuration.ColorFilterMode == 1);
+			ToolMenu_ColorFilter_LowContrast.Checked = (Configuration.ColorFilterMode == 4);
+
+			ToolMenu_ColorFilter_HoverCover.Checked = Configuration.AppliesHoverCover;
+		}
+
 
 
 		/// <summary>
@@ -879,7 +1186,7 @@ namespace Browser
 		/// <param name="ignoreCache">キャッシュを無視するか。</param>
 		public void RefreshBrowser(bool ignoreCache)
 		{
-			if (!Configuration.AppliesStyleSheet)
+			if (!Configuration?.AppliesStyleSheet ?? false)
 				StyleSheetApplied = false;
 
 			// UI スレッドで実行する（WCF 等から来る可能性に対応）
@@ -889,44 +1196,71 @@ namespace Browser
 				return;
 			}
 
+			if (Browser == null)
+				return;
+
 			try
 			{
 				// キャッシュ無視モードはフルリロード（Cef の API に合わせる）
 				if (ignoreCache)
 				{
-					Browser.Reload(true);
+					Browser?.Reload(true);
 					return;
 				}
 
 				// 通常はメインフレームだけリロードして副次的な負荷を減らす
-				var mainFrame = GetMainFrame();
-				if (mainFrame != null)
-				{
-					try
-					{
-						// IFrame に Reload() は存在しないため、フレーム側で location.reload() を実行する
-						mainFrame.ExecuteJavaScriptAsync("location.reload();");
-						return;
-					}
-					catch
-					{
-						// フレーム経由で失敗したらフォールバック
-					}
-				}
-
-				// フォールバック：ブラウザ全体をリロード
-				Browser.Reload(false);
+				GetMainFrame()?.ExecuteJavaScriptAsync("location.reload();");
+				return;
 			}
 			catch (Exception ex)
 			{
 				// 応急処置としてログを残しておく
 				AddLog(1, "RefreshBrowser failed: " + ex.Message);
-				try { Browser.Reload(ignoreCache); } catch { }
+				Browser?.Reload(ignoreCache);
+			}
+		}
+
+		/// <summary>
+		/// メインプロセスから送られてきたゲーム内HUDデータを受信し、リモートコントローラーへ中継します。
+		/// </summary>
+		public void UpdateHudData(string hudJson)
+		{
+			lock (_hudBufferLock)
+			{
+				if (_remoteController == null)
+				{
+					_bufferedHudJson = hudJson;
+					return;
+				}
+
+				// 1. バッファにある古いデータを先に送信
+				if (_bufferedHudJson != null)
+				{
+					_remoteController.UpdateHudData(_bufferedHudJson);
+					_bufferedHudJson = null;
+				}
+
+				// 2. 最新データを送信して上書きする（ロック内に含める）
+				_remoteController.UpdateHudData(hudJson);
 			}
 		}
 
 		private void Browser_FrameLoadEnd(object sender, FrameLoadEndEventArgs e)
 		{
+			// 艦これゲームフレームのロード完了時に、常駐キャプチャエンジンを自動注入して起動
+			// 2026/06/01 myi 新規作成
+			try
+			{
+				if (IsKanColleFrame(e.Frame))
+				{
+					e.Frame.ExecuteJavaScriptAsync(CaptureEngineScript);
+				}
+			}
+			catch (Exception ex)
+			{
+				SendErrorReport(ex.ToString(), "Browser_FrameLoadEnd: キャプチャエンジンの自動注入に失敗しました。");
+			}
+
 			if (!Configuration.AppliesStyleSheet)
 				return;
 
@@ -953,6 +1287,12 @@ namespace Browser
 		public void ApplyZoom()
 		{
 			if (!IsBrowserInitialized)
+				return;
+
+			// 最小化や非表示などでサイズが極小になっている場合は処理しない
+			// 理由：極小サイズでズーム計算やブラウザサイズの再設定を行うと、Browser.Sizeも極小化され、
+			//       リモート操作の座標計算やクリックイベント送信が正常に動作しなくなるため。
+			if (SizeAdjuster.Width <= 10 || SizeAdjuster.Height <= 10)
 				return;
 
 
@@ -1200,15 +1540,33 @@ namespace Browser
 			ushort port;
 			if (ushort.TryParse(proxy, out port))
 			{
-				ProxySettings = "http=127.0.0.1:" + port;           // todo: 動くには動くが正しいかわからない
+				ProxySettings = "127.0.0.1:" + port;
+			}
+			else if (!string.IsNullOrEmpty(proxy))
+			{
+				var match = System.Text.RegularExpressions.Regex.Match(proxy, @":(\d+)");
+				if (match.Success && ushort.TryParse(match.Groups[1].Value, out port))
+				{
+					ProxySettings = "127.0.0.1:" + port;
+				}
+				else
+				{
+					ProxySettings = proxy;
+				}
 			}
 			else
 			{
-				//WinInetUtil.SetProxyInProcess(proxy, "local");
 				ProxySettings = proxy;
 			}
 
-			InitializeBrowser();
+			if (this.InvokeRequired)
+			{
+				this.Invoke((Action)(() => InitializeBrowser()));
+			}
+			else
+			{
+				InitializeBrowser();
+			}
 
 			BrowserHost.AsyncRemoteRun(() => BrowserHost.Proxy.SetProxyCompleted());
 		}
@@ -1260,6 +1618,9 @@ namespace Browser
 				Icons.Images["Browser_Navigate"];
 			ToolMenu_Other.Image =
 				Icons.Images["Browser_Other"];
+
+			ToolMenu_ColorFilter.Image = Icons.Images["Browser_ScreenShot"]; // TODO: 専用アイコンが無い為、とりあえずスクリーンショットと同じアイコン
+			ToolMenu_ColorFilter.Text = "プライバシーフィルタの切り替え";
 
 			SetVolumeState();
 		}
@@ -1559,6 +1920,9 @@ namespace Browser
 
 		private void FormBrowser_Activated(object sender, EventArgs e)
 		{
+			if (Browser == null)
+				return;
+
 			Browser.Focus();
 		}
 

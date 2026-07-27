@@ -1,4 +1,4 @@
-﻿using ElectronicObserver.Notifier;
+using ElectronicObserver.Notifier;
 using ElectronicObserver.Observer;
 using ElectronicObserver.Resource;
 using ElectronicObserver.Utility;
@@ -30,6 +30,12 @@ namespace ElectronicObserver.Window.Dialog
 		private DateTime _shownTime;
 		private double _playTimeCache;
 
+		// 2026/06/10 myi 新規作成（遠隔操作サーバー設定保持用メンバ変数およびUIコントロール）
+		private int _remoteControllerPort;
+		private string _remoteControllerAddress;
+		// 2026/07/14 myi 追加（遠隔操作サーバーのパスワード設定保持用メンバ変数）
+		private string _remoteControllerPassword;
+		private System.Windows.Forms.Button FormBrowser_RemoteControllerSettingButton;
 
 
 		public DialogConfiguration()
@@ -37,6 +43,9 @@ namespace ElectronicObserver.Window.Dialog
 			InitializeComponent();
 
 			_shownTime = DateTime.Now;
+
+			// 2026/06/10 myi 新規作成（遠隔操作用ボタンの配置処理）
+			InitializeRemoteControllerSettingsControls();
 		}
 
 		public DialogConfiguration(Configuration.ConfigurationData config)
@@ -534,6 +543,12 @@ namespace ElectronicObserver.Window.Dialog
 			BGMPlayer_SyncBrowserMute.Checked = config.BGMPlayer.SyncBrowserMute;
 			UpdateBGMPlayerUI();
 
+			// 2026/06/10 myi 新規作成（遠隔操作用の設定ロード）
+			_remoteControllerPort = config.FormBrowser.RemoteControllerPort;
+			_remoteControllerAddress = config.FormBrowser.RemoteControllerAddress;
+			// 2026/07/14 myi 追加（遠隔操作用パスワードの設定ロード）
+			_remoteControllerPassword = config.FormBrowser.RemoteControllerPassword;
+
 			//finalize
 			UpdateParameter();
 		}
@@ -774,6 +789,12 @@ namespace ElectronicObserver.Window.Dialog
 			}
 			config.BGMPlayer.Handles = new List<SyncBGMPlayer.SoundHandle>(BGMHandles.Values.ToList());
 			config.BGMPlayer.SyncBrowserMute = BGMPlayer_SyncBrowserMute.Checked;
+
+			// 2026/06/10 myi 新規作成（遠隔操作用の設定保存）
+			config.FormBrowser.RemoteControllerPort = _remoteControllerPort;
+			config.FormBrowser.RemoteControllerAddress = _remoteControllerAddress;
+			// 2026/07/14 myi 追加（遠隔操作用パスワードの設定保存）
+			config.FormBrowser.RemoteControllerPassword = _remoteControllerPassword;
 		}
 
 
@@ -978,6 +999,42 @@ namespace ElectronicObserver.Window.Dialog
 			UI_RenderingTest.Value = UI_RenderingTestChanger.Value;
 		}
 
-	
+		/// <summary>
+		/// 2026/06/10 myi 新規作成
+		/// リモート操作サーバー（RemoteController）設定用UIボタンを動的生成・配置します。
+		/// </summary>
+		private void InitializeRemoteControllerSettingsControls()
+		{
+			this.FormBrowser_RemoteControllerSettingButton = new System.Windows.Forms.Button();
+			// 右側の空きスペース（X=282, Y=199）に配置し、既存コントロールとの重なりや見切れを防止
+			this.FormBrowser_RemoteControllerSettingButton.Location = new System.Drawing.Point(282, 199);
+			this.FormBrowser_RemoteControllerSettingButton.Name = "FormBrowser_RemoteControllerSettingButton";
+			this.FormBrowser_RemoteControllerSettingButton.Size = new System.Drawing.Size(150, 23);
+			this.FormBrowser_RemoteControllerSettingButton.Text = "遠隔操作設定...";
+			this.FormBrowser_RemoteControllerSettingButton.UseVisualStyleBackColor = true;
+			this.FormBrowser_RemoteControllerSettingButton.Click += new System.EventHandler(this.FormBrowser_RemoteControllerSettingButton_Click);
+
+			// タブページに追加
+			this.tabPage12.Controls.Add(this.FormBrowser_RemoteControllerSettingButton);
+		}
+
+		/// <summary>
+		/// 2026/06/10 myi 新規作成
+		/// 遠隔操作設定ボタンがクリックされた際のダイアログ表示処理。
+		/// </summary>
+		private void FormBrowser_RemoteControllerSettingButton_Click(object sender, EventArgs e)
+		{
+			// 2026/07/14 myi 変更（パスワード引数を追加）
+			using (var dialog = new DialogConfigurationRemote(_remoteControllerPort, _remoteControllerAddress, _remoteControllerPassword))
+			{
+				if (dialog.ShowDialog(this) == System.Windows.Forms.DialogResult.OK)
+				{
+					_remoteControllerPort = dialog.ResultPort;
+					_remoteControllerAddress = dialog.ResultAddress;
+					// 2026/07/14 myi 追加（パスワードの確定）
+					_remoteControllerPassword = dialog.ResultPassword;
+				}
+			}
+		}
 	}
 }

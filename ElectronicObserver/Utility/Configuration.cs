@@ -1,4 +1,4 @@
-﻿using ElectronicObserver.Resource.Record;
+using ElectronicObserver.Resource.Record;
 using ElectronicObserver.Utility.Mathematics;
 using ElectronicObserver.Utility.Storage;
 using System;
@@ -1019,6 +1019,21 @@ namespace ElectronicObserver.Utility
 				public bool AppliesStyleSheet { get; set; }
 
 				/// <summary>
+				/// カラーフィルタ(グレースケール)を適用するか (互換性用・非推奨)
+				/// </summary>
+				public bool AppliesColorFilter { get; set; }
+
+				/// <summary>
+				/// 適用するブラウザカラーフィルタ・プライバシーフィルタのモード
+				/// </summary>
+				public int ColorFilterMode { get; set; }
+
+				/// <summary>
+				/// ホバー時のみ表示するカバー機能を適用するか
+				/// </summary>
+				public bool AppliesHoverCover { get; set; }
+
+				/// <summary>
 				/// DMMによるページ更新ダイアログを非表示にするか
 				/// </summary>
 				public bool IsDMMreloadDialogDestroyable { get; set; }
@@ -1063,6 +1078,21 @@ namespace ElectronicObserver.Utility
 				/// </summary>
 				public bool SavesBrowserLog { get; set; }
 
+				/// <summary>
+				/// リモート操作サーバーのポート番号
+				/// </summary>
+				public int RemoteControllerPort { get; set; }
+
+				/// <summary>
+				/// リモート操作サーバーのリッスンIPアドレス（複数指定時はセミコロン区切り）
+				/// </summary>
+				public string RemoteControllerAddress { get; set; }
+
+				/// <summary>
+				/// リモート操作サーバーのログインパスワード（空=認証なし）
+				/// </summary>
+				public string RemoteControllerPassword { get; set; }
+
 				public ConfigFormBrowser()
 				{
 					ZoomRate = 1;
@@ -1076,6 +1106,9 @@ namespace ElectronicObserver.Utility
 					StyleSheet = "\r\nbody {\r\n	margin:0;\r\n	overflow:hidden\r\n}\r\n\r\n#game_frame {\r\n	position:fixed;\r\n	left:50%;\r\n	top:-16px;\r\n	margin-left:-450px;\r\n	z-index:1\r\n}\r\n";
 					IsScrollable = false;
 					AppliesStyleSheet = true;
+					AppliesColorFilter = false;
+					ColorFilterMode = 0; // なし
+					AppliesHoverCover = false;
 					IsDMMreloadDialogDestroyable = false;
 					AvoidTwitterDeterioration = true;
 					ToolMenuDockStyle = DockStyle.Top;
@@ -1085,6 +1118,12 @@ namespace ElectronicObserver.Utility
 					PreserveDrawingBuffer = true;
 					ForceColorProfile = false;
 					SavesBrowserLog = false;
+					
+					// 2026/06/10 myi 新規作成（リモート操作用ポート・リッスンアドレスの初期値設定）
+					RemoteControllerPort = 8080;
+					RemoteControllerAddress = "*";
+					// 2026/07/14 myi 新規作成（リモート操作用パスワードの初期値設定）
+					RemoteControllerPassword = "";
 				}
 			}
 			/// <summary>[ブラウザ]ウィンドウ</summary>

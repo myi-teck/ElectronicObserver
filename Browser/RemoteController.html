@@ -1,0 +1,4655 @@
+<!--
+  [AI IMPORTANT INSTRUCTION]
+  This file MUST be saved in "UTF-8 with BOM" (UTF-8 signature) encoding to prevent Japanese character corruption (all characters turning into '?').
+  Ensure that you preserve the UTF-8 BOM when saving. After editing, verify that no '?' replacements occurred.
+//============================================================================================
+// system name    : ElectronicObserver
+// program name   : RemoteController
+// file name      : RemoteController.html
+// summary        : モバイル端末からの遠隔操作（画面配信・操作転送）のUI定義
+//----------------------------------------// // version        : 2.33
+//--------------------------------------------------------------------------------------------
+#region "change history"
+// change history : 2026/05/25 myi 新規作成
+//                  2026/05/28 myi iOS Safariで画面端にカーソルがある場合、拡大鏡の切り抜き座標が負の値になり画像が歪む不具合を修正。切り抜き座標を画像有効範囲にクリップし、カーソルが中心に来るように出力オフセットを調整。
+//                  2026/05/28 myi 戦闘情報HUDのレイアウト再構成。作戦海域・戦術予測HUDと詳細戦闘情報HUDを #battle-hud 統合ブロックに再配置。受領中任務HUDを #quest-hud として独立ブロック化。JSの combat 描画先を #combat-hud から #combat-info-container へ変更。
+//                  2026/05/28 myi TACTICAL SYSTEM に COMBAT INFO を完全統合。陣形・交戦形態・触接をヘッダ行にコンパクト配置。自/敵艦隊を艦隊詳細HUD風の高密度テーブル形式で表示。敵艦隊情報を見切れないように情報密度を向上。
+//                  2026/05/28 myi 戦闘艦隊テーブルの艦名列に艦隊詳細HUD同等の往復スクロールアニメーションを適用。3文字以内は固定表示、4文字以上は電光掲示板風スクロール表示に自動切替。
+//                  2026/05/28 myi TACTICAL SYSTEM ヘッダに損害率・勝利区分・航空戦結果を追加。2行目の #combat-header-2 に DMG/RESULT/AIR タグを配置。データなし時は非表示。
+//                  2026/05/29 myi 艦隊詳細HUDの装備情報トグル機能を2層オーバーレイ方式（opacityトグル）に修正。HP/FEL/AMOセル内に resource-view と equip-view を配置し、タップでセル内の表示を切り替える動作に変更。旧来の下段行展開方式を廃止。
+//                  2026/06/01 myi 戦術情報HUDのHP表示を艦隊詳細HUD同等の数値+セグメントゲージ2行構成に変更。`.combat-ship-hp`→`.combat-ship-hp-cell`とし、10段階ゲージを状態別カラー（緑/アンバー/赤/グレー）で表示。
+//                  2026/06/01 myi ログHUD（LOG SYSTEM）を追加。本家ブラウザのLogger.Logから最新10件（P1以上）を取得し、青系テーマで表示。LogAddedイベントドリブン更新にも対応。
+//                  2026/05/29 myi 差分WebP方式対応。画面表示要素を<img>から<canvas>に変更。updateScreenをupdateScreenDiff / updateScreenLegacyに分離。
+//                                           drawMagnifierの naturalWidth → width 変更。配信モード切替UI追加。
+//                  2026/05/29 myi クライアント再接続時（リロード・通信復帰時）に初期画面が真っ黒のまま表示されない不具合を修正。
+//                                           初回WebP要求時に init=1 を付与してサーバーに強制キーフレームを要求する処理を実装。
+//                  2026/06/01 myi 配信モードトグルボタンの完全削除。WebP画質設定連動アクションの実装。
+//                  2026/06/01 myi 画面更新ループの多重起動（二重スレッド化）防止用の排他制御処理（isUpdatingフラグ）を追加。
+//                  2026/06/01 myi 画面更新間隔の動的ディレイ補正処理（実処理時間を差し引いて周期を一定化する処理）を追加。
+//                  2026/06/01 myi 艦隊詳細HUDのヘッダトグル機能を実装。HP表示モード時（6列: NAME/LV/CND/HP/FEL/AMO）と装備表示モード時（9列: NAME/LV/CND/S1/S2/S3/S4/S5/EX）でテーブル構造を動的切替。トグル時にrenderFleetDetailを再実行。equipSlotの個別セル表示と電光掲示板式スクロール対応。
+//============================================================================================
+-->
+<!DOCTYPE html>
+<html lang='ja'>
+<head>
+    <meta charset='UTF-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover'>
+    <title>86式艦隊臨時指揮端末 - Admiral Pad</title>
+    <style>
+        /* ========================================================================================
+         * 1. カラーパレット & デザインシステム定義
+         * ======================================================================================== */
+        :root {
+            /* 漆黒に近い極限まで深いダークグリーン(NERVモニタベースのベース背景) */
+            --bg-color: #030805; 
+            /* 鮮烈なエヴァネオングリーン (メインアクセントカラー) */
+            --accent-color: #00ff66; 
+            /* グロー(発光)効果用のネオングリーン透過カラー */
+            --accent-glow: rgba(0, 255, 102, 0.4); 
+            /* トラックパッド等に適用する薄いグリーン半透明ガラス背景 */
+            --glass-bg: rgba(0, 255, 102, 0.04); 
+            /* NERVタクティカルフレーム境界線用の半透明グリーン */
+            --glass-border: rgba(0, 255, 102, 0.25); 
+            /* モニタ上の文字読み取り用、明るくクリアなミントグリーンテキスト */
+            --text-color: #a3f7bf; 
+            /* 警告・大破アラートサイン用の暗い赤 (エマージェンシー用) */
+            --nerv-dark-red: #3e050c; 
+        }
+
+        /* 全要素の初期化とタップハイライト防止 */
+        * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        
+        /* 
+         * 全体ボディスタイル：
+         * フォントにはメカニカルな等幅・ゴシック系を採用。
+         * モバイルブラウザでのアドレスバー干渉を防ぐため dvh を指定。
+         */
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Play', 'Consolas', 'Courier New', monospace; 
+            overflow: hidden;
+            height: 100vh; /* 古いブラウザ向けのフォールバック */
+            height: 100dvh; /* dvh(Dynamic Viewport Height)を使用し、モバイルブラウザの伸縮アドレスバーの干渉を防止 */
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* 
+         * 2. ゲーム画面表示領域 (ビューポート)
+         * 上部にゲーム画面をアスペクト比を維持して表示。
+         */
+        #viewport {
+            flex: 0 0 auto; /* 必要な分のみ占有 */
+            position: relative;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+            border-bottom: 2px solid var(--accent-color); /* ゲーム画面との明確な境界仕切り線 */
+            touch-action: none; /* ブラウザのデフォルトタッチ挙動を防止（ドラッグ操作対応） */
+        }
+
+        #game-screen {
+            max-width: 100%;
+            max-height: 100%;
+            display: block;            /* canvas はインライン要素なので block に変更 */
+            box-shadow: 0 0 15px rgba(0, 255, 102, 0.3); /* グリーン調のグローシャドウ */
+            transition: filter 0.2s ease; /* フィルター切り替え時のアニメーション */
+        }
+
+        /* [FIX] 2026/07/27 オーバーレイ方式をフィルター方式へ変更
+         * パネル展開時にビューポートにbrightnessフィルターを適用して暗くする */
+        #viewport.overlay-active {
+            filter: brightness(0.3);
+        }
+
+        /*
+         * ゲーム画面用クライアントサイドフィルター
+         * 2026/06/01 myi 新規作成（差分WebP方式に伴うフィルタークライアント化対応）
+         */
+        #game-screen.filter-grayscale {
+            filter: grayscale(100%);
+        }
+        #game-screen.filter-lowcontrast {
+            filter: grayscale(80%) brightness(30%) contrast(50%);
+        }
+
+        /*
+         * 暗視カメラ風フィルター（グリーンスケール）
+         * 2026/06/01 myi 新規作成（暗視ボックス用）
+         */
+        #game-screen.filter-greenscale-night {
+            /* 暗視カメラ風：明るい緑 */
+            filter: grayscale(100%) sepia(100%) hue-rotate(90deg) saturate(300%) brightness(1.2);
+        }
+        #game-screen.filter-greenscale-military {
+            /* 軍用モニター風：濃い緑 */
+            filter: grayscale(100%) sepia(100%) hue-rotate(80deg) saturate(500%);
+        }
+        #game-screen.filter-greenscale-phosphor {
+            /* フォスファイト風：暗めの黄緑 */
+            filter: grayscale(100%) sepia(100%) hue-rotate(95deg) saturate(200%) brightness(0.8);
+        }
+        
+        /* 
+         * 3. 仮想カーソル
+         * 操作先を示す円形ターゲット。中央にドットを配置。
+         */
+        #virtual-cursor {
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            background: transparent;
+            border: 2px solid var(--accent-color);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            box-shadow: 0 0 8px var(--accent-glow);
+            z-index: 10;
+        }
+        
+        /* 照準器のドットを中央に表現 */
+        #virtual-cursor::after {
+            content: '';
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 2px;
+            height: 2px;
+            background: var(--accent-color);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        /* トラックパッド上の情報表示用クラス
+           文字列の範囲選択やポインタインタラクションを無効化し、
+           ドラッグ操作が正常に機能するようにする */
+        .trackpad-info {
+            pointer-events: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+        }
+
+        /* 
+         * 4. トラックパッド本体のスタイル
+         * 背景に磨りガラス効果(backdrop-filter)を適用し、ネオングリーンの極細ボーダーで囲む。
+         */
+        #trackpad {
+            width: 100%; /* コンテナの横幅一杯に広げる */
+            flex: 1; /* 縦方向もコンテナ一杯に広げる */
+            min-height: 0;
+            background: var(--glass-bg); /* ガラス調の半透明背景 */
+            backdrop-filter: blur(10px); /* 背景の磨りガラス効果 */
+            border: 1px solid var(--glass-border);
+            border-radius: 8px; /* 角丸をよりシャープにし、四隅ギリギリの表示スペースを拡大 */
+            touch-action: none; /* タッチイベントのブラウザデフォルト挙動を防止 */
+            position: relative;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+        }
+
+        #trackpad-label {
+            font-size: 14px;
+            color: var(--accent-color);
+            text-shadow: 0 0 6px var(--accent-glow);
+            opacity: 0.15;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+            font-weight: bold;
+        }
+
+        /*
+         * 6. ステータスバー & 計器バッジ定義の整理
+         */
+        .badge, .sys-val-badge {
+            font-size: 8px;
+            padding: 1px 1px;
+            border-radius: 2px;
+            background: rgba(2, 15, 6, 0.95);
+            border: 1px solid rgba(0, 255, 102, 0.25);
+            color: var(--text-color);
+            font-weight: bold;
+            font-family: 'Consolas', monospace;
+            text-transform: uppercase;
+        }
+        
+        /* 接続状態用テキストカラー */
+        #conn-status { color: #eab308; text-shadow: 0 0 2px rgba(234, 179, 8, 0.5); }
+        #conn-status.ok { color: #86efac; text-shadow: 0 0 3px rgba(134, 239, 172, 0.5); }
+
+        /*
+         * 6-1. 動的FPS制御状態バッジ
+         * 現在の省電力状態（アクティブ/アイドル/スリープ）を視覚的に表示
+         * 各状態で文字数が可変(ACT:3文字、IDL:10:000:10文字)になってもレイアウトが揺れないように
+         * 固定の最小幅(min-width)を設定し、テキストを等幅中央揃えにします。
+         */
+        #state-badge {
+            min-width: 68px;
+            text-align: center;
+            display: inline-block;
+            color: #22c55e;
+            text-shadow: 0 0 3px rgba(34, 197, 94, 0.6);
+        }  /* アクティブ: 緑 */
+        #state-badge.idle { color: #eab308; text-shadow: 0 0 3px rgba(234, 179, 8, 0.6); }   /* アイドル: 黄色 */
+        #state-badge.sleep { color: #6b7280; text-shadow: 0 0 3px rgba(107, 114, 128, 0.4); } /* スリープ: 灰色 */
+
+        /*
+         * SLEEP状態の点滅アニメーション
+         * 灰色のテキストが1秒周期で点滅（消灯→着灯→消灯）
+         */
+        @keyframes sleep-blink {
+            0%, 100% { opacity: 0.2; }
+            50% { opacity: 1; }
+        }
+        #state-badge.sleep-pulse {
+            animation: sleep-blink 1s ease-in-out infinite;
+        }
+
+        /*
+         * 6-2. 新規：トラックパッド最上部システムモニターバー
+         * NERV戦術インジケータ風に、FPSと通信量を横長の一体プレートに表示します。
+         */
+        #system-monitor-bar {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 20px;
+            background: rgba(0, 255, 102, 0.08); /* 透過ネオングリーン背景 */
+            border-bottom: 1px solid var(--glass-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 5px;
+            z-index: 6;
+            pointer-events: none; /* ★文字部分を触ってもドラッグ操作を妨げないように透過します */
+        }
+        .sys-label {
+            font-size: 8.5px;
+            color: rgba(0, 255, 102, 0.65);
+            font-weight: bold;
+            letter-spacing: 0.1em;
+        }
+        .sys-val {
+            color: var(--accent-color);
+            text-shadow: 0 0 4px var(--accent-glow);
+            font-family: 'Consolas', monospace;
+            font-weight: bold;
+        }
+
+        /* 
+         * トラックパッド領域レイアウト：
+         * 深緑のグラデーション背景を適用し、サイバーなコクピット計器感を向上。
+         */
+        #trackpad-area {
+            flex: 1; /* 残りスペースをすべて占有 */
+            position: relative;
+            background: linear-gradient(180deg, rgba(4, 28, 12, 0.6) 0%, rgba(2, 11, 5, 1) 100%);
+            border-top: 1px solid var(--glass-border);
+            display: flex;
+            flex-direction: column;
+            gap: 0px; /* 要素間のギャップをさらに削減 */
+            padding: 0px 0px; /* 左右と上下の余白を限界まで削って画面サイズを最大活用 */
+            overflow: hidden; /* dvh最適化により領域内に綺麗に収まるためスクロール不要 */
+        }
+
+        /* トラックパッドを内包するコンテナのレイアウト定義 */
+        #trackpad-container {
+            flex: 1; /* 残りスペースをすべて縦方向に占有 */
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: stretch; /* 子要素であるトラックパッドを縦方向一杯に引き伸ばす */
+            min-height: 0;
+            padding: 0;
+        }
+
+        /* モニターバー専用極小SETUPボタン */
+        .sys-btn {
+            height: 14px;
+            padding: 0 5px;
+            background: rgba(0, 255, 102, 0.15);
+            border: 1px solid rgba(0, 255, 102, 0.35);
+            border-radius: 4px;
+            color: var(--accent-color);
+            font-size: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            font-family: 'Play', 'Consolas', monospace;
+            letter-spacing: 0.05em;
+            transition: background 0.15s, border-color 0.15s, transform 0.1s;
+            -webkit-user-select: none;
+            user-select: none;
+            pointer-events: auto; /* ★親要素が透過されていても、ボタンだけは100%クリックが動作するように強制適用します */
+        }
+        .sys-btn:active {
+            transform: scale(0.95);
+            background: rgba(0, 255, 102, 0.3);
+        }
+
+        /* 
+         * 9. HUD統合コンテナ & 各種HUD (左上詰めレイアウト)
+         * トラックパッドの左上に配置し、子要素を左上から順に詰め込んで並べる flex コンテナ。
+         */
+        #hud-container {
+            position: absolute;
+            left: 2px;
+            top: 26px; /* システムモニターバー(20px)の高さぶん、HUDの開始位置を押し下げて被りを防ぎます */
+            right: 2px;
+            bottom: 6px;
+            display: flex;
+            flex-direction: row;
+            flex-wrap: wrap;
+            align-content: flex-start;
+            justify-content: flex-start;
+            gap: 2px;
+            z-index: 100; /* [FIX] 2026/07/27 5→100に引き上げ。オーバーレイ(z-index:99)より前面にHUDを配置し、暗いフィルター遮蔽を防ぐ */
+            pointer-events: none; /* ドラッグ操作を妨げないようにする */
+        }
+
+        /* 以前の各HUD的絶対配置を解除し、通常のflexアイテム化 */
+        #fleet-hud, #resource-hud, #battle-hud, #quest-hud {
+            position: static;
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+        }
+
+        /* 艦隊ステータスHUDにダブルクリック/ダブルタップイベントを有効化 */
+        /* 艦隊ステータスHUDエリアをネオンカラーの枠で囲む */
+        #fleet-hud {
+            pointer-events: auto;
+            cursor: pointer;
+            border: 1px solid rgba(0, 255, 102, 0.45);
+            border-radius: 4px;
+            padding: 2px;
+            background: rgba(3, 8, 5, 0.3);
+            box-shadow: 0 0 8px rgba(0, 255, 102, 0.1);
+        }
+
+        /* 艦隊ステータスHUD最下段の操作説明テキスト */
+        .fleet-hud-label {
+            text-align: center;
+            font-size: 7.5px;
+            color: rgba(0, 255, 102, 0.5);
+            font-weight: bold;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            padding-top: 2px;
+            border-top: 1px solid rgba(0, 255, 102, 0.15);
+            margin-top: 2px;
+            pointer-events: none;
+        }
+
+        /*
+         * 艦隊情報行コンテナ (#fleet-info-row)
+         * 艦隊ステータスHUD (#fleet-hud) と艦隊詳細パネル (#fleet-detail-panel) を
+         * 常に同じ行(右隣)に固定配置するためのコンテナ。
+         * flex-wrap: nowrap により折り返しを防止し、左右並列を強制。
+         */
+        #fleet-info-row {
+            display: flex;
+            flex-direction: row;
+            flex-wrap: nowrap;
+            align-items: flex-start;
+            gap: 6px;
+            flex-shrink: 0; /* 親コンテナの折り返し時にも縮小しない */
+        }
+
+        /*
+         * 任務HUDとTACTICAL SYSTEMを横並びに配置する行コンテナ
+         * #fleet-info-rowと同様のflex: nowrapで横並びを強制
+         */
+        #tactical-quest-row {
+            display: flex;
+            flex-direction: row;
+            flex-wrap: nowrap;
+            align-items: flex-start;
+            gap: 2px;
+            flex-shrink: 0; /* 親コンテナの折り返し時にも縮小しない */
+        }
+
+        /* 各艦隊行のボックス定義 */
+        .fleet-hud-item {
+            position: relative; /* 詳細表示時の右三角マーク(▶)を絶対配置するための基準点 */
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            background: rgba(3, 8, 5, 0.85); 
+            border: 1px solid rgba(0, 255, 102, 0.25);
+            padding: 2px 14px 2px 5px; /* 右側に三角マーク用のスペースを常に確保（横幅ガタつき防止） */
+            border-radius: 3px;
+            font-size: 9px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            backdrop-filter: blur(4px);
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+            min-width: 105px;
+            border-left: 3px solid var(--accent-color); /* NERV警告板を想起させる左端の強調アクセント線 */
+        }
+
+        /* 艦隊詳細タブで現在表示中の艦隊を目立たせるアクティブ状態（親クラス定義） */
+        .fleet-hud-item.active {
+            /* 状態ごとに個別の発光色を指定するため、ここでは基本枠線定義のみ */
+            border-style: solid;
+        }
+
+        /* アクティブ状態の右端に右三角マーク（▶）を表示（絶対配置によりレイアウト幅へ影響しない構造） */
+        .fleet-hud-item.active::after {
+            content: '▶';
+            position: absolute;
+            right: 4px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 8px;
+            pointer-events: none; /* タップイベント等を阻害しないように設定 */
+        }
+
+        /* [状態別：出撃可能 (READY/ACTIVE) 状態でのアクティブ枠強調] */
+        .fleet-hud-item.fleet-state-ready.active {
+            background: rgba(34, 197, 94, 0.12);
+            border-color: #22c55e;
+            box-shadow: 0 0 12px rgba(34, 197, 94, 0.4), inset 0 0 8px rgba(34, 197, 94, 0.15);
+        }
+        .fleet-hud-item.fleet-state-ready.active .fleet-num {
+            background: rgba(34, 197, 94, 0.3);
+            border: 1px solid #22c55e;
+            color: #86efac;
+            text-shadow: 0 0 6px rgba(34, 197, 94, 0.8);
+        }
+        .fleet-hud-item.fleet-state-ready.active::after {
+            color: #22c55e;
+            text-shadow: 0 0 4px rgba(34, 197, 94, 0.8);
+        }
+
+        /* [状態別：遠征中 (MISSION) 状態でのアクティブ枠強調] */
+        .fleet-hud-item.fleet-state-expedition.active {
+            background: rgba(0, 255, 102, 0.12);
+            border-color: var(--accent-color);
+            box-shadow: 0 0 12px rgba(0, 255, 102, 0.4), inset 0 0 8px rgba(0, 255, 102, 0.15);
+        }
+        .fleet-hud-item.fleet-state-expedition.active .fleet-num {
+            background: rgba(0, 255, 102, 0.3);
+            border: 1px solid var(--accent-color);
+            color: var(--accent-color);
+            text-shadow: 0 0 6px var(--accent-glow);
+        }
+        .fleet-hud-item.fleet-state-expedition.active::after {
+            color: var(--accent-color);
+            text-shadow: 0 0 4px var(--accent-glow);
+        }
+
+        /* [状態別：入渠中 (DOCKING) 状態でのアクティブ枠強調] */
+        .fleet-hud-item.fleet-state-docking.active {
+            background: rgba(0, 255, 102, 0.12);
+            border-color: var(--accent-color);
+            box-shadow: 0 0 12px rgba(0, 255, 102, 0.4), inset 0 0 8px rgba(0, 255, 102, 0.15);
+        }
+        .fleet-hud-item.fleet-state-docking.active .fleet-num {
+            background: rgba(0, 255, 102, 0.3);
+            border: 1px solid var(--accent-color);
+            color: var(--accent-color);
+            text-shadow: 0 0 6px var(--accent-glow);
+        }
+        .fleet-hud-item.fleet-state-docking.active::after {
+            color: var(--accent-color);
+            text-shadow: 0 0 4px var(--accent-glow);
+        }
+
+        /* [状態別：警告 (STANDBY) 状態でのアクティブ枠強調] */
+        .fleet-hud-item.fleet-state-warning.active {
+            background: rgba(234, 179, 8, 0.12);
+            border-color: #eab308;
+            box-shadow: 0 0 12px rgba(234, 179, 8, 0.4), inset 0 0 8px rgba(234, 179, 8, 0.15);
+        }
+        .fleet-hud-item.fleet-state-warning.active .fleet-num {
+            background: rgba(234, 179, 8, 0.3);
+            border: 1px solid #eab308;
+            color: #facc15;
+            text-shadow: 0 0 6px rgba(234, 179, 8, 0.8);
+        }
+        .fleet-hud-item.fleet-state-warning.active::after {
+            color: #eab308;
+            text-shadow: 0 0 4px rgba(234, 179, 8, 0.8);
+        }
+
+        /* [状態別：大破警告・危険 (CRITICAL) 状態でのアクティブ枠強調] */
+        .fleet-hud-item.fleet-state-critical.active {
+            background: rgba(239, 68, 68, 0.15);
+            border-color: #ef4444;
+            box-shadow: 0 0 12px rgba(239, 68, 68, 0.5), inset 0 0 8px rgba(239, 68, 68, 0.2);
+        }
+        .fleet-hud-item.fleet-state-critical.active .fleet-num {
+            background: rgba(239, 68, 68, 0.3);
+            border: 1px solid #ef4444;
+            color: #fca5a5;
+            text-shadow: 0 0 6px rgba(239, 68, 68, 0.9);
+        }
+        .fleet-hud-item.fleet-state-critical.active::after {
+            color: #ef4444;
+            text-shadow: 0 0 4px rgba(239, 68, 68, 0.9);
+        }
+
+        /* 艦隊番号バッジの共通デザイン */
+        .fleet-num {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            width: 13px;
+            height: 13px;
+            border-radius: 2px;
+            font-size: 8.5px;
+            font-weight: 900;
+            color: #a3f7bf;
+            background: rgba(0, 255, 102, 0.15);
+            border: 1px solid rgba(0, 255, 102, 0.3);
+        }
+
+        /* [状態：出撃可能 / ACTIVE] (正常稼働セーフティグリーン) */
+        .fleet-state-ready {
+            border-left: 3px solid #22c55e;
+        }
+        .fleet-state-ready .fleet-num {
+            background: rgba(34, 197, 94, 0.15);
+            border: 1px solid rgba(34, 197, 94, 0.4);
+            color: #86efac;
+            text-shadow: 0 0 3px rgba(34, 197, 94, 0.5);
+        }
+        .fleet-state-ready .fleet-status {
+            color: #86efac;
+        }
+
+        /* [状態：遠征中 / MISSION] (ネオングリーンのインジケータ) */
+        .fleet-state-expedition {
+            border-left: 3px solid var(--accent-color);
+        }
+        .fleet-state-expedition .fleet-num {
+            background: rgba(0, 255, 102, 0.15);
+            border: 1px solid rgba(0, 255, 102, 0.4);
+            color: var(--accent-color);
+            text-shadow: 0 0 3px var(--accent-glow);
+        }
+        .fleet-state-expedition .fleet-status {
+            color: #a3f7bf;
+        }
+
+        /* [状態：入渠中 / DOCKING] (ネオングリーンのインジケータ) */
+        .fleet-state-docking {
+            border-left: 3px solid var(--accent-color);
+        }
+        .fleet-state-docking .fleet-num {
+            background: rgba(0, 255, 102, 0.15);
+            border: 1px solid rgba(0, 255, 102, 0.4);
+            color: var(--accent-color);
+            text-shadow: 0 0 3px var(--accent-glow);
+        }
+        .fleet-state-docking .fleet-status {
+            color: #a3f7bf;
+        }
+
+        /* [状態：警告 / STANDBY] (アンバーイエローで注意を促す) */
+        .fleet-state-warning {
+            border-left: 3px solid #eab308;
+        }
+        .fleet-state-warning .fleet-num {
+            background: rgba(234, 179, 8, 0.15);
+            border: 1px solid rgba(234, 179, 8, 0.4);
+            color: #facc15;
+            text-shadow: 0 0 3px rgba(234, 179, 8, 0.5);
+        }
+        .fleet-state-warning .fleet-status {
+            color: #fef08a;
+        }
+
+        /* [状態：危険 / EMERGENCY大破] (赤色パルスで警告) */
+        .fleet-state-critical {
+            border-left: 3px solid #ef4444;
+            background: rgba(62, 5, 12, 0.85); /* 警告用の赤黒背景 */
+        }
+        .fleet-state-critical .fleet-num {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid rgba(239, 68, 68, 0.6);
+            color: #fca5a5;
+            text-shadow: 0 0 3px rgba(239, 68, 68, 0.8);
+            animation: pulse-danger 0.4s infinite; /* フラッシュ状の高速点滅アニメーション */
+        }
+        .fleet-state-critical .fleet-status {
+            color: #fca5a5;
+            font-weight: 900;
+            text-shadow: 0 0 2px rgba(239, 68, 68, 0.5);
+        }
+
+        /* 警告フラッシュアニメーション（瞬くような高速点滅効果） */
+        @keyframes pulse-danger {
+            0% { box-shadow: 0 0 1px rgba(239, 68, 68, 0.1); opacity: 0.3; }
+            50% { box-shadow: 0 0 12px rgba(239, 68, 68, 1); opacity: 1; }
+            100% { box-shadow: 0 0 1px rgba(239, 68, 68, 0.1); opacity: 0.3; }
+        }
+
+        /*
+         * 資源HUDコンテナ (#resource-hud)
+         * HUDコンテナ最上段に横長1行で資源を表示。
+         * flex-wrap: nowrap で1行強制、gap で各項目をコンパクトに配置。
+         */
+        #resource-hud {
+            display: flex;
+            flex-direction: row;
+            flex-wrap: nowrap;
+            align-items: center;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        /* 各資源のリストアイテム（横長1行用コンパクトデザイン） */
+        .res-hud-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 3px;
+            background: rgba(3, 8, 5, 0.85);
+            border: 1px solid rgba(0, 255, 102, 0.25);
+            padding: 1px 4px;
+            border-radius: 2px;
+            font-size: 8px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            backdrop-filter: blur(4px);
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+            white-space: nowrap;
+            border-right: 2px solid var(--accent-color); /* 右側にグリーンのアクセント線 */
+            transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+        }
+
+        /*
+         * ========================================================================================
+         * 資源値の増減判定型ネオン発光点滅アニメーション（1秒間、0.2秒周期）
+         * 増加時（遠征帰還・任務クリア等）はエヴァネオングリーン、
+         * 減少時（補給・開発・建造・入渠等）はエヴァ警告レッドで、
+         * 値が変化した資源ブロックを強調点滅させるSF調計器エフェクトです。
+         * ========================================================================================
+         */
+        
+        /* A. 資源増加時：グリーン点滅 */
+        .res-flash-up {
+            animation: resource-flash-up 1s linear;
+        }
+        @keyframes resource-flash-up {
+            0%, 20%, 40%, 60%, 80%, 100% {
+                background: rgba(3, 8, 5, 0.85);
+                border-color: rgba(0, 255, 102, 0.25);
+                box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+            }
+            10%, 30%, 50%, 70%, 90% {
+                background: rgba(0, 255, 102, 0.18);
+                border-color: var(--accent-color);
+                box-shadow: 0 0 10px var(--accent-glow), inset 0 0 5px var(--accent-glow);
+            }
+        }
+
+        /* B. 資源減少時：レッド点滅 */
+        .res-flash-down {
+            animation: resource-flash-down 1s linear;
+        }
+        @keyframes resource-flash-down {
+            0%, 20%, 40%, 60%, 80%, 100% {
+                background: rgba(3, 8, 5, 0.85);
+                border-color: rgba(0, 255, 102, 0.25);
+                box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+            }
+            10%, 30%, 50%, 70%, 90% {
+                background: rgba(239, 68, 68, 0.18); /* 発光時は赤い警告色半透明 */
+                border-color: #ef4444; /* 枠線も警告赤に強調 */
+                box-shadow: 0 0 10px rgba(239, 68, 68, 0.5), inset 0 0 5px rgba(239, 68, 68, 0.5); /* 赤いグロー効果 */
+            }
+        }
+
+        /* 資源タグ用のアイコンラベル */
+        .res-icon {
+            font-weight: bold;
+            font-size: 8px;
+            padding: 1px 3px;
+            border-radius: 1px;
+            color: #030805;
+            background: #a3f7bf;
+            text-shadow: none;
+        }
+        
+        /* 資源ごとのタクティカルカラー割り当て */
+        .res-fuel { background: #15803d; color: #fff; }
+        .res-ammo { background: #166534; color: #fff; }
+        .res-steel { background: #3f6212; color: #fff; }
+        .res-baux { background: #14532d; color: #fff; }
+        .res-bucket { background: #ca8a04; color: #030805; }
+
+        .res-val {
+            color: #a3f7bf;
+            font-weight: bold;
+            text-shadow: 0 0 2px rgba(163, 247, 191, 0.3);
+        }
+
+        /*
+          * 11. 戦術予測HUD (TACTICAL SYSTEM)
+          * 現在の海域やドロップ予測（ダミー）をMAGI調グラフィックで表示。
+          * COMBAT INFO(陣形・交戦形態・触接)を統合し、艦隊詳細HUD風の高密度テーブルで自/敵艦隊を表示。
+          */
+
+        /* 戦闘予測ボックス */
+        .battle-hud-item {
+            display: flex;
+            flex-direction: column;
+            background: rgba(3, 8, 5, 0.85);
+            border: 1px solid rgba(0, 255, 102, 0.25);
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-size: 8px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            backdrop-filter: blur(4px);
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+            min-width: 125px;
+            border-right: 3px solid var(--accent-color);
+        }
+
+        /* 任務HUD専用: 幅をTACTICAL SYSTEMと同じ行に収めるよう縮小 */
+        #quest-hud-panel {
+            min-width: 75px;
+        }
+
+        /* 任務HUD縮小時のフォント調整 */
+        #quest-hud-panel .quest-slot-row {
+            font-size: 7px;
+            height: 18px;
+        }
+
+        #quest-hud-panel .quest-id {
+            font-size: 7px;
+        }
+
+        #quest-hud-panel .quest-text-scroll {
+            font-size: 7px;
+        }
+
+        #quest-hud-panel .quest-progress-text {
+            font-size: 6.5px;
+        }
+
+        #quest-hud-panel .quest-progress-segment-gauge {
+            width: 38px;
+            height: 4px;
+        }
+
+        .battle-title {
+            color: var(--accent-color);
+            font-size: 7.5px;
+            text-transform: uppercase;
+            border-bottom: 1px solid rgba(0, 255, 102, 0.2);
+            padding-bottom: 1px;
+            margin-bottom: 2px;
+            font-weight: bold;
+            letter-spacing: 0.1em;
+        }
+
+        .battle-enemy {
+            color: #a3f7bf;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 110px;
+        }
+
+        .battle-predict {
+            color: #ef4444; /* ALERT用の危険赤 */
+            font-weight: 900;
+            text-shadow: 0 0 3px rgba(239, 68, 68, 0.6);
+        }
+
+        /* ----------------------------------------------------------------------------
+          * 11-1. 統合戦闘情報ヘッダ (TACTICAL SYSTEM + COMBAT INFO 統合行)
+          * 海域情報と陣形・交戦形態・触接を1行でコンパクトに表示
+          * ---------------------------------------------------------------------------- */
+        #combat-header {
+            display: flex;
+            flex-direction: row;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 1px;
+            padding: 1px 0;
+            border-bottom: 1px solid rgba(0, 255, 102, 0.15);
+            margin-bottom: 2px;
+        }
+
+        #combat-header .battle-area-tag {
+            font-size: 8px;
+            font-weight: bold;
+            color: var(--accent-color);
+            text-shadow: 0 0 3px var(--accent-glow);
+        }
+
+        #combat-header .combat-tag {
+            font-size: 7px;
+            padding: 0px 0px;
+            border-radius: 2px;
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.35);
+            color: #fca5a5;
+            font-weight: bold;
+            letter-spacing: 0.05em;
+        }
+
+        #combat-header .predict-tag {
+            font-size: 7px;
+            color: #ef4444;
+            font-weight: 900;
+            text-shadow: 0 0 3px rgba(239, 68, 68, 0.6);
+            margin-left: auto;
+        }
+
+        /* ----------------------------------------------------------------------------
+          * 11-1. 統合戦闘情報ヘッダ 2行目 (損害率・勝利区分・航空戦・予測)
+          * ---------------------------------------------------------------------------- */
+        #combat-header-2 {
+            display: flex;
+            flex-direction: row;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 1px;
+            padding: 1px 0;
+            border-bottom: 1px solid rgba(0, 255, 102, 0.1);
+            margin-bottom: 2px;
+        }
+
+        /* 損害率タグ */
+        .damage-tag {
+            font-size: 7px;
+            padding: 0px 0px;
+            border-radius: 2px;
+            background: rgba(239, 68, 68, 0.12);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #fca5a5;
+            font-weight: bold;
+            letter-spacing: 0.05em;
+        }
+
+        /* 勝利区分タグ */
+        .victory-tag {
+            font-size: 7px;
+            padding: 0px 3px;
+            border-radius: 2px;
+            background: rgba(34, 197, 94, 0.12);
+            border: 1px solid rgba(34, 197, 94, 0.35);
+            color: #86efac;
+            font-weight: bold;
+            letter-spacing: 0.05em;
+        }
+        .victory-tag.defeat {
+            background: rgba(239, 68, 68, 0.15);
+            border-color: rgba(239, 68, 68, 0.4);
+            color: #fca5a5;
+        }
+
+        /* 航空戦結果タグ */
+        .air-tag {
+            font-size: 7px;
+            padding: 0px 3px;
+            border-radius: 2px;
+            background: rgba(0, 255, 102, 0.08);
+            border: 1px solid rgba(0, 255, 102, 0.25);
+            color: var(--text-color);
+            font-weight: bold;
+            letter-spacing: 0.05em;
+        }
+
+        #combat-header-2 .predict-tag {
+            font-size: 7px;
+            color: #ef4444;
+            font-weight: 900;
+            text-shadow: 0 0 3px rgba(239, 68, 68, 0.6);
+            margin-left: auto;
+        }
+
+        /* ----------------------------------------------------------------------------
+          * 11-2. 戦闘艦隊テーブル (艦隊詳細HUD風の高密度レイアウト)
+          * 自艦隊・敵艦隊をテーブル形式で表示し、情報密度を最大化
+          * ---------------------------------------------------------------------------- */
+        .combat-fleet-section {
+            margin-top: 2px;
+        }
+
+        .combat-fleet-title {
+            font-size: 7.5px;
+            font-weight: bold;
+            color: var(--accent-color);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            padding-bottom: 1px;
+            margin-bottom: 1px;
+            border-bottom: 1px solid rgba(0, 255, 102, 0.15);
+        }
+
+        .combat-fleet-title.enemy {
+            color: #ef4444;
+            border-bottom-color: rgba(239, 68, 68, 0.15);
+        }
+
+        /* 戦闘艦隊テーブル本体 */
+        .combat-ship-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 8px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            color: var(--text-color);
+            margin-top: 1px;
+        }
+
+        .combat-ship-table thead th {
+            text-align: left;
+            padding: 0px 2px;
+            border-bottom: 1px solid rgba(0, 255, 102, 0.25);
+            color: var(--accent-color);
+            font-size: 7px;
+            font-weight: bold;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .combat-ship-table tbody tr {
+            border-bottom: 1px solid rgba(0, 255, 102, 0.1);
+            transition: background 0.15s;
+        }
+
+        .combat-ship-table tbody td {
+            padding: 0px 2px;
+            vertical-align: middle;
+            font-size: 8px;
+        }
+
+        /* 艦名セル：固定幅（漢字3文字分 ≈ 3em）*/
+        .combat-ship-name-cell {
+            font-weight: bold;
+            color: #a3f7bf;
+            width: 3em;
+            min-width: 3em;
+            max-width: 3em;
+            overflow: hidden;
+            white-space: nowrap;
+        }
+
+        /* 艦名セル内のスクロールラッパーコンテナ */
+        .combat-ship-name-container {
+            width: 100%;
+            overflow: hidden;
+            white-space: nowrap;
+            position: relative;
+            height: 1.2em;
+            display: flex;
+            align-items: center;
+        }
+
+        /* 艦名セル内のスクロール用内包要素 */
+        .combat-ship-name-scroll {
+            display: inline-block;
+            white-space: nowrap;
+            width: max-content;
+        }
+
+        /* 戦闘艦隊用 艦名電光掲示板スクロールアニメーション（4秒ループ） */
+        .combat-ship-name-scroll.scroll::after {
+            content: attr(data-name);
+            margin-left: 1.5em;
+        }
+        .combat-ship-name-scroll.scroll {
+            position: absolute;
+            left: 0;
+            animation: ship-name-bounce 4s linear infinite;
+        }
+
+        /* HPセル（セグメントゲージを含む2行構成） */
+        .combat-ship-hp-cell {
+            width: 5em;
+            min-width: 5em;
+            max-width: 5em;
+            vertical-align: middle;
+        }
+
+        /* 戦闘HPセル内コンテナ */
+        .combat-cell-container {
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+            align-items: flex-start;
+            width: 100%;
+        }
+
+        /* 戦闘HP数値テキスト */
+        .combat-hp-text {
+            font-size: 7px;
+            font-weight: bold;
+            color: #a3f7bf;
+        }
+
+        /* 戦闘用セグメントゲージ（艦隊詳細HUD版より小振り） */
+        .combat-segment-gauge {
+            display: flex;
+            gap: 0.5px;
+            justify-content: flex-start;
+            align-items: center;
+            width: 4em;
+            height: 3px;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 0;
+            border: 1px solid rgba(0, 255, 102, 0.15);
+            border-radius: 1px;
+        }
+
+        .combat-segment-gauge .gauge-segment {
+            flex: 1;
+            height: 100%;
+            background: rgba(0, 255, 102, 0.06);
+            border: 1px solid rgba(0, 255, 102, 0.1);
+            border-radius: 1px;
+        }
+
+        .combat-segment-gauge .gauge-segment.active {
+            background: #00ff66;
+            border-color: rgba(0, 255, 102, 0.6);
+            box-shadow: 0 0 2px rgba(0, 255, 102, 0.4);
+        }
+
+        /* 状態別ゲージカラー（戦闘用） */
+        .combat-segment-gauge .gauge-segment.active.warning {
+            background: #ffaa00;
+            border-color: rgba(255, 170, 0, 0.6);
+        }
+
+        .combat-segment-gauge .gauge-segment.active.critical {
+            background: #ef4444;
+            border-color: rgba(239, 68, 68, 0.6);
+        }
+
+        /* 撃沈時: グレーアウト */
+        .combat-segment-gauge .gauge-segment.sunk {
+            background: rgba(100, 116, 139, 0.2);
+            border-color: rgba(100, 116, 139, 0.15);
+        }
+
+        /* ========================================================================================
+         * 20. ログHUD (LOG SYSTEM) スタイル定義
+         * 本家ブラウザのログ最新10件を表示。青系テーマ。
+         * ======================================================================================== */
+        #log-hud-panel {
+            min-width: 180px;
+        }
+
+        .log-entry {
+            display: flex;
+            align-items: baseline;
+            gap: 3px;
+            font-size: 7px;
+            padding: 1px 3px;
+            border-radius: 2px;
+            background: rgba(3, 8, 5, 0.6);
+            border-left: 2px solid transparent;
+            font-family: 'Consolas', 'Courier New', monospace;
+        }
+
+        .log-time {
+            color: #64748b;
+            flex-shrink: 0;
+            font-size: 6.5px;
+        }
+
+        .log-priority {
+            flex-shrink: 0;
+            font-size: 6px;
+            font-weight: bold;
+            padding: 0 2px;
+            border-radius: 1px;
+        }
+
+        .log-priority.p1 {
+            color: #60a5fa;
+            background: rgba(96, 165, 250, 0.15);
+        }
+
+        .log-priority.p2 {
+            color: #facc15;
+            background: rgba(250, 204, 21, 0.15);
+        }
+
+        .log-priority.p3 {
+            color: #ef4444;
+            background: rgba(239, 68, 68, 0.15);
+        }
+
+        .log-message {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: #a3f7bf;
+        }
+
+        /* 優先度別左端アクセント */
+        .log-entry.priority-1 {
+            border-left-color: #60a5fa;
+        }
+
+        .log-entry.priority-2 {
+            border-left-color: #facc15;
+        }
+
+        .log-entry.priority-3 {
+            border-left-color: #ef4444;
+        }
+
+        /* 状態セル */
+        .combat-ship-status {
+            text-align: center;
+            font-weight: bold;
+            font-size: 7px;
+        }
+
+        /* 状態別カラー */
+        .status-ok { color: #86efac; }
+        .status-warning { color: #facc15; }
+        .status-emergency { color: #fca5a5; animation: pulse-danger 0.4s infinite; }
+        .status-sunk { color: #64748b; text-decoration: line-through; opacity: 0.5; }
+
+        /* 連合艦隊時の2列レイアウト */
+        #combat-fleets-container {
+            display: flex;
+            flex-direction: row;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+
+        .combat-fleet-block {
+            flex: 1;
+            min-width: 100px;
+        }
+
+        /* ----------------------------------------------------------------------------
+         * 12. 新規：詳細戦闘情報における個別HP表示スタイル
+         * ---------------------------------------------------------------------------- */
+        .ship-hp-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 8px;
+            padding: 1px 3px;
+            border-radius: 2px;
+            background: rgba(3, 8, 5, 0.6);
+            border: 1px solid rgba(0, 255, 102, 0.15);
+            font-family: 'Consolas', 'Courier New', monospace;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+
+        /* 艦名表示の調整 */
+        .ship-name {
+            color: #a3f7bf;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 80px;
+            font-weight: bold;
+        }
+
+        /* HP数値 (例: 40/40) */
+        .ship-hp-val {
+            font-weight: bold;
+            letter-spacing: 0.05em;
+        }
+
+        /* [状態：OK] - 通常グリーン */
+        .ship-status-ok {
+            border-left: 2px solid #22c55e;
+        }
+        .ship-status-ok .ship-hp-val {
+            color: #86efac;
+        }
+
+        /* [状態：WARNING] - 中破（アンバーイエローで注意喚起） */
+        .ship-status-warning {
+            border-left: 2px solid #eab308;
+            background: rgba(234, 179, 8, 0.06);
+        }
+        .ship-status-warning .ship-hp-val {
+            color: #facc15;
+            text-shadow: 0 0 2px rgba(234, 179, 8, 0.4);
+        }
+
+        /* [状態：EMERGENCY] - 大破（赤黒背景、赤黒パルス点滅による危険警告） */
+        .ship-status-emergency {
+            border-left: 2px solid #ef4444;
+            background: rgba(62, 5, 12, 0.85);
+            animation: pulse-danger-bg 0.4s infinite; /* フラッシュ状の高速点滅アニメーション */
+        }
+        .ship-status-emergency .ship-name,
+        .ship-status-emergency .ship-hp-val {
+            color: #fca5a5;
+            text-shadow: 0 0 3px rgba(239, 68, 68, 0.9);
+        }
+
+        /* 大破時の背景危険警告フラッシュアニメーション（瞬くような高速点滅効果） */
+        @keyframes pulse-danger-bg {
+            0% { background-color: rgba(62, 5, 12, 0.2); }
+            50% { background-color: rgba(239, 68, 68, 1); }
+            100% { background-color: rgba(62, 5, 12, 0.2); }
+        }
+
+        /* [状態：SUNK] - 撃沈（グレーアウト、斜線打ち消し線） */
+        .ship-status-sunk {
+            border-left: 2px solid #64748b;
+            background: rgba(30, 41, 59, 0.4);
+            opacity: 0.45;
+        }
+        .ship-status-sunk .ship-name,
+        .ship-status-sunk .ship-hp-val {
+            color: #94a3b8;
+            text-decoration: line-through; /* 斜線 (打ち消し線) で撃沈表現 */
+        }
+
+        /* ========================================================================================
+         * 13. 設定パネル (SYSTEM SETUP) スタイル定義
+         * SYSTEM SETUPボタンのトグルで開閉するシステム設定エリア。
+         * max-height アニメーションで滑らかな展開・収縮を実現する。
+         * ======================================================================================== */
+
+        /*
+         * 設定パネル本体：
+         * 初期状態は max-height: 0 + overflow: hidden で折りたたまれている。
+         * .settings-closed クラスが除去されると max-height が展開してアニメーションする。
+         */
+        #settings-panel {
+            overflow: hidden;
+            max-height: 280px; /* 開いた状態の最大高さ（新グループ分拡張） */
+            transition: max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease;
+            opacity: 1;
+            display: flex;
+            flex-direction: row;
+            flex-wrap: wrap;
+            gap: 6px;
+            padding: 4px 0 4px;
+        }
+
+        /* 確認モーダルオーバーレイ */
+        #confirm-modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+        }
+        #confirm-modal-overlay.show {
+            display: flex;
+        }
+        #confirm-modal-box {
+            background: rgba(2, 15, 6, 0.95);
+            border: 1px solid rgba(0, 255, 102, 0.5);
+            border-radius: 6px;
+            padding: 16px 20px;
+            max-width: 300px;
+            text-align: center;
+            box-shadow: 0 0 20px rgba(0, 255, 102, 0.3);
+        }
+        #confirm-modal-box p {
+            color: var(--accent-color);
+            font-size: 12px;
+            margin: 0 0 12px;
+            font-family: 'Consolas', 'Courier New', monospace;
+        }
+        #confirm-modal-box .modal-btn-group {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+        }
+        .modal-btn {
+            padding: 6px 16px;
+            background: rgba(2, 15, 6, 0.9);
+            border: 1px solid rgba(0, 255, 102, 0.3);
+            border-radius: 3px;
+            color: rgba(163, 247, 191, 0.8);
+            font-size: 11px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .modal-btn:hover {
+            background: rgba(0, 255, 102, 0.15);
+            border-color: rgba(0, 255, 102, 0.6);
+        }
+        .modal-btn.confirm {
+            border-color: var(--accent-color);
+            color: var(--accent-color);
+        }
+        
+        /* 閉じた状態：max-height と opacity をゼロにして折りたたみアニメーション */
+        #settings-panel.settings-closed {
+            max-height: 0;
+            opacity: 0;
+            padding: 0;
+        }
+
+        /* 設定グループ (ラベル + ボタン横並び) */
+        .setting-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            border: 1px solid rgba(0, 255, 102, 0.2); /* NERVスタイルの極細グリーン境界枠 */
+            padding: 4px 8px 6px;
+            border-radius: 4px;
+            background: rgba(0, 255, 102, 0.02); /* 薄い半透明グリーン背景 */
+        }
+
+        /* 設定グループのラベルテキスト */
+        .setting-group label {
+            font-size: 8px;
+            color: rgba(0, 255, 102, 0.6);
+            text-transform: uppercase;
+            letter-spacing: 0.15em;
+            font-weight: bold;
+        }
+
+        /* ボタン群の横並びコンテナ */
+        .btn-group {
+            display: flex;
+            flex-direction: row;
+            gap: 3px;
+        }
+
+        /* 設定選択ボタン共通スタイル：NERVコンソールのトグルスイッチ風デザイン */
+        .settings-btn {
+            height: 22px;
+            min-width: 26px;
+            padding: 0 6px;
+            background: rgba(2, 15, 6, 0.9);
+            border: 1px solid rgba(0, 255, 102, 0.3);
+            border-radius: 3px;
+            color: rgba(163, 247, 191, 0.6);
+            font-size: 9px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-weight: bold;
+            letter-spacing: 0.05em;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        /* 設定選択ボタン：ホバー時 */
+        .settings-btn:hover {
+            background: rgba(0, 255, 102, 0.1);
+            border-color: rgba(0, 255, 102, 0.5);
+            color: var(--accent-color);
+        }
+
+        /* 設定選択ボタン：選択中 (active) */
+        .settings-btn.active {
+            background: rgba(0, 255, 102, 0.2);
+            border-color: var(--accent-color);
+            color: var(--accent-color);
+            box-shadow: 0 0 6px rgba(0, 255, 102, 0.3);
+            text-shadow: 0 0 4px rgba(0, 255, 102, 0.6);
+        }
+
+        /* 設定選択ボタン：タップ時フィードバック */
+        .settings-btn:active {
+            transform: scale(0.95);
+            background: rgba(0, 255, 102, 0.15);
+        }
+
+        /* ========================================================================================
+         * 14. 拡大表示パネル (TACTICAL SCOPE) 定義
+         * タッチパッド内右下に正方形で絶対配置され、仮想ポインタ周辺をズーム表示する。
+         * NERVタクティカルコンソール風の正方形照準器HUD。
+         * ======================================================================================== */
+        #click-btn {
+            width: 100%;
+            height: 10dvh;
+            position: relative;
+            overflow: hidden;
+            background: rgba(3, 8, 5, 0.85); /* 透過ダーク背景 */
+            border: 2px solid var(--accent-color);
+            border-radius: 6px;
+            color: var(--accent-color); /* テキスト色をネオングリーンにして発光 */
+            font-size: 2.5dvh;
+            font-weight: 900;
+            letter-spacing: 0.25em;
+            text-transform: uppercase;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+            touch-action: manipulation;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 16px;
+            box-shadow: 0 0 10px rgba(0, 255, 102, 0.3);
+            text-shadow: 0 0 5px var(--accent-glow);
+            transition: transform 0.1s, box-shadow 0.1s, background 0.1s;
+        }
+
+        #click-btn:active {
+            transform: scale(0.97);
+            background: rgba(0, 255, 102, 0.1);
+            box-shadow: 0 0 5px rgba(0, 255, 102, 0.1);
+        }
+
+        /* 決定ボタンラベルテキスト */
+        .btn-label {
+            position: relative;
+            z-index: 3;
+            pointer-events: none;
+            font-size: 2.5dvh;
+            letter-spacing: 0.2em;
+        }
+
+        /* 座標 POS-X, Y 表示テキスト */
+        #click-btn #debug-info {
+            position: relative;
+            z-index: 3;
+            pointer-events: none;
+            font-size: 1.5dvh;
+            font-weight: bold;
+            color: rgba(0, 255, 102, 0.7);
+            text-shadow: 0 0 3px var(--accent-glow);
+            letter-spacing: 0.05em;
+        }
+
+        /* 
+         * 拡大鏡（タクティカルスコープ・SF計器風円形照準器）
+         * トラックパッドのほぼ中央に巨大（170px）に絶対配置され、ドラッグ中のみHUDの上に被さるように出現します。
+         * 円形（border-radius:50%）にすることで、サイバーパンクのタクティカルスコープの高級感を際立たせます。
+         */
+        .magnifier-container {
+            position: absolute;
+            /* トラックパッド全体のほぼ中央に大きく絶対配置 */
+            left: 50%;
+            top: 50%;
+            width: 250px; /* 視認性を劇的に高めるために170pxに大型化 */
+            height: 250px;
+            border: 2px solid var(--accent-color);
+            border-radius: 10%; 
+            background: rgba(3, 8, 5, 0.8); /* HUDパネルの上に被るため、後ろの文字が透けないよう背景不透明度を高めます */
+            overflow: hidden;
+            /* 
+             * HUDコンテナ(z-index:5)やシステムインジケータ(z-index:6)よりも手前に出現させるため、
+             * z-index を 8 に指定して完全に前面へオーバーラップ（重ね合わせ）させます
+             */
+            z-index: 8;
+            pointer-events: none;
+            box-shadow: 0 0 25px rgba(0, 255, 102, 0.45), inset 0 0 15px rgba(0, 255, 102, 0.25);
+            
+            /* 
+             * 初期状態は中央基準の非表示状態
+             * transform の translate(-50%, -50%) で中央寄せを維持したまま、
+             * 縮小(scale:0.7)かつ透明(opacity:0)にして完全に消去しておきます
+             */
+            opacity: 0;
+            transform: translate(-50%, -50%) scale(0.7);
+            /* キレがよくて気持ちの良いSF的なポップアップ・フェードアウト曲線（ベジェ曲線） */
+            transition: opacity 1s cubic-bezier(0.1, 0.8, 0.3, 1.15), transform 0.22s cubic-bezier(0.1, 0.8, 0.3, 1.15);
+        }
+
+        /* トラックパッド操作中（JSにより.visibleクラス付与時）にシュインと出現させます */
+        .magnifier-container.visible {
+            opacity: 1;
+            /* 中央寄せを維持したまま、実寸大(scale:1)へポップアップ */
+            transform: translate(-50%, -50%) scale(1);
+        }
+
+        #magnifier-canvas {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            opacity: 0.90; /* 独立した正方形HUDとしてクッキリ見せるため不透明度を高める */
+            display: block;
+        }
+
+        /* 十字照準線 (レティクル・正方形拡大コンテナ内の中央へ配置) */
+        .reticle-line-h {
+            position: absolute;
+            left: 0;
+            top: 50%;
+            width: 100%;
+            height: 1px;
+            background: rgba(255, 102, 0, 0.75); /* NERVアンバーオレンジ */
+            transform: translateY(-50%);
+            z-index: 2;
+            pointer-events: none;
+        }
+
+        .reticle-line-v {
+            position: absolute;
+            left: 50%;
+            top: 0;
+            width: 1px;
+            height: 100%;
+            background: rgba(255, 102, 0, 0.75); /* NERVアンバーオレンジ */
+            transform: translateX(-50%);
+            z-index: 2;
+            pointer-events: none;
+        }
+
+        /* 中央の極小四角ターゲットリング */
+        .reticle-center-ring {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 12px;
+            height: 12px;
+            border: 1px solid rgba(255, 102, 0, 0.9);
+            border-radius: 1px;
+            transform: translate(-50%, -50%);
+            z-index: 2;
+            pointer-events: none;
+        }
+
+        /* ========================================================================================
+          * 15. 艦船詳細テーブル (SHIP DETAIL TABLE) 定義
+          * 艦隊1の艦船リストをテーブル形式で表示（カーソルパッド領域内のHUDコンテナ内に配置）。
+          * NERV戦術モニタ風のネオングリーンテーマを適用。
+          * ======================================================================================== */
+        #fleet-detail-panel {
+                    position: static; /* flex子要素として配置 */
+                    flex: 1; /* #fleet-info-row 内で残りのスペースをすべて占有 */
+                    max-height: 200px; /* 高さを制限してスクロール可能に */
+                    overflow-y: auto;
+                    background: rgba(3, 8, 5, 0.85);
+                    backdrop-filter: blur(4px);
+                    border: 1px solid rgba(0, 255, 102, 0.25);
+                    border-radius: 3px;
+                    padding: 1px 1px;
+                    pointer-events: auto; /* ブロック全体をタップして装備表示モードをトグル */
+                    cursor: pointer;
+                    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+                }
+
+        /* 艦船詳細テーブル本体 */
+        #ship-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 9px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            color: var(--text-color);
+        }
+
+        /* テーブルヘッダ */
+        #ship-table thead th {
+            text-align: left;
+            padding: 1px 2px;
+            border-bottom: 1px solid rgba(0, 255, 102, 0.3);
+            color: var(--accent-color);
+            font-size: 8px;
+            font-weight: bold;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            text-shadow: 0 0 3px rgba(0, 255, 102, 0.4);
+        }
+
+        /* テーブルボディの行 - 行間隙を縮小・行高固定でトグル時のガタつき防止 */
+        #ship-table tbody tr {
+            border-bottom: none; /* 行境界線を削除して隙間を縮小 */
+            transition: background 0.15s;
+            border-bottom: 1px solid rgba(0, 255, 102, 0.3);
+            height: 17px; /* 行高を固定（HPモードのセグメントゲージにも対応） */
+        }
+
+        #ship-table tbody tr:hover {
+            background: rgba(0, 255, 102, 0.05);
+        }
+
+        /* テーブルボディのセル - パディングを削減 */
+        #ship-table tbody td {
+            padding: 0px 0px;
+            vertical-align: middle;
+        }
+
+        /* 艦名セル：固定幅（漢字3文字分 ≈ 3em）*/
+        .ship-name-cell {
+            font-weight: bold;
+            color: #a3f7bf;
+            width: 3em;           /* 漢字3文字分の固定幅 */
+            min-width: 3em;       /* 幅の縮小を防止 */
+            max-width: 3em;       /* 幅の拡大を防止 */
+            overflow: hidden;     /* はみ出しを隠す */
+            white-space: nowrap;  /* 改行を防止 */
+        }
+
+        /* 艦名セル内のスクロールラッパーコンテナ */
+        .ship-name-container {
+            width: 100%;
+            overflow: hidden;
+            white-space: nowrap;
+            position: relative;
+            height: 1.2em;
+            display: flex;
+            align-items: center;
+        }
+
+        /* 艦名セル内のスクロール用内包要素 */
+        .ship-name-scroll {
+            display: inline-block;
+            white-space: nowrap;
+            width: max-content;
+        }
+
+        /* ========================================================================================
+         * 艦名電光掲示板スクロールアニメーション（4秒ループ）
+         * サイクル: 左端1秒停止 → 左へスクロール → 右端1秒停止 → 右へスクロール（ループ）
+         * ======================================================================================== */
+        .ship-name-scroll.scroll::after {
+            content: attr(data-name);
+            margin-left: 1.5em;
+        }
+        .ship-name-scroll.scroll {
+            position: absolute;
+            left: 0;
+            animation: ship-name-bounce 4s linear infinite;
+        }
+        @keyframes ship-name-bounce {
+            /* 0-25%: 左端で1秒停止 */
+            0% {
+                transform: translateX(0);
+            }
+            10% {
+                transform: translateX(0);
+            }
+            /* 25-50%: 左へスクロール（複製テキストの開始位置まで） */
+            100% {
+                transform: translateX(calc(-50% - 0.75em));
+            }
+        }
+
+        /* レベルセル */
+        .ship-level-cell {
+            text-align: center;
+            color: #a3f7bf;
+        }
+
+        /* HPセル（セグメントゲージを含む） - 5文字分（5em）の固定幅 */
+        .ship-hp-cell {
+            min-width: 5em;
+            max-width: 5em;
+            width: 5em;
+            vertical-align: middle;
+        }
+
+        /* HP数値テキスト */
+        .ship-hp-text {
+            font-size: 8px;
+            color: #a3f7bf;
+        }
+
+        /* Cond（状態）セル */
+        .ship-condition-cell {
+            text-align: center;
+            font-weight: bold;
+            vertical-align: middle;
+        }
+
+        /* Cond：正常（70以上） */
+        .condition-ok {
+            color: #86efac;
+        }
+
+        /* Cond：警告（50〜69） */
+        .condition-warning {
+            color: #eab308;
+            text-shadow: 0 0 3px rgba(234, 179, 8, 0.4);
+        }
+
+        /* Cond：疲労（50未満） */
+        .condition-fatigue {
+            color: #ef4444;
+            text-shadow: 0 0 3px rgba(239, 68, 68, 0.4);
+        }
+
+        /* 燃料・弾薬セル（セグメントゲージを含む） - 5文字分（5em）の固定幅 */
+        .ship-resource-cell {
+            min-width: 5em;
+            max-width: 5em;
+            width: 5em;
+            vertical-align: middle;
+        }
+
+        /* 燃料・弾薬用数値テキスト */
+        .ship-resource-text {
+            font-size: 8px;
+            color: #a3f7bf;
+        }
+
+        /* セル内フレックスコンテナ（HP/リソース共通・テーブル崩壊防止） */
+        .ship-cell-container {
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+            align-items: flex-start; /* 左寄せに統一 */
+            width: 100%;
+        }
+
+        /* ----------------------------------------------------------------------------
+           * 装備情報トグル（HP/FEL/AMOセル内の2層オーバーレイ方式）
+           * セルをタップすると resource-view（HP/FEL/AMO）⇔ equip-view（装備情報）を
+           * opacityアニメーションで切り替える（任務HUDのshow-progress方式と同じ）
+           * ---------------------------------------------------------------------------- */
+        .resource-view {
+            position: relative;
+            transition: opacity 0.4s ease-in-out;
+            opacity: 1;
+            visibility: visible;
+        }
+        .equip-view {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+            transition: opacity 0.4s ease-in-out;
+            font-size: 7px;
+            color: rgba(163, 247, 191, 0.7);
+            font-family: 'Consolas', monospace;
+            vertical-align: middle;
+            padding: 1px 0px;
+        }
+        /* .show-equip クラス付与時の切り替え */
+        .ship-hp-cell.show-equip .resource-view,
+        .ship-resource-cell.show-equip .resource-view {
+            opacity: 0;
+            visibility: hidden;
+        }
+        .ship-hp-cell.show-equip .equip-view,
+        .ship-resource-cell.show-equip .equip-view {
+            opacity: 1;
+            visibility: visible;
+            pointer-events: auto;
+        }
+        /* 装備バッジ：固定幅（4em）でトグル時の横幅変化を防止。長文は電光掲示板式スクロール */
+        .equip-badge {
+            display: inline-block;
+            width: 4em;
+            min-width: 4em;
+            max-width: 4em;
+            overflow: hidden;
+            white-space: nowrap;
+            margin-right: 2px;
+            border: 1px solid rgba(0, 255, 102, 0.2);
+            border-radius: 2px;
+            background: rgba(0, 255, 102, 0.05);
+            font-size: 7px;
+            color: rgba(163, 247, 191, 0.7);
+            font-family: 'Consolas', monospace;
+            position: relative;
+            vertical-align: middle;
+        }
+        /* 装備バッジ内のスクロール用コンテナ（艦名のship-name-containerと同じパターン） */
+        .equip-scroll-container {
+            width: 100%;
+            overflow: hidden;
+            white-space: nowrap;
+            position: relative;
+            height: 1em;
+            display: flex;
+            align-items: center;
+        }
+        /* 装備バッジ内のスクロール用内包要素 */
+        .equip-scroll {
+            display: inline-block;
+            white-space: nowrap;
+            width: max-content;
+        }
+        /* 装備バッジ 電光掲示板スクロールアニメーション（4秒ループ） */
+        .equip-scroll.scroll::after {
+            content: attr(data-name);
+            margin-left: 1em;
+        }
+        .equip-scroll.scroll {
+            position: absolute;
+            left: 0;
+            animation: equip-bounce 4s linear infinite;
+        }
+        @keyframes equip-bounce {
+            0% { transform: translateX(0); }
+            10% { transform: translateX(0); }
+            100% { transform: translateX(calc(-50% - 0.75em)); }
+        }
+
+        /* ----------------------------------------------------------------------------
+           * 装備スロットセル（装備モード用・等幅固定）
+           * 装備モード時に各スロットを個別のセルとして表示（S1〜S5 + EX = 9列テーブル）
+           * ---------------------------------------------------------------------------- */
+        .ship-equip-cell {
+            width: 3em;
+            min-width: 3em;
+            max-width: 3em;
+            overflow: hidden;
+            text-align: center;
+            vertical-align: middle;
+            font-size: 8px;
+            color: rgba(163, 247, 191, 0.7);
+            font-family: 'Consolas', monospace;
+        }
+
+        /* 装備スロット内コンテナ */
+        .equip-slot-container {
+            width: 100%;
+            overflow: hidden;
+            white-space: nowrap;
+            position: relative;
+            height: 1.2em;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* 装備スロットスクロール用内包要素 */
+        .equip-slot-scroll {
+            display: inline-block;
+            white-space: nowrap;
+            width: max-content;
+        }
+
+        /* 装備スロット 電光掲示板スクロールアニメーション（4秒ループ） */
+        .equip-slot-scroll.scroll::after {
+            content: attr(data-name);
+            margin-left: 1.5em;
+        }
+        .equip-slot-scroll.scroll {
+            position: absolute;
+            left: 0;
+            animation: equip-slot-bounce 4s linear infinite;
+        }
+        @keyframes equip-slot-bounce {
+            0% { transform: translateX(0); }
+            10% { transform: translateX(0); }
+            100% { transform: translateX(calc(-50% - 0.75em)); }
+        }
+
+        /* 補強増設スロットの特別カラー */
+        .equip-slot-expansion {
+            color: rgba(255, 102, 0, 0.8);
+        }
+
+        .equip-badge.empty {
+            border-color: rgba(163, 247, 191, 0.1);
+            background: rgba(163, 247, 191, 0.02);
+            color: rgba(163, 247, 191, 0.3);
+        }
+        .equip-badge.expansion {
+            border-color: rgba(255, 102, 0, 0.2);
+            background: rgba(255, 102, 0, 0.05);
+            color: rgba(255, 170, 0, 0.8);
+        }
+
+        /* HP/FEL/AMOセルにカーソルとホバーエフェクト追加 */
+        .ship-hp-cell,
+        .ship-resource-cell {
+            cursor: pointer;
+        }
+        .ship-hp-cell:hover,
+        .ship-resource-cell:hover {
+            background: rgba(0, 255, 102, 0.08);
+        }
+
+        /* ----------------------------------------------------------------------------
+          * 艦船詳細HPの被ダメージ状態別テキスト・ゲージ発光点滅（小破・中破・大破）
+          * ---------------------------------------------------------------------------- */
+
+        /* A. 小破（黄色パルス発光点滅・1.5秒周期で滑らかに明滅） */
+        .ship-cell-container.hp-state-minor .ship-hp-text {
+            color: #facc15; /* 小破時の黄色テキスト */
+            animation: hp-text-minor 0.8s infinite ease-in-out;
+        }
+        .ship-cell-container.hp-state-minor .gauge-segment.active.segment-bar-fill {
+            background: #facc15; /* ゲージも小破黄に上書き */
+            border-color: #facc15;
+            animation: hp-gauge-minor 0.8s infinite ease-in-out;
+        }
+        @keyframes hp-text-minor {
+            0%, 100% { text-shadow: 0 0 1px rgba(234, 179, 8, 0.2); opacity: 0.7; }
+            50% { text-shadow: 0 0 4px rgba(234, 179, 8, 0.85); opacity: 1; }
+        }
+        @keyframes hp-gauge-minor {
+            0%, 100% { box-shadow: 0 0 1px rgba(234, 179, 8, 0.2); opacity: 0.6; }
+            50% { box-shadow: 0 0 6px rgba(234, 179, 8, 0.95); opacity: 1; }
+        }
+
+        /* B. 中破（オレンジパルス発光点滅・1.0秒周期で注意喚起） */
+        .ship-cell-container.hp-state-moderate .ship-hp-text {
+            color: #f97316; /* 中破時のオレンジテキスト */
+            animation: hp-text-moderate 0.4s infinite ease-in-out;
+        }
+        .ship-cell-container.hp-state-moderate .gauge-segment.active.segment-bar-fill.warning {
+            background: #f97316; /* ゲージも中破オレンジに上書き */
+            border-color: #f97316;
+            animation: hp-gauge-moderate 0.4s infinite ease-in-out;
+        }
+        @keyframes hp-text-moderate {
+            0%, 100% { text-shadow: 0 0 1px rgba(249, 115, 22, 0.2); opacity: 0.6; }
+            50% { text-shadow: 0 0 5px rgba(249, 115, 22, 0.95); opacity: 1; }
+        }
+        @keyframes hp-gauge-moderate {
+            0%, 100% { box-shadow: 0 0 1px rgba(249, 115, 22, 0.2); opacity: 0.5; }
+            50% { box-shadow: 0 0 8px rgba(249, 115, 22, 0.95); opacity: 1; }
+        }
+
+        /* C. 大破（危険警告・赤色パルス発光点滅・0.5秒周期で緊急警告） */
+        .ship-cell-container.hp-state-critical .ship-hp-text {
+            color: #ef4444; /* 大破時の赤テキスト */
+            animation: hp-text-critical 0.2s infinite ease-in-out;
+        }
+        .ship-cell-container.hp-state-critical .gauge-segment.active.segment-bar-fill.critical {
+            background: #ef4444; /* ゲージも大破赤に上書き */
+            border-color: #ef4444;
+            animation: hp-gauge-critical 0.2s infinite ease-in-out;
+        }
+        @keyframes hp-text-critical {
+            0%, 100% { text-shadow: 0 0 1px rgba(239, 68, 68, 0.2); opacity: 0.5; }
+            50% { text-shadow: 0 0 6px rgba(239, 68, 68, 1.0); opacity: 1; }
+        }
+        @keyframes hp-gauge-critical {
+            0%, 100% { box-shadow: 0 0 1px rgba(239, 68, 68, 0.2); opacity: 0.4; }
+            50% { box-shadow: 0 0 10px rgba(239, 68, 68, 1.0); opacity: 1; }
+        }
+
+        /* 燃料・弾薬・HP共通 10段階セグメントゲージコンテナ */
+        .resource-segment-gauge {
+            display: flex;
+            gap: 1px; /* 各セグメントの隙間 */
+            justify-content: flex-start;
+            align-items: center;
+            width: 40px; /* ゲージ全体の横幅 */
+            height: 5px;  /* ゲージの高さ (1pxボーダーが美しく映えるよう5pxに最適化) */
+            background: rgba(0, 0, 0, 0.4);
+            padding: 0;   /* パディングを排除してセグメントをコンテナいっぱいに広げる */
+            border: 1px solid rgba(0, 255, 102, 0.15);
+            border-radius: 1px;
+            margin: 0; /* 左寄せにするため中央寄せmarginを排除 */
+        }
+
+        /* 個々のセグメント（極小の長方形） */
+        .gauge-segment {
+            flex: 1;
+            height: 100%;
+            background: rgb(255, 43, 43); /* 消灯状態：消灯を表すサイバーレッドの残光 */
+            border: 0px solid rgb(255, 255, 255); /* 消灯状態の縁（暗いレッド半透明） */
+            border-radius: 0.5px;
+            transition: background 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+        }
+
+        /* 点灯状態の通常セグメント (ネオングリーン) */
+        .gauge-segment.active.segment-bar-fill {
+            background: #00ff66;
+            border-color: #00ff66; /* 縁も明るく塗りつぶす */
+            box-shadow: 0 0 3px rgba(0, 255, 102, 0.8);
+        }
+
+        /* 警告状態のセグメント (アンバーオレンジ・50%未満) */
+        .gauge-segment.active.segment-bar-fill.warning {
+            background: #ffaa00;
+            border-color: #ffaa00; /* 縁も明るく塗りつぶす */
+            box-shadow: 0 0 3px rgba(255, 170, 0, 0.8);
+        }
+
+        /* 危険状態のセグメント (エヴァ警告レッド・20%未満) */
+        .gauge-segment.active.segment-bar-fill.critical {
+            background: #ef4444;
+            border-color: #ffc5c5; /* 縁も明るく塗りつぶす */
+            box-shadow: 0 0 3px rgba(239, 68, 68, 0.9);
+        }
+
+        /* ========================================================================================
+         * 17. スクロールバーカスタマイズ（艦船詳細パネル用）
+         * NERV戦術モニタ風のネオングリーンテーマを適用。
+         * ======================================================================================== */
+        #fleet-detail-panel::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        #fleet-detail-panel::-webkit-scrollbar-track {
+            background: rgba(0, 255, 102, 0.05);
+            border-radius: 2px;
+        }
+
+        #fleet-detail-panel::-webkit-scrollbar-thumb {
+            background: rgba(0, 255, 102, 0.3);
+            border-radius: 2px;
+        }
+
+        #fleet-detail-panel::-webkit-scrollbar-thumb:hover {
+            background: rgba(0, 255, 102, 0.5);
+        }
+
+        /* ========================================================================================
+         * 18. 受領中任務HUD (QUEST SYSTEM) スタイル定義
+         * TACTICAL SYSTEM（戦術予測HUD）の直下にアンバーオレンジテーマで追加。
+         * 電光掲示板風往復スクロールアニメーション(6秒ループ)を純CSSで実装。
+         * ======================================================================================== */
+        .quest-slot-row {
+            display: flex;
+            align-items: center;
+            font-size: 8px;
+            padding: 1px 0px;
+            border-radius: 2px;
+            background: rgba(3, 8, 5, 0.6);
+            border: 1px solid rgba(255, 102, 0, 0.15); /* アンバーオレンジの極細境界線 */
+            font-family: 'Consolas', 'Courier New', monospace;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+            height: 20px; /* 進捗表示の縦2行構成をゆったりと格納するために高さを20pxに拡張 */
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* 達成率100%の任務の点滅アニメーション（0.5秒間隔） */
+        @keyframes quest-blink {
+            0%, 49% { opacity: 1; }
+            50%, 100% { opacity: 0.2; }
+        }
+        .quest-slot-row.quest-mission-ready {
+            animation: quest-blink 1s infinite;
+        }
+
+        /* 任務番号表示 (左固定) */
+        .quest-id {
+            color: #ff6600; /* NERVアンバーオレンジ */
+            font-weight: bold;
+            margin-right: 0px;
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+
+        /* 任務テキスト用スクロールコンテナ */
+        .quest-text-container {
+            flex: 1;
+            overflow: hidden;
+            white-space: nowrap;
+            position: relative;
+            height: 100%;
+        }
+
+        /* トグルパネル共通スタイル */
+        .quest-view-panel {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            transition: opacity 0.4s ease-in-out, transform 0.4s ease-in-out;
+            pointer-events: none;
+        }
+
+        /* 作戦名パネル：デフォルト表示 */
+        .quest-name-panel {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* 進捗パネル：デフォルト非表示 */
+        .quest-progress-panel {
+            opacity: 0;
+            transform: translateY(8px); /* 下からスライドイン */
+            display: flex;
+            flex-direction: column; /* 進捗率テキストとセグメントゲージを縦2行に並べる */
+            align-items: flex-start; /* 左寄せ */
+            justify-content: center; /* 縦方向中央揃え */
+            gap: 1px; /* 縦の隙間を極限まで詰めて高さをコンパクトに抑制 */
+        }
+
+        /* トグル時（show-progress クラス付与時） */
+        .quest-slot-row.show-progress .quest-name-panel {
+            opacity: 0;
+            transform: translateY(-8px); /* 上へ消える */
+        }
+
+        .quest-slot-row.show-progress .quest-progress-panel {
+            opacity: 1;
+            transform: translateY(0); /* 定位置に出現 */
+        }
+
+        /* 任務スクロールテキスト本体 */
+        .quest-text-scroll {
+            display: inline-block;
+            white-space: nowrap;
+            width: max-content;
+            color: #a3f7bf;
+        }
+
+        /* 任務スクロールアニメーション (6秒ループ) */
+        .quest-text-scroll.scroll::after {
+            content: attr(data-text);
+            margin-left: 2em;
+        }
+        .quest-text-scroll.scroll {
+            position: absolute;
+            left: 0;
+            animation: quest-text-bounce 10s linear infinite;
+        }
+        @keyframes quest-text-bounce {
+            0% {
+                transform: translateX(0);
+            }
+            2% {
+                transform: translateX(0);
+            }
+            48% {
+                transform: translateX(calc(-50% - 1em));
+            }
+            100% {
+                transform: translateX(calc(-50% - 1em));
+            }
+        }
+
+        /* 進捗テキスト */
+        .quest-progress-text {
+            color: #ffaa00; /* 進捗はアンバー調 */
+            font-weight: bold;
+            font-size: 7.5px;
+        }
+
+        /* 
+         * 任務用 10段階セグメントゲージコンテナ
+         * HPバーや各種資材ゲージとデザインラインを完全に統一するためのスタイル定義です
+         */
+        .quest-progress-segment-gauge {
+            display: flex;
+            gap: 1px; /* 各セグメントの間の隙間 */
+            justify-content: flex-start;
+            align-items: center;
+            width: 45px; /* ゲージ全体の横幅（コンパクトに収まるよう45pxに指定） */
+            height: 5px;  /* ゲージの高さ */
+            background: rgba(0, 0, 0, 0.4); /* 暗い背景 */
+            padding: 0;
+            border: 1px solid rgba(255, 102, 0, 0.3); /* NERVアンバーオレンジの極細境界線 */
+            border-radius: 1px;
+            margin-right: 2px;
+            flex-shrink: 0;
+        }
+
+        /* 任務ゲージ専用のセグメント装飾定義（点灯・消灯色の割り当て） */
+        .quest-progress-segment-gauge .gauge-segment {
+            background: rgba(255, 102, 0, 0.08); /* 消灯状態：ほのかに赤熱するアンバーの残光を表現 */
+            border: 0px;
+            border-radius: 0.5px;
+        }
+        .quest-progress-segment-gauge .gauge-segment.active {
+            background: #ff6600; /* 点灯状態：鮮烈なアンバーオレンジで発光 */
+            box-shadow: 0 0 3px rgba(255, 102, 0, 0.85); /* ネオン感を引き出すグロー効果 */
+        }
+
+        /* =====================================================================
+         * 縦画面（Portrait）時のデフォルト隠しスタイル
+         * 横画面時のみ表示される要素をデフォルトで隠す
+         * ===================================================================== */
+
+        /* トグルボタン: 縦画面時は非表示 */
+        #trackpad-toggle {
+            display: none;
+        }
+
+        /* [FIX] 2026/07/27 半透明オーバーレイ方式をフィルター方式へ変更
+         * 縦画面時は非表示・無効化 → #viewport.overlay-active クラスによるフィルター方式へ置き換え */
+
+        /* =====================================================================
+         * 横画面（Landscape）時のレイアウトオーバーライド
+         * ===================================================================== */
+        @media (orientation: landscape) {
+
+            /* 横画面用CSSカスタムプロパティ */
+            :root {
+                --panel-width: 340px;
+            }
+
+            /* body: 縦スタック → 横並列（ゲーム画面 + 操作パネル）に変更 */
+            body {
+                flex-direction: row;
+            }
+
+            /* -----------------------------------------------------------------
+             * ゲーム画面（#viewport）の最適化
+             * ----------------------------------------------------------------- */
+            #viewport {
+                flex: 1;
+                width: auto;
+                height: 100dvh;
+                border-bottom: none;
+                border-right: 2px solid var(--accent-color);
+            }
+
+            #game-screen {
+                width: auto;
+                height: auto;
+                max-width: 100%;
+                max-height: 100dvh;
+                aspect-ratio: 5 / 3;
+            }
+
+            /* -----------------------------------------------------------------
+             * 操作パネル（#trackpad-area）の折り畳み
+             * ----------------------------------------------------------------- */
+            #trackpad-area {
+                flex: 0 0 0;
+                position: fixed;
+                right: 0;
+                top: 0;
+                bottom: 0;
+                width: var(--panel-width);
+                max-width: 80vw;
+                transform: translateX(100%);
+                transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                z-index: 98; /* [FIX] Step 3: パネルを背面へ移動（ボタン(1000) > オーバーレイ(99) > パネル(98) の階層構造を明確化） */
+                background: var(--bg-color);
+                box-shadow: -4px 0 20px rgba(0, 0, 0, 0.6);
+            }
+
+            /* 展開状態（JSによるクラス付与で切り替え） */
+            #trackpad-area.panel-expanded {
+                transform: translateX(0);
+            }
+
+            /* -----------------------------------------------------------------
+             * 折り畳み/展開トグルボタン
+             * ----------------------------------------------------------------- */
+            #trackpad-toggle {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                position: fixed;
+                right: 0;
+                top: 50%;
+                transform: translateY(-50%);
+                width: 24px;
+                height: 80px;
+                background: rgba(3, 8, 5, 0.9);
+                border: 1px solid var(--glass-border);
+                border-right: none;
+                border-radius: 4px 0 0 4px;
+                color: var(--accent-color);
+                font-size: 12px;
+                cursor: pointer;
+                z-index: 1000;
+                transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                            background 0.15s ease;
+                -webkit-tap-highlight-color: transparent;
+                box-shadow: -2px 0 8px rgba(0, 0, 0, 0.4);
+                /* [FIX] Step 2: touch-actionを指定し、300msタップ遅延・ジェスチャ干渉を排除 */
+                touch-action: manipulation;
+                /* [FIX] 最前面配置を確定 */
+                pointer-events: auto;
+            }
+
+            #trackpad-toggle:hover {
+                background: rgba(0, 255, 102, 0.1);
+            }
+
+            #trackpad-toggle:active {
+                transform: translateY(-50%) scale(0.95);
+            }
+
+            /* 展開時: ボタンをパネル右端に移動 */
+            #trackpad-toggle.panel-expanded {
+                right: var(--panel-width);
+            }
+
+            #trackpad-toggle .toggle-icon {
+                transition: transform 0.3s ease;
+                display: inline-block;
+            }
+
+            /* 展開時: アイコンを反転（◀ → ▶） */
+            #trackpad-toggle.panel-expanded .toggle-icon {
+                transform: scaleX(-1);
+            }
+
+            /* [FIX] 2026/07/27 半透明オーバーレイ方式をフィルター方式へ変更
+             * #trackpad-overlay 関連のCSS定義を削除し、#viewport.overlay-active クラスによるフィルター方式へ置き換え */
+
+            /* -----------------------------------------------------------------
+             * 横画面時の #click-btn のレイアウト調整
+             * ----------------------------------------------------------------- */
+            #click-btn {
+                height: 60px;
+                font-size: 16px;
+            }
+
+            /* -----------------------------------------------------------------
+             * 横画面時の HUD レイアウト調整
+             * ----------------------------------------------------------------- */
+            #hud-container {
+                right: 4px;
+                left: 4px;
+            }
+
+            /* 拡大鏡のサイズ調整（横画面時はやや小さめ） */
+            .magnifier-container {
+                width: 200px;
+                height: 200px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id='viewport'>
+        <!-- 差分WebP方式対応：表示要素を <img> から <canvas> へ変更 -->
+        <canvas id='game-screen' width='1200' height='720'></canvas>
+        <div id='virtual-cursor'></div>
+    </div>
+
+    <div id='trackpad-area'>
+        <!-- システム設定トグルパネル (SYSTEM SETUP) -->
+        <div id='settings-panel' class='settings-closed'>
+            <div class='setting-group'>
+                <label>目標FPS</label>
+                <div class='btn-group' id='fps-group'>
+                    <button class='settings-btn' data-fps='0.5'>0.5</button>
+                    <button class='settings-btn' data-fps='1'>1</button>
+                    <button class='settings-btn' data-fps='2'>2</button>
+                    <button class='settings-btn' data-fps='5'>5</button>
+                    <button class='settings-btn active' data-fps='10'>10</button>
+                    <button class='settings-btn' data-fps='20'>20</button>
+                    <button class='settings-btn' data-fps='30'>MAX</button>
+                </div>
+            </div>
+            <div class='setting-group'>
+                <label>配信画質</label>
+                <div class='btn-group' id='quality-group'>
+                    <button class='settings-btn' data-quality='20'>省エネ</button>
+                    <button class='settings-btn active' data-quality='40'>標準</button>
+                    <button class='settings-btn' data-quality='70'>高画質</button>
+                    <button class='settings-btn' data-quality='90'>最高</button>
+                    <button class='settings-btn' data-quality='100'>無圧縮</button>
+                </div>
+            </div>
+            <!-- 自動FPS制御ON/OFF -->
+            <div class='setting-group'>
+                <label>自動FPS制御</label>
+                <div class='btn-group' id='auto-fps-group'>
+                    <button class='settings-btn active' data-auto-fps='1'>有効</button>
+                    <button class='settings-btn' data-auto-fps='0'>無効</button>
+                </div>
+            </div>
+            <!-- 操作感度設定 (0.5x 〜 2.0x) -->
+            <div class='setting-group'>
+                <label>操作感度</label>
+                <div class='btn-group' id='sensitivity-group'>
+                    <button class='settings-btn' data-sensitivity='0.5'>0.5x</button>
+                    <button class='settings-btn' data-sensitivity='0.8'>0.8x</button>
+                    <button class='settings-btn active' data-sensitivity='1.0'>標準</button>
+                    <button class='settings-btn' data-sensitivity='1.5'>1.5x</button>
+                    <button class='settings-btn' data-sensitivity='2.0'>2.0x</button>
+                </div>
+            </div>
+            <!-- 拡大率設定 (2.0x 〜 5.0x) -->
+            <div class='setting-group'>
+                <label>拡大率</label>
+                <div class='btn-group' id='zoom-group'>
+                    <button class='settings-btn' data-zoom='2.0'>2x</button>
+                    <button class='settings-btn active' data-zoom='3.0'>3x</button>
+                    <button class='settings-btn' data-zoom='4.0'>4x</button>
+                    <button class='settings-btn' data-zoom='5.0'>5x</button>
+                </div>
+            </div>
+            <!-- ドラッグ距離閾値設定 -->
+            <div class='setting-group'>
+                <label>ドラッグ距離</label>
+                <div class='btn-group' id='drag-distance-group'>
+                    <button class='settings-btn' data-drag-distance='5'>5px</button>
+                    <button class='settings-btn active' data-drag-distance='10'>10px</button>
+                    <button class='settings-btn' data-drag-distance='15'>15px</button>
+                    <button class='settings-btn' data-drag-distance='20'>20px</button>
+                    <button class='settings-btn' data-drag-distance='30'>30px</button>
+                </div>
+            </div>
+            <!-- タップ時間閾値設定 -->
+            <div class='setting-group'>
+                <label>タップ時間</label>
+                <div class='btn-group' id='tap-timeout-group'>
+                    <button class='settings-btn' data-tap-timeout='150'>150ms</button>
+                    <button class='settings-btn' data-tap-timeout='200'>200ms</button>
+                    <button class='settings-btn active' data-tap-timeout='300'>300ms</button>
+                    <button class='settings-btn' data-tap-timeout='500'>500ms</button>
+                </div>
+            </div>
+
+            <!-- ブラウザ操作設定 -->
+            <div class='setting-group'>
+                <label>ブラウザ操作</label>
+                <div class='btn-group'>
+                    <button class='settings-btn' id='btn-navigate-login'>ログインページ</button>
+                </div>
+            </div>
+            <!-- プライバシーフィルター設定 -->
+            <div class='setting-group'>
+                <label>プライバシーフィルター</label>
+                <div class='btn-group' id='filter-group'>
+                    <button class='settings-btn active' data-filter='0'>なし</button>
+                    <button class='settings-btn' data-filter='1'>グレースケール</button>
+                    <button class='settings-btn' data-filter='4'>低コントラスト</button>
+                </div>
+            </div>
+            <!-- 暗視フィルター設定（トグル方式） -->
+            <div class='setting-group'>
+                <label>暗視</label>
+                <div class='btn-group'>
+                    <button class='settings-btn' id='btn-nightvision'>なし</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 確認モーダル -->
+        <div id='confirm-modal-overlay'>
+            <div id='confirm-modal-box'>
+                <p id='confirm-modal-message'>確認メッセージ</p>
+                <div class='modal-btn-group'>
+                    <button class='modal-btn confirm' id='confirm-modal-ok'>OK</button>
+                    <button class='modal-btn' id='confirm-modal-cancel'>キャンセル</button>
+                </div>
+            </div>
+        </div>
+
+
+        <div id='trackpad-container'>
+            <div id='trackpad'>
+                <!-- 新規：トラックパッド最上部の横長システムモニターバー -->
+                <div id='system-monitor-bar'>
+                    <!-- 左：接続ステータス & 制御モード -->
+                    <div style='display: flex; gap: 4px; align-items: center;'>
+                        <span id='conn-status' class='sys-val-badge'>SYNCHRONIZING...</span>
+                        <span id='state-badge' class='sys-val-badge'>ACT</span>
+                    </div>
+                    <!-- 右：通信量、FPS、設定トグル -->
+                    <div style='display: flex; gap: 8px; align-items: center;'>
+                        <span class='sys-label'>BANDWIDTH <br/><span id='data-usage' class='sys-val'>0.0 MB</span></span>
+                        <span class='sys-label'>REFRESH RATE <br/><span id='fps-info' class='sys-val'>0.00 FPS</span></span>
+                        <button id='settings-toggle' class='sys-btn'>SETUP</button>
+                    </div>
+                </div>
+
+                <!-- タクティカルモニター調のセンタリングロゴ -->
+                <span id='trackpad-label' class='trackpad-info'>86式艦隊臨時指揮端末</span>
+                
+                <!-- HUDコンテナ (左上から順に詰め込んで並べる) -->
+                <div id='hud-container' class='trackpad-info'>
+                    <!-- 資源・資材ステータスHUD（最上段横長1行表示） -->
+                    <div id='resource-hud'>
+                        <div class='res-hud-item'>
+                            <span class='res-icon res-fuel'>FU</span>
+                            <span class='res-val' id='res-fuel-val'>000,000</span>
+                        </div>
+                        <div class='res-hud-item'>
+                            <span class='res-icon res-ammo'>AM</span>
+                            <span class='res-val' id='res-ammo-val'>000,000</span>
+                        </div>
+                        <div class='res-hud-item'>
+                            <span class='res-icon res-steel'>ST</span>
+                            <span class='res-val' id='res-steel-val'>000,000</span>
+                        </div>
+                        <div class='res-hud-item'>
+                            <span class='res-icon res-baux'>BX</span>
+                            <span class='res-val' id='res-baux-val'>000,000</span>
+                        </div>
+                        <div class='res-hud-item'>
+                            <span class='res-icon res-bucket'>BC</span>
+                            <span class='res-val' id='res-bucket-val'>0,000</span>
+                        </div>
+                    </div> <!-- /#resource-hud -->
+
+                    <!-- 艦隊ステータスHUDと艦隊詳細パネルを常に右隣に固定配置するコンテナ -->
+                    <div id='fleet-info-row'>
+                        <!-- 1〜4艦隊ステータスHUD -->
+                        <div id='fleet-hud'>
+                            <!-- 動的にJSで再構築されますが、初期ロード時のためのダミープレースホルダー -->
+                            <div class='fleet-hud-item fleet-state-ready'>
+                                <span class='fleet-num'>01</span>
+                                <span class='fleet-status'>LOADING / ------</span>
+                            </div>
+                            <div class='fleet-hud-item fleet-state-expedition'>
+                                <span class='fleet-num'>02</span>
+                                <span class='fleet-status'>LOADING / ------</span>
+                            </div>
+                            <div class='fleet-hud-item fleet-state-warning'>
+                                <span class='fleet-num'>03</span>
+                                <span class='fleet-status'>LOADING / ------</span>
+                            </div>
+                            <div class='fleet-hud-item fleet-state-critical'>
+                                <span class='fleet-num'>04</span>
+                                <span class='fleet-status'>LOADING / ------</span>
+                            </div>
+                            <span class='fleet-hud-label'>Tap 2 Toggle</span>
+                        </div>
+                        <!-- 艦船詳細パネル（艦隊1固定表示） -->
+                        <div id='fleet-detail-panel'>
+                            <table id='ship-table'>
+                                <thead>
+                                    <tr>
+                                        <th>NAME</th>
+                                        <th>LV</th>
+                                        <th>CND</th>
+                                        <th>HP</th>
+                                        <th>FEL</th>
+                                        <th>AMO</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- 動的に生成 -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div> <!-- /#fleet-info-row -->
+
+                    <!-- 任務HUDとTACTICAL SYSTEMを横並びに配置する行コンテナ -->
+                    <div id='tactical-quest-row'>
+                        <!-- 受領中任務HUD -->
+                        <div id='quest-hud'>
+                            <div class='battle-hud-item' id='quest-hud-panel'>
+                                <span class='battle-title' style='color: #ff6600; border-bottom: 1px solid rgba(255, 102, 0, 0.2);'>QUEST SYSTEM</span>
+                                <div id='quest-list' style='display: flex; flex-direction: column; gap: 2px;'>
+                                    <!-- 8スロットの任務が動的に生成されます -->
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 作戦海域・戦術予測HUD ＆ 詳細戦闘情報HUD -->
+                        <div id='battle-hud'>
+                        <div class='battle-hud-item'>
+                            <span class='battle-title'>TACTICAL SYSTEM</span>
+                            <span class='battle-area-tag' id='battle-area'>3-2 / AREA NORTH</span>
+                            <!-- 統合戦闘情報ヘッダ 1行目: 海域・陣形・交戦・触接 -->
+                            <div id='combat-header'>
+                                <span class='combat-tag' id='combat-formation'>FORM: ------</span>
+                                <span class='combat-tag' id='combat-engagement'>ENGAGE: ------</span>
+                                <span class='combat-tag' id='combat-touch'>TOUCH: ------</span>
+                            </div>
+                            <!-- 統合戦闘情報ヘッダ 2行目: 損害率・勝利区分・航空戦・予測 -->
+                            <div id='combat-header-2'>
+                                <span class='damage-tag' id='combat-damage'>DMG: ---%</span>
+                                <span class='victory-tag' id='combat-victory'>RESULT: ------</span>
+                                <span class='air-tag' id='combat-air'>AIR: ------</span>
+                                <span class='predict-tag' id='battle-predict'>S-WIN PREDICT / 雪風</span>
+                            </div>
+                            <!-- 敵艦隊構成 -->
+                            <div id='battle-enemy' style='font-size: 7.5px; opacity: 0.8; padding: 1px 0;'>ENEMY: NO SIGNAL</div>
+                            <!-- 戦闘艦隊テーブルコンテナ (艦隊詳細HUD風の高密度レイアウト) -->
+                            <div id='combat-fleets-container'>
+                                <!-- 動的にJSで自艦隊・敵艦隊のテーブルが構築されます -->
+                            </div>
+                        </div>
+                    </div>
+                </div> <!-- /#tactical-quest-row -->
+
+                    <!-- ログHUD（最新10件） -->
+                    <div id='log-hud'>
+                        <div class='battle-hud-item' id='log-hud-panel'>
+                            <span class='battle-title' style='color: #60a5fa; border-bottom: 1px solid rgba(96, 165, 250, 0.2);'>LOG SYSTEM</span>
+                            <div id='log-list' style='display: flex; flex-direction: column; gap: 1px; max-height: 200px; overflow-y: auto;'>
+                                <!-- 最新10件のログが動的に生成されます -->
+                            </div>
+                        </div>
+                    </div>
+
+                </div> <!-- /#hud-container -->
+
+                <!-- 【右下に新規配置】拡大表示パネル（タクティカルスコープ・正方形） -->
+                <div class='magnifier-container trackpad-info'>
+                    <canvas id='magnifier-canvas'></canvas>
+                    <div class='reticle-line-h'></div>
+                    <div class='reticle-line-v'></div>
+                    <div class='reticle-center-ring'></div>
+                </div>
+            </div>
+        </div>
+        <button id='click-btn'>
+            <!-- 中央にClickラベル -->
+            <span class='btn-label'>Click</span>
+            <!-- 右側にPOS座標表示 -->
+            <span id='debug-info' class='trackpad-info'>POS-X: 50% POS-Y: 50%</span>
+        </button>
+    </div>
+
+    <!-- [FIX] 2026/07/27 #trackpad-overlay 要素を削除。フィルター方式へ変更 -->
+
+    <!-- 折り畳み/展開トグルボタン（横画面時のみ表示） -->
+    <button id='trackpad-toggle' class='trackpad-toggle-btn' aria-label='操作パネルの表示/非表示' aria-expanded='false'>
+        <span class='toggle-icon'>◀</span>
+    </button>
+
+    <script>
+        const screen = document.getElementById('game-screen');
+
+        // ─── canvas の描画コンテキストを取得する（差分WebP・レガシーJPEGの両モードで共用）
+        let gameCtx = screen.getContext('2d');
+
+        // 配信モード設定（2026/06/01 myi 変更：レガシーJPEG配信の廃止に伴い差分WebPモードに強制固定）
+        let isDiffWebp = true;
+
+        const viewport = document.getElementById('viewport');
+        const pad = document.getElementById('trackpad');
+        const cursor = document.getElementById('virtual-cursor');
+        
+        // 2026/06/11 myi 新規作成（ゲーム画面タッチクリック用変数）
+        let lastTapTime = 0;  // ダブルタップ検出用
+        const status = document.getElementById('conn-status');
+        const fpsInfo = document.getElementById('fps-info');
+        const dataUsage = document.getElementById('data-usage'); // 通信量表示要素の取得
+        const debug = document.getElementById('debug-info');
+
+        // 拡大スコープ用Canvas要素および描画コンテキストの取得
+        const magCanvas = document.getElementById('magnifier-canvas');
+        const magCtx = magCanvas ? magCanvas.getContext('2d') : null;
+        const clickBtn = document.getElementById('click-btn');
+
+        let lastX = 0, lastY = 0;
+        let vCursorX = 0.5, vCursorY = 0.5;
+
+        // 通信量集計用のグローバル変数 (バイト単位)
+        let accumulatedBytes = 0;
+
+        //============================================================================================
+        // ゲーム画面タッチ/マウス操作（2026/07/14 myi 大幅改修）
+        // タップ: touch_click / ドラッグ: mousedown→move→mouseup
+        //============================================================================================
+        // 状態変数
+        let viewportTouchStartX = 0;
+        let viewportTouchStartY = 0;
+        let viewportTouchStartTime = 0;
+        let isDraggingOnViewport = false;
+        let isMouseDownOnViewport = false;
+
+        // 動的FPS制御・状態バッジ更新の共通処理
+        function activateViewportFpsControl() {
+            const isSlowFpsMode = (Date.now() - lastOperationTime) >= ACTIVE_TIMEOUT;
+            lastOperationTime = Date.now();
+            if (isSlowFpsMode) {
+                clearTimeout(updateTimer);
+                updateTimer = setTimeout(updateScreen, 50);
+            }
+            const stateBadge = document.getElementById('state-badge');
+            stateBadge.textContent = 'ACT';
+            stateBadge.className = 'badge';
+        }
+
+        // タッチ/マウス位置をカーソル座標に変換して移動
+        function handleViewportMove(clientX, clientY) {
+            const rect = screen.getBoundingClientRect();
+            const x = Math.max(0, Math.min(1.0, (clientX - rect.left) / rect.width));
+            const y = Math.max(0, Math.min(1.0, (clientY - rect.top) / rect.height));
+            vCursorX = x;
+            vCursorY = y;
+            scheduleCursorUpdate();
+            sendMoveControl(x, y);
+        }
+
+        // ── touchstart ──
+        viewport.addEventListener('touchstart', (e) => {
+            const touch = e.touches[0];
+            viewportTouchStartX = touch.clientX;
+            viewportTouchStartY = touch.clientY;
+            viewportTouchStartTime = Date.now();
+            isDraggingOnViewport = false;
+
+            // 動的FPS制御：操作検出
+            activateViewportFpsControl();
+
+            // タッチ開始位置にカーソルを即時移動
+            handleViewportMove(touch.clientX, touch.clientY);
+        }, { passive: true });
+
+        // ── touchmove ──
+        viewport.addEventListener('touchmove', (e) => {
+            const touch = e.touches[0];
+            const dx = touch.clientX - viewportTouchStartX;
+            const dy = touch.clientY - viewportTouchStartY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            // 閾値を超えたらドラッグ判定
+            if (dist > dragThreshold && !isDraggingOnViewport) {
+                isDraggingOnViewport = true;
+                // ドラッグ開始：カーソル位置にマウスダウン
+                fetch('/control?action=mousedown');
+            }
+
+            // カーソルをタッチ位置に追従（絶対座標）
+            handleViewportMove(touch.clientX, touch.clientY);
+        }, { passive: true });
+
+        // ── touchend ──
+        viewport.addEventListener('touchend', (e) => {
+            const elapsed = Date.now() - viewportTouchStartTime;
+
+            if (isDraggingOnViewport) {
+                // ドラッグ中だった場合：マウスアップ
+                fetch('/control?action=mouseup');
+            } else if (elapsed <= tapTimeout) {
+                // 短時間だった場合：タップ（既存のtouch_click）
+                const rect = screen.getBoundingClientRect();
+                const x = Math.max(0, Math.min(1.0, (viewportTouchStartX - rect.left) / rect.width));
+                const y = Math.max(0, Math.min(1.0, (viewportTouchStartY - rect.top) / rect.height));
+                fetch(`/control?action=touch_click&x=${x}&y=${y}`);
+            }
+
+            isDraggingOnViewport = false;
+        }, { passive: true });
+
+        // ── mousedown（PCマウス） ──
+        viewport.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return; // 左ボタンのみ
+            e.preventDefault();
+
+            isMouseDownOnViewport = true;
+            viewportTouchStartX = e.clientX;
+            viewportTouchStartY = e.clientY;
+            viewportTouchStartTime = Date.now();
+
+            // マウスダウン（ドラッグ開始の準備）
+            fetch('/control?action=mousedown');
+
+            // 動的FPS制御
+            activateViewportFpsControl();
+
+            // カーソル位置に即時移動
+            handleViewportMove(e.clientX, e.clientY);
+        });
+
+        // ── mousemove（PCマウス） ──
+        viewport.addEventListener('mousemove', (e) => {
+            if (!isMouseDownOnViewport) return;
+            handleViewportMove(e.clientX, e.clientY);
+        });
+
+        // ── mouseup（PCマウス） ──
+        viewport.addEventListener('mouseup', (e) => {
+            if (!isMouseDownOnViewport) return;
+            isMouseDownOnViewport = false;
+
+            // マウスアップ
+            fetch('/control?action=mouseup');
+
+            // タップ判定（短時間・短距離）
+            const elapsed = Date.now() - viewportTouchStartTime;
+            const dx = e.clientX - viewportTouchStartX;
+            const dy = e.clientY - viewportTouchStartY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (elapsed <= tapTimeout && dist <= dragThreshold) {
+                // タップ判定（リップルエフェクトは削除済み）
+            }
+        });
+
+        //============================================================================================
+        // 艦隊詳細HUDの現在表示中艦隊ID（ダブルタップで1→2→3→4→1とサイクル切り替え）
+        //============================================================================================
+        let currentDetailFleetId = 1;  // 初期表示は艦隊1
+
+        //============================================================================================
+        // 艦隊詳細HUDのシフト切り替え関数
+        // 艦隊ステータスHUDをシングルタップ/シングルクリックすると呼び出される
+        // 艦隊IDをシフトし、艦隊ステータスHUDの強調表示（activeクラス）を即時反映させる
+        //============================================================================================
+        function switchFleetDetail() {
+            // 艦隊データを取得
+            const fleets = window._fleetData;
+            const fleetCount = fleets ? fleets.length : 4;
+            
+            // 艦隊IDをシフト（1→2→3→4→1...）
+            currentDetailFleetId = currentDetailFleetId >= fleetCount ? 1 : currentDetailFleetId + 1;
+            
+            // 艦隊ステータスHUDの強調表示（activeクラス）を即時更新
+            updateFleetHudActiveState();
+            
+            // 艦隊詳細HUDを再描画
+            renderFleetDetail(currentDetailFleetId);
+        }
+
+        //============================================================================================
+        // 艦隊ステータスHUDの強調表示（activeクラス）を即時更新する関数
+        // 現在表示中の艦隊IDに対応する艦隊アイテムにactiveクラスを付与し、他から削除する
+        //============================================================================================
+        function updateFleetHudActiveState() {
+            const fleetHud = document.getElementById('fleet-hud');
+            if (!fleetHud) return;
+            
+            // 艦隊アイテム（fleet-hud-item）を取得（操作説明テキストは除外）
+            const items = fleetHud.querySelectorAll('.fleet-hud-item');
+            items.forEach(item => {
+                // 艦隊番号バッジから艦隊IDを抽出
+                const numSpan = item.querySelector('.fleet-num');
+                if (!numSpan) return;
+                const fleetId = parseInt(numSpan.textContent, 10);
+                
+                // 現在表示中の艦隊IDと一致する場合のみactiveクラスを付与
+                if (fleetId === currentDetailFleetId) {
+                    item.classList.add('active');
+                } else {
+                    item.classList.remove('active');
+                }
+            });
+        }
+
+        //============================================================================================
+        // 動的FPS制御用変数
+        // 操作の有無に基づいて配信頻度を自動調整し、省電力・省リソースを実現
+        //============================================================================================
+        let lastOperationTime = Date.now();  // 最終操作のタイムスタンプ
+        let updateTimer = null;              // 画面更新タイマーID（SLEEP復帰用）
+        const ACTIVE_TIMEOUT = 15000;         // アクティブ→アイドル遷移までの時間（15秒）
+        const IDLE_TIMEOUT = 45000;           // アクティブ→スリープ遷移までの合計時間（15秒 + 30秒 = 45秒）
+        const IDLE_FPS = 0.5;                 // アイドル時のFPS（2秒に1回）
+        const SLEEP_FPS = (1.0 / 60);         // スリープ時のFPS（1分に1回）
+
+        // タイマーフォーマット関数
+        // ミリ秒値を SS:mmm 形式（秒:ミリ秒）の文字列に変換
+        // 例: 15300ms -> "15:300"（15秒300ミリ秒）、45500ms -> "45:500"（45秒500ミリ秒）
+        // 負の値が渡された場合は "00:000" を返す（防御的処理）
+        function formatTimer(milliseconds) {
+            // 負の値ガード：負の値が渡された場合は0として処理
+            if (milliseconds < 0) {
+                milliseconds = 0;
+            }
+            const totalSeconds = Math.floor(milliseconds / 1000);
+            const seconds = String(totalSeconds).padStart(2, '0');
+            const millis = String(Math.floor(milliseconds % 1000)).padStart(3, '0');
+            return `${seconds}:${millis}`;
+        }
+
+        // タイマーリアルタイム更新用インターバルID
+        // 100msごとの独立したタイマー更新ループを管理するための識別子
+        let timerUpdateInterval = null;
+
+        // 状態判定およびstateBadgeのクラス・テキスト更新関数
+        // IDLE/SLEEP状態のタイマー表示をリアルタイムに更新するためのコア処理
+        function updateStateBadge() {
+            const elapsed = Date.now() - lastOperationTime;
+            const stateBadge = document.getElementById('state-badge');
+            
+            if (elapsed < ACTIVE_TIMEOUT) {
+                // アクティブ状態：バッジをACT表示に復帰
+                stateBadge.textContent = 'ACT';
+                stateBadge.className = 'badge';
+            } else if (elapsed < IDLE_TIMEOUT) {
+                // アイドル状態：IDLタイマーをSS:mmm形式で表示
+                // IDLE状態への遷移からの経過時間を計算（負の値を0にクランプ）
+                const idleElapsed = Math.max(0, Date.now() - lastOperationTime - ACTIVE_TIMEOUT);
+                stateBadge.textContent = `IDL:${formatTimer(idleElapsed)}`;
+                stateBadge.className = 'badge idle';
+            } else {
+                // スリープ状態：SLPタイマーをSS:mmm形式で表示
+                // SLEEP状態への遷移からの経過時間を計算（負の値を0にクランプ）
+                const sleepElapsed = Math.max(0, Date.now() - lastOperationTime - ACTIVE_TIMEOUT - IDLE_TIMEOUT);
+                stateBadge.textContent = `SLP:${formatTimer(sleepElapsed)}`;
+                stateBadge.className = 'badge sleep';
+            }
+        }
+
+        // 前回のSLEEPタイマー表示秒数（1秒周期の更新判定用）
+        // 同じ秒数の場合は更新をスキップし、1秒に1回の正確な更新・点滅を確保
+        let lastSleepSeconds = -1;
+
+        // タイマー表示をリアルタイムに更新する独立した高頻度タイマー起動関数
+        // IDLE状態: 100ms（10FPS）ごとに更新し滑らかなミリ秒タイマー表示を実現
+        // SLEEP状態: 秒数が変わった瞬間（1秒周期）のみ更新し、値変更時にフェード警告点滅アニメーションをトリガー
+        // 既存のupdateScreen()ループには影響を与えない独立した処理ループ
+        function startTimerUpdate() {
+            if (timerUpdateInterval !== null) return; // 既に起動中の場合は重複起動を防止
+            timerUpdateInterval = setInterval(() => {
+                // 毎回リアルタイムに経過時間を算出（変数コピーによるタイミングズレを防止）
+                const elapsed = Date.now() - lastOperationTime;
+                const stateBadge = document.getElementById('state-badge');
+
+                // 自動FPS制御が無効な場合は、常にアクティブ状態(ACT)のバッジ表示を維持します
+                if (!autoFpsEnabled) {
+                    stateBadge.textContent = 'ACT';
+                    stateBadge.className = 'badge';
+                    lastSleepSeconds = -1;
+                    return;
+                }
+
+                if (elapsed < ACTIVE_TIMEOUT) {
+                    // アクティブ状態：バッジをACTIVE表示に復帰
+                    stateBadge.textContent = 'ACT';
+                    stateBadge.className = 'badge';
+                    // SLEEP用キャッシュをクリア
+                    lastSleepSeconds = -1;
+                } else if (elapsed < IDLE_TIMEOUT) {
+                    // アイドル状態：IDLEタイマーをSS:mmm形式で表示（100msごと更新）
+                    // IDLE状態への遷移からの経過時間を計算（負の値を0にクランプ）
+                    const idleElapsed = Math.max(0, elapsed - ACTIVE_TIMEOUT);
+                    stateBadge.textContent = `IDL:${formatTimer(idleElapsed)}`;
+                    stateBadge.className = 'badge idle';
+                    // SLEEP用キャッシュをクリア
+                    lastSleepSeconds = -1;
+                } else {
+                    // スリープ状態：SLEEPタイマーをSS:000（秒単位）形式で表示（1秒ごと更新）
+                    // SLEEP状態への遷移からの経過時間を計算（負の値を0にクランプ）
+                    const sleepElapsed = Math.max(0, elapsed - IDLE_TIMEOUT);
+                    // 秒単位で丸めた値を生成（1秒ごとの更新判定用）
+                    const sleepSeconds = Math.floor(sleepElapsed / 1000);
+                    
+                    // 秒数が変更された場合のみ（1秒周期の瞬間）表示とアニメーションを更新
+                    if (sleepSeconds !== lastSleepSeconds) {
+                        lastSleepSeconds = sleepSeconds;
+                        
+                        // 表示上はミリ秒をコトコトと秒刻みに見せるため、秒に1000かけた値（端数000）をフォーマット
+                        const sleepDisplayElapsed = sleepSeconds * 1000;
+                        const newTimerText = `SLP:${formatTimer(sleepDisplayElapsed)}`;
+                        stateBadge.textContent = newTimerText;
+                        
+                        // 点滅アニメーションをトリガー：クラスを一度削除してから再適用
+                        stateBadge.className = 'badge sleep';
+                        // アニメーションリセットのためにフレームを挟んでクラスを再適用
+                        void stateBadge.offsetWidth;
+                        stateBadge.className = 'badge sleep sleep-pulse';
+                    }
+                }
+            }, 100); // 100msごと（10FPS）にループ（SLEEP状態では秒数監視を行い1秒に1回のみ実更新）
+        }
+
+        // 動的待機時間算出関数
+        // 最終操作からの経過時間に基づいて適切な待機時間を返す
+        function getDynamicDelay() {
+            // 自動FPS制御が無効な場合は、常にアクティブ状態（設定された目標FPS）の待機時間を返します
+            if (!autoFpsEnabled) {
+                return targetFps >= 30 ? 16 : Math.round(1000 / targetFps);
+            }
+
+            const elapsed = Date.now() - lastOperationTime;
+            
+            if (elapsed < ACTIVE_TIMEOUT) {
+                // アクティブ状態：設定された目標FPSを維持
+                return targetFps >= 30 ? 16 : Math.round(1000 / targetFps);
+            } else if (elapsed < IDLE_TIMEOUT) {
+                // アイドル状態：2秒に1回の低速配信に切り替え
+                return Math.round(1000 / IDLE_FPS);  // 2000ms
+            } else {
+                // スリープ状態：1分に1回の極低速配信に切り替え
+                return Math.round(1000 / SLEEP_FPS); // 60000ms
+            }
+        }
+
+        // リアルタイムタイマー更新ループを起動
+        startTimerUpdate();
+
+        // 受信バイト数を人間が読みやすい最適な単位（B, KB, MB, GB）にフォーマットしてバッジを更新するヘルパー関数
+        function updateDataUsage(bytes) {
+            accumulatedBytes += bytes;
+            if (accumulatedBytes < 1024) {
+                dataUsage.textContent = `${accumulatedBytes} B`;
+            } else if (accumulatedBytes < 1024 * 1024) {
+                dataUsage.textContent = `${(accumulatedBytes / 1024).toFixed(1)} KB`;
+            } else if (accumulatedBytes < 1024 * 1024 * 1024) {
+                dataUsage.textContent = `${(accumulatedBytes / (1024 * 1024)).toFixed(1)} MB`;
+            } else {
+                dataUsage.textContent = `${(accumulatedBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+            }
+        }
+
+        const toggleBtn = document.getElementById('settings-toggle');
+        const settingsPanel = document.getElementById('settings-panel');
+
+        // 設定値の初期状態：localStorageから前回値を取得し、なければデフォルト値（FPS: 10, 画質: 40, 感度: 1.0, ズーム: 3.0）を適用します
+        let targetFps = parseFloat(localStorage.getItem('targetFps')) || 10;
+        let targetQuality = parseInt(localStorage.getItem('targetQuality'), 10) || 40;
+        let autoFpsEnabled = localStorage.getItem('autoFpsEnabled') !== '0'; // デフォルトは true (有効)
+        let targetSensitivity = parseFloat(localStorage.getItem('targetSensitivity')) || 1.0; // 操作感度の初期値（デフォルトは1.0）
+        let targetZoom = parseFloat(localStorage.getItem('targetZoom')) || 3.0; // 拡大鏡ズーム倍率の初期値（デフォルトは3.0）
+
+        // 設定パネルの開閉トグル
+        // clickおよびpointerdownの両方のイベントで、親であるトラックパッド(pad)へのイベント伝播を遮断し、
+        // トラックパッド側のpointercapture処理と干渉するのを完全に阻止してクリック不能バグを解消します。
+        function toggleSettings(e) {
+            e.preventDefault();
+            e.stopPropagation(); // トラックパッド(pad)のドラッグ開始処理を阻止します
+            settingsPanel.classList.toggle('settings-closed');
+        }
+        toggleBtn.addEventListener('click', toggleSettings);
+        toggleBtn.addEventListener('pointerdown', e => {
+            e.stopPropagation(); // トラックパッド(pad)のセットキャプチャ処理を阻止します
+        });
+
+        // ボタンの初期状態の動的適用と切り替えイベントの登録ユーティリティ
+        function initSettingsButtons(groupId, currentValue, callback) {
+            const group = document.getElementById(groupId);
+            if (!group) return;
+            const buttons = group.querySelectorAll('.settings-btn');
+            
+            buttons.forEach(btn => {
+                // 各ボタンの属性（data-fps, data-quality, data-auto-fps, data-sensitivity, data-zoom, data-filter, data-drag-distance, data-tap-timeout）から数値を取得します
+                const fpsAttr = btn.getAttribute('data-fps');
+                const qualAttr = btn.getAttribute('data-quality');
+                const autoAttr = btn.getAttribute('data-auto-fps');
+                const sensAttr = btn.getAttribute('data-sensitivity');
+                const zoomAttr = btn.getAttribute('data-zoom');
+                const filterAttr = btn.getAttribute('data-filter');
+                const dragDistAttr = btn.getAttribute('data-drag-distance');
+                const tapTimeoutAttr = btn.getAttribute('data-tap-timeout');
+                
+                let btnValue;
+                if (fpsAttr !== null) {
+                    btnValue = parseFloat(fpsAttr);
+                } else if (qualAttr !== null) {
+                    btnValue = parseInt(qualAttr, 10);
+                } else if (autoAttr !== null) {
+                    btnValue = parseInt(autoAttr, 10);
+                } else if (sensAttr !== null) {
+                    btnValue = parseFloat(sensAttr);
+                } else if (zoomAttr !== null) {
+                    btnValue = parseFloat(zoomAttr);
+                } else if (filterAttr !== null) {
+                    btnValue = parseInt(filterAttr, 10);
+                } else if (dragDistAttr !== null) {
+                    btnValue = parseInt(dragDistAttr, 10);
+                } else if (tapTimeoutAttr !== null) {
+                    btnValue = parseInt(tapTimeoutAttr, 10);
+                }
+                
+                // localStorageから読み込んだ現在値と一致するボタンに active クラスを適用し、それ以外は削除
+                if (btnValue === currentValue) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+
+                // クリック時の切り替えおよび保存トリガーのバインド
+                btn.addEventListener('click', () => {
+                    buttons.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    callback(btnValue);
+                });
+            });
+        }
+
+        // FPS設定変更の監視および保存
+        initSettingsButtons('fps-group', targetFps, value => {
+            targetFps = value;
+            localStorage.setItem('targetFps', value); // 前回選択値をlocalStorageに記憶
+        });
+
+        // 画質設定変更の監視および保存
+        initSettingsButtons('quality-group', targetQuality, value => {
+            targetQuality = value;
+            localStorage.setItem('targetQuality', value); // 前回選択値をlocalStorageに記憶
+            // WebP圧縮品質の動的変更アクションを呼び出す
+            // 2026/06/01 myi 新規作成（品質スライダーとWebPのリアルタイム連動対応）
+            fetch(`/control?action=set_quality&q=${value}`);
+        });
+        // 起動時に現在の画質設定をC#側に確実に伝播させる初期化送信
+        // 2026/06/01 myi 新規作成
+        fetch(`/control?action=set_quality&q=${targetQuality}`);
+
+        // 自動FPS制御設定変更の監視および保存
+        initSettingsButtons('auto-fps-group', autoFpsEnabled ? 1 : 0, value => {
+            autoFpsEnabled = value === 1;
+            localStorage.setItem('autoFpsEnabled', value.toString()); // 設定値をlocalStorageへ保存
+            
+            // 操作タイムスタンプを即座に現在時間にリセットしてタイマーを初期化
+            lastOperationTime = Date.now();
+            lastSleepSeconds = -1;
+
+            // 状態バッジを即座にACT（常時アクティブ）表示に戻す
+            const stateBadge = document.getElementById('state-badge');
+            stateBadge.textContent = 'ACT';
+            stateBadge.className = 'badge';
+
+            // SLEEP/IDLEなどの遅延状態からトグルした際にも即時復帰させるため、
+            // 既存の画面更新タイマーをクリアして、即座に高速な画面更新ループを起動します
+            clearTimeout(updateTimer);
+            updateTimer = setTimeout(updateScreen, 50);
+        });
+
+        // 操作感度設定変更の監視および保存
+        initSettingsButtons('sensitivity-group', targetSensitivity, value => {
+            targetSensitivity = value;
+            localStorage.setItem('targetSensitivity', value.toString()); // 設定値をlocalStorageへ保存
+        });
+
+        // 拡大率設定変更の監視および保存
+        initSettingsButtons('zoom-group', targetZoom, value => {
+            targetZoom = value;
+            localStorage.setItem('targetZoom', value.toString()); // 設定値をlocalStorageへ保存
+            // 拡大率変更時に即座にタクティカルスコープを再描画
+            drawMagnifier();
+        });
+
+        //================================================================================
+        // ドラッグ判定閾値（2026/07/14 myi 新規作成）
+        //================================================================================
+        // ドラッグ距離閾値（localStorageから取得、なければデフォルト10px）
+        let dragThreshold = parseInt(localStorage.getItem('dragThreshold'), 10) || 10;
+        // タップ時間閾値（localStorageから取得、なければデフォルト300ms）
+        let tapTimeout = parseInt(localStorage.getItem('tapTimeout'), 10) || 300;
+
+        // ドラッグ距離設定変更の監視および保存
+        initSettingsButtons('drag-distance-group', dragThreshold, value => {
+            dragThreshold = value;
+            localStorage.setItem('dragThreshold', value.toString());
+        });
+
+        // タップ時間設定変更の監視および保存
+        initSettingsButtons('tap-timeout-group', tapTimeout, value => {
+            tapTimeout = value;
+            localStorage.setItem('tapTimeout', value.toString());
+        });
+
+        //================================================================================
+        // 確認モーダル制御
+        //================================================================================
+        const confirmModalOverlay = document.getElementById('confirm-modal-overlay');
+        const confirmModalMessage = document.getElementById('confirm-modal-message');
+        const confirmModalOk = document.getElementById('confirm-modal-ok');
+        const confirmModalCancel = document.getElementById('confirm-modal-cancel');
+        let confirmModalCallback = null; // モーダルOK時のコールバック
+
+        // モーダル表示関数（メッセージとコールバックを受け取る）
+        function showConfirmModal(message, callback) {
+            confirmModalMessage.textContent = message;
+            confirmModalCallback = callback;
+            confirmModalOverlay.classList.add('show');
+        }
+
+        // モーダル非表示関数
+        function hideConfirmModal() {
+            confirmModalOverlay.classList.remove('show');
+            confirmModalCallback = null;
+        }
+
+        // OKボタン：コールバックを実行してモーダルを閉じる
+        confirmModalOk.addEventListener('click', () => {
+            if (confirmModalCallback) confirmModalCallback();
+            hideConfirmModal();
+        });
+
+        // キャンセルボタン：コールバックなしでモーダルを閉じる
+        confirmModalCancel.addEventListener('click', () => {
+            hideConfirmModal();
+        });
+
+        // オーバーレイクリック（モーダル外）でも閉じる
+        confirmModalOverlay.addEventListener('click', (e) => {
+            if (e.target === confirmModalOverlay) {
+                hideConfirmModal();
+            }
+        });
+
+        //================================================================================
+        // ログインページ移動ボタン
+        //================================================================================
+        const btnNavigateLogin = document.getElementById('btn-navigate-login');
+        btnNavigateLogin.addEventListener('click', (e) => {
+            e.stopPropagation();
+            showConfirmModal('ログインページへ移動しますか？', () => {
+                fetch('/control?action=navigate_login');
+            });
+        });
+
+        //================================================================================
+        // プライバシーフィルター設定（クライアントサイド適用版）
+        // 2026/06/01 myi 変更：差分WebP方式に伴い、フィルターをRemoteControllerクライアント側でCSS適用に変更。
+        //                  本家ブラウザ側のゲーム画面には影響を与えず、#game-screen canvas のみに適用される。
+        // 2026/06/02 myi 変更：オンデマンドキャプチャ同期およびJS側軽量差分判定の導入に伴い、差分WebP更新処理を一本化。Fetchタイムアウト制御を追加して安定化。
+        //================================================================================
+        // フィルターモードの初期値（localStorageから取得、なければデフォルト0=なし）
+        let currentFilterMode = parseInt(localStorage.getItem('filterMode')) || 0;
+
+        // ゲーム画面にCSSフィルターを適用する関数
+        function applyClientFilter(mode) {
+            const gameScreen = document.getElementById('game-screen');
+            // 既存のフィルタークラスを全て削除
+            gameScreen.classList.remove('filter-grayscale', 'filter-lowcontrast', 'filter-greenscale-night', 'filter-greenscale-military', 'filter-greenscale-phosphor');
+            switch(mode) {
+                case 1: // グレースケール
+                    gameScreen.classList.add('filter-grayscale');
+                    break;
+                case 4: // 低コントラスト
+                    gameScreen.classList.add('filter-lowcontrast');
+                    break;
+                default: // なし（デフォルト）
+                    break;
+            }
+        }
+
+        // ページロード時にフィルターを初期適用
+        applyClientFilter(currentFilterMode);
+
+        // フィルターボタン群の初期化（サーバー送信を廃止、ローカル適用のみ）
+        initSettingsButtons('filter-group', currentFilterMode, value => {
+            currentFilterMode = value;
+            localStorage.setItem('filterMode', value.toString());
+            // クライアントサイドにフィルターを適用
+            applyClientFilter(value);
+        });
+
+        //================================================================================
+        // 暗視フィルター設定（トグルサイクル方式）
+        // なし → 暗視カメラ風 → 軍用モニター風 → フォスファイト風 → なし
+        //================================================================================
+        const nightvisionModes = [
+            { name: 'なし', className: null },
+            { name: '暗視カメラ風', className: 'filter-greenscale-night' },
+            { name: '軍用モニター風', className: 'filter-greenscale-military' },
+            { name: 'フォスファイト風', className: 'filter-greenscale-phosphor' },
+        ];
+        let currentNightvisionIndex = parseInt(localStorage.getItem('nightvisionIndex')) || 0;
+
+        // 暗視フィルターを適用する関数
+        function applyNightvisionFilter(index) {
+            const gameScreen = document.getElementById('game-screen');
+            // 既存の暗視フィルタークラスを全て削除
+            nightvisionModes.forEach(m => { if (m.className) gameScreen.classList.remove(m.className); });
+            // 現在のモードを適用
+            const mode = nightvisionModes[index];
+            if (mode.className) {
+                gameScreen.classList.add(mode.className);
+            }
+        }
+
+        // 初期適用
+        applyNightvisionFilter(currentNightvisionIndex);
+
+        // [暗視]ボタンの表示更新
+        const btnNightvision = document.getElementById('btn-nightvision');
+        function updateNightvisionButton() {
+            btnNightvision.textContent = nightvisionModes[currentNightvisionIndex].name;
+        }
+        updateNightvisionButton();
+
+        // タップでサイクル
+        btnNightvision.addEventListener('click', (e) => {
+            e.stopPropagation();
+            currentNightvisionIndex = (currentNightvisionIndex + 1) % nightvisionModes.length;
+            localStorage.setItem('nightvisionIndex', currentNightvisionIndex.toString());
+            applyNightvisionFilter(currentNightvisionIndex);
+            updateNightvisionButton();
+        });
+
+        // FPS実測用の変数定義
+        let frameCount = 0; // 1秒間の描画フレーム数カウント用
+        let lastFpsUpdate = Date.now(); // 前回FPS表示を更新したタイムスタンプ
+        let isFirstWebpRequest = true;  // 差分WebPの初回要求フラグ（リロード・再接続時にキーフレームを強制するためのフラグ）
+        let isUpdating = false; // ★画面更新処理が現在実行中（非同期待機中）であるかを示す排他制御用フラグ（2026/06/01 myi 追加）
+
+        //============================================================================================
+        // 処理ブロック名 : updateScreen
+        // 概要           : 画面更新ルーティングを行う（差分WebP配信へ一本化）
+        //                  2026/06/01 myi 変更（不要なレガシーJPEG配信の廃止に伴いWebPへ一本化）
+        //============================================================================================
+        async function updateScreen() {
+            await updateScreenDiff();
+        }
+
+        //============================================================================================
+        // 処理ブロック名 : updateScreenDiff
+        // 概要           : 差分WebP方式で画面を更新する（直接描画・超高速版）
+        //                  オンデマンドキャプチャ連動に伴い、Fetchに2秒のタイムアウト制御を追加。
+        //                  不要となったPartial（部分更新）処理を排除し、フルキーフレーム描画に一本化。
+        //                  2026/06/02 myi 変更：Fetchタイムアウト制御による堅牢化と処理の簡略化。
+        //============================================================================================
+        async function updateScreenDiff() {
+            // すでに非同期の更新処理が実行中である場合は、多重起動を防ぐため即座に処理をスキップします
+            if (isUpdating) return;
+            isUpdating = true; // 排他ロックを確保
+
+            const startTime = Date.now(); // 実処理（通信・デコード等）の開始時刻をミリ秒で記録
+
+            // オンデマンドキャプチャ時のハングアップを防止するため、2秒のFetchタイムアウトを設ける
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+            try {
+                let url = `/screen.webp?t=${Date.now()}`;
+                if (isFirstWebpRequest) {
+                    url += '&init=1';
+                }
+                const response = await fetch(url, { signal: controller.signal });
+                clearTimeout(timeoutId); // 正常に応答を受信したためタイムアウトタイマーをクリア
+
+                // Session expired (401) 検知時にリダイレクトし、ポーリングループを停止
+                if (response.status === 401) {
+                    console.warn("Screen: Session expired. Redirecting to login...");
+                    window.location.href = '/login-page';
+                    return;
+                }
+
+                // ─── 204 No Content の場合は差分なし → 描画をスキップしてタイマーへ
+                if (response.status === 204) {
+                    isFirstWebpRequest = false; // 204応答であっても初期通信は成立したためフラグを下げる
+                    frameCount++;
+                    updateFpsDisplay();
+                    isUpdating = false; // タイマー設定前に排他ロックを解放
+
+                    // 実処理にかかった時間を差し引いて次の更新ディレイを補正します（下限5ms）
+                    const elapsed = Date.now() - startTime;
+                    const nextDelay = Math.max(5, getDynamicDelay() - elapsed);
+                    updateTimer = setTimeout(updateScreen, nextDelay);
+                    return;
+                }
+
+                if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
+
+                isFirstWebpRequest = false; // 正常に応答が開始されたのでフラグを下げる
+
+                const diffType = response.headers.get('X-Diff-Type');
+                const blob     = await response.blob();
+
+                // 実際に受信したバイトサイズを通信量メーターに加算
+                updateDataUsage(blob.size);
+
+                // ─── Blob から Image を生成し、ロード完了後に canvas へ直接描画する
+                const img = new Image();
+
+                img.onload = () => {
+                    // ─── 全画面キーフレーム：canvas 全体をクリアして上書き描画
+                    gameCtx.clearRect(0, 0, screen.width, screen.height);
+                    gameCtx.drawImage(img, 0, 0);
+
+                    // ─── 拡大鏡を再描画
+                    drawMagnifier();
+
+                    // ─── メモリリーク防止：BlobURL を即時解放する
+                    URL.revokeObjectURL(img.src);
+
+                    status.textContent = 'SYNCHRONIZED';
+                    status.classList.add('ok');
+
+                    frameCount++;
+                    updateFpsDisplay();
+                    isUpdating = false; // 処理成功に伴い排他ロックを解放
+
+                    // 実処理にかかった時間を差し引いて次の更新ディレイを補正します（下限5ms）
+                    const elapsed = Date.now() - startTime;
+                    const nextDelay = Math.max(5, getDynamicDelay() - elapsed);
+                    updateTimer = setTimeout(updateScreen, nextDelay);
+                };
+
+                img.onerror = () => {
+                    // 画像ロード失敗時も BlobURL を必ず解放してリトライ
+                    URL.revokeObjectURL(img.src);
+                    isUpdating = false; // 処理失敗に伴い排他ロックを解放
+
+                    // 実処理にかかった時間を差し引いて次の更新ディレイを補正します（下限5ms）
+                    const elapsed = Date.now() - startTime;
+                    const nextDelay = Math.max(5, getDynamicDelay() - elapsed);
+                    updateTimer = setTimeout(updateScreen, nextDelay);
+                };
+
+                // BlobURL を生成して img に渡すことで非同期デコードを開始する
+                img.src = URL.createObjectURL(blob);
+
+            } catch (error) {
+                clearTimeout(timeoutId); // 例外発生時も確実にタイムアウトタイマーをクリア
+                isFirstWebpRequest = true; // 例外発生時は、再度初回キーフレーム要求フラグを立てる
+                status.textContent = 'RE-SYNCING...';
+                status.classList.remove('ok');
+                isUpdating = false; // 例外発生に伴い排他ロックを解放
+
+                // 通信エラーなどの例外発生時はバーストを防ぐため補正をせず、安全のために固定の長い遅延（1000ms）を適用します
+                updateTimer = setTimeout(updateScreen, 1000);
+            }
+        }
+
+        //============================================================================================
+        // 処理ブロック名 : updateFpsDisplay
+        // 概要           : FPS 算出と表示更新のヘルパー（updateScreenDiff / updateScreenLegacy の共通処理）
+        //============================================================================================
+        function updateFpsDisplay() {
+            const now     = Date.now();
+            const elapsed = now - lastFpsUpdate;
+            if (elapsed >= 1000) {
+                const fps     = ((frameCount * 1000) / elapsed).toFixed(2);
+                fpsInfo.textContent = `${fps} FPS`;
+                frameCount    = 0;
+                lastFpsUpdate = now;
+            }
+        }
+        updateScreen();
+
+        // ====================================================================================
+        // 処理ブロック名 : renderFleetDetail
+        // 概要           : 指定された艦隊IDの艦船リストをテーブル形式で描画します
+        //                  HPモード時（6列）: NAME | LV | CND | HP | FEL | AMO
+        //                  装備モード時（9列）: NAME | LV | CND | S1 | S2 | S3 | S4 | S5 | EX
+        //                  艦船データ本体に変化がない場合は、DOMの書き換えをスキップしてアニメーションを維持します
+        // ------------------------------------------------------------------------------------
+        function renderFleetDetail(fleetId) {
+            const tbody = document.querySelector('#ship-table tbody');
+            const theadRow = document.querySelector('#ship-table thead tr');
+            if (!tbody || !theadRow) return;
+
+            // グローバル変数から艦隊データを取得
+            const fleets = window._fleetData;
+            if (!fleets || fleets.length === 0) return;
+
+            // 指定された艦隊IDのデータを検索
+            const fleet = fleets.find(f => f.id === fleetId);
+            if (!fleet || !fleet.ships || fleet.ships.length === 0) {
+                // 艦船データがない場合は空の行を表示
+                const colspan = window._showFleetEquipment ? '9' : '6';
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="${colspan}" style="text-align: center; padding: 10px; color: rgba(163, 247, 191, 0.5);">
+                            艦船データなし
+                        </td>
+                    </tr>
+                `;
+                // ヘッダ更新
+                updateFleetHeader(theadRow);
+                return;
+            }
+
+            // 艦船データから表示（レンダリング）に影響を与えるステータス値のみを抽出した比較用オブジェクトを生成します。
+            // サーバー側から送られてくる実データには、遠征時間や入渠残り時間等、秒単位で常に変動する値が含まれている可能性があり、
+            // それらが含まれた状態のオブジェクト全体で比較を行うと、2秒ごとの時間カウントダウン等のタイミングで「差分あり」と誤判定され、
+            // 結果としてDOM全体の再構築（tbody.innerHTMLの更新）が走り、艦名スクロール等のCSSアニメーションが毎回最初からリセットされてしまいます。
+            // これを防止するため、表示に直結するプロパティ（艦名、レベル、コンディション、HP、燃料、弾薬、装備）のみを抜き出してJSON比較します。
+            const compareShips = fleet.ships.map(ship => {
+                if (!ship) return null;
+                return {
+                    name: ship.name,
+                    level: ship.level,
+                    condition: ship.condition,
+                    hp: ship.hp,
+                    maxHp: ship.maxHp,
+                    fuel: ship.fuel,
+                    fuelMax: ship.fuelMax,
+                    ammo: ship.ammo,
+                    ammoMax: ship.ammoMax,
+                    equipment: ship.equipment
+                };
+            });
+
+            // 抽出した主要ステータスに基づくJSON文字列を作成し、前回のレンダリング結果と比較します
+            // 表示モードが切り替わった場合はスキップ判定を無効化
+            const currentShipsJson = JSON.stringify(compareShips);
+            const currentMode = window._showFleetEquipment ? 'equip' : 'hp';
+            if (lastRenderedFleetId === fleetId && lastRenderedShipsJson === currentShipsJson && lastRenderedMode === currentMode) {
+                // 艦名や耐久、燃料等に変化がなければ、余計なDOM再構築を行わずに処理をスキップします。
+                // これにより、CSSアニメーション（ship-name-bounce等）が途切れることなく滑らかに継続されます。
+                return;
+            }
+
+            // 主要ステータスキャッシュと表示艦隊IDを更新
+            lastRenderedFleetId = fleetId;
+            lastRenderedShipsJson = currentShipsJson;
+            lastRenderedMode = currentMode;
+
+            // ヘッダを更新（モードに応じて6列/9列を切替）
+            updateFleetHeader(theadRow);
+
+            // 艦船リストをテーブル行として生成
+            let html = '';
+
+            if (window._showFleetEquipment) {
+                // ===== 装備モード（9列） =====
+                fleet.ships.forEach((ship, shipIndex) => {
+                    if (!ship) {
+                        html += `
+                            <tr class="empty-slot-row">
+                                <td class="ship-name-cell" colspan="9" style="color: rgba(163, 247, 191, 0.3);">--- 空スロット ---</td>
+                            </tr>
+                        `;
+                        return;
+                    }
+
+                    const shipName = ship.name || '---';
+                    const nameClass = shipName.length > 3 ? 'ship-name-scroll scroll' : 'ship-name-scroll';
+                    const nameHtml = `
+                        <div class="ship-name-container" title="${shipName}">
+                            <span class="${nameClass}" data-name="${shipName}">${shipName}</span>
+                        </div>
+                    `;
+
+                    let conditionClass = 'ship-condition-cell condition-ok';
+                    if (ship.condition < 50) {
+                        conditionClass = 'ship-condition-cell condition-fatigue';
+                    } else if (ship.condition < 70) {
+                        conditionClass = 'ship-condition-cell condition-warning';
+                    }
+
+                    // 装備スロット配列の取得（S1〜S5 + EX）
+                    // equipment配列: 0=S1, 1=S2, 2=S3, 3=S4, 4=S5, 5=EX（補強増設は"[補強]..."プレフィックス付き）
+                    const equipment = ship.equipment || [];
+                    const slots = [];
+                    for (let i = 0; i < 6; i++) {
+                        slots.push(equipment[i] ?? null);
+                    }
+
+                    html += `
+                        <tr>
+                            <td class="ship-name-cell">${nameHtml}</td>
+                            <td class="ship-level-cell">${ship.level || '-'}</td>
+                            <td class="${conditionClass}">${ship.condition || '-'}</td>
+                            <td class="ship-equip-cell">${renderEquipSlot(slots[0])}</td>
+                            <td class="ship-equip-cell">${renderEquipSlot(slots[1])}</td>
+                            <td class="ship-equip-cell">${renderEquipSlot(slots[2])}</td>
+                            <td class="ship-equip-cell">${renderEquipSlot(slots[3])}</td>
+                            <td class="ship-equip-cell">${renderEquipSlot(slots[4])}</td>
+                            <td class="ship-equip-cell">${renderEquipSlot(slots[5])}</td>
+                        </tr>
+                    `;
+                });
+            } else {
+                // ===== HPモード（6列） =====
+                fleet.ships.forEach((ship, shipIndex) => {
+                    if (!ship) {
+                        html += `
+                            <tr class="empty-slot-row">
+                                <td class="ship-name-cell" colspan="6" style="color: rgba(163, 247, 191, 0.3);">--- 空スロット ---</td>
+                            </tr>
+                        `;
+                        return;
+                    }
+
+                    const hpRatio = ship.maxHp > 0 ? ship.hp / ship.maxHp : 0;
+                    const hpSegments = Math.round(hpRatio * 10);
+                    let hpBarClass = 'segment-bar-fill';
+                    let hpStateClass = '';
+
+                    if (hpRatio <= 0.25) {
+                        hpBarClass += ' critical';
+                        hpStateClass = 'hp-state-critical';
+                    } else if (hpRatio <= 0.50) {
+                        hpBarClass += ' warning';
+                        hpStateClass = 'hp-state-moderate';
+                    } else if (hpRatio <= 0.75) {
+                        hpStateClass = 'hp-state-minor';
+                    }
+
+                    let hpGaugeHtml = `<div class="resource-segment-gauge">`;
+                    for (let i = 1; i <= 10; i++) {
+                        const activeClass = i <= hpSegments ? `active ${hpBarClass}` : '';
+                        hpGaugeHtml += `<span class="gauge-segment ${activeClass}"></span>`;
+                    }
+                    hpGaugeHtml += `</div>`;
+
+                    let conditionClass = 'ship-condition-cell condition-ok';
+                    if (ship.condition < 50) {
+                        conditionClass = 'ship-condition-cell condition-fatigue';
+                    } else if (ship.condition < 70) {
+                        conditionClass = 'ship-condition-cell condition-warning';
+                    }
+
+                    const shipName = ship.name || '---';
+                    const nameClass = shipName.length > 3 ? 'ship-name-scroll scroll' : 'ship-name-scroll';
+                    const nameHtml = `
+                        <div class="ship-name-container" title="${shipName}">
+                            <span class="${nameClass}" data-name="${shipName}">${shipName}</span>
+                        </div>
+                    `;
+
+                    const fuelRatio = ship.fuelMax > 0 ? ship.fuel / ship.fuelMax : 0;
+                    const fuelSegments = Math.round(fuelRatio * 10);
+                    let fuelBarClass = 'segment-bar-fill';
+                    if (fuelRatio < 0.20) fuelBarClass += ' critical';
+                    else if (fuelRatio < 0.50) fuelBarClass += ' warning';
+
+                    let fuelGaugeHtml = `<div class="resource-segment-gauge">`;
+                    for (let i = 1; i <= 10; i++) {
+                        const activeClass = i <= fuelSegments ? `active ${fuelBarClass}` : '';
+                        fuelGaugeHtml += `<span class="gauge-segment ${activeClass}"></span>`;
+                    }
+                    fuelGaugeHtml += `</div>`;
+
+                    const ammoRatio = ship.ammoMax > 0 ? ship.ammo / ship.ammoMax : 0;
+                    const ammoSegments = Math.round(ammoRatio * 10);
+                    let ammoBarClass = 'segment-bar-fill';
+                    if (ammoRatio < 0.20) ammoBarClass += ' critical';
+                    else if (ammoRatio < 0.50) ammoBarClass += ' warning';
+
+                    let ammoGaugeHtml = `<div class="resource-segment-gauge">`;
+                    for (let i = 1; i <= 10; i++) {
+                        const activeClass = i <= ammoSegments ? `active ${ammoBarClass}` : '';
+                        ammoGaugeHtml += `<span class="gauge-segment ${activeClass}"></span>`;
+                    }
+                    ammoGaugeHtml += `</div>`;
+
+                    html += `
+                        <tr>
+                            <td class="ship-name-cell">${nameHtml}</td>
+                            <td class="ship-level-cell">${ship.level || '-'}</td>
+                            <td class="${conditionClass}">${ship.condition || '-'}</td>
+                            <td class="ship-hp-cell">
+                                <div class="ship-cell-container ${hpStateClass}">
+                                    <span class="ship-hp-text">${ship.hp}/${ship.maxHp}</span>
+                                    ${hpGaugeHtml}
+                                </div>
+                            </td>
+                            <td class="ship-resource-cell" title="FUEL: ${ship.fuel}/${ship.fuelMax} (${Math.round(fuelRatio*100)}%)">
+                                <div class="ship-cell-container">
+                                    <span class="ship-resource-text">${(ship.fuel ?? '-').toLocaleString()}/${(ship.fuelMax ?? '-').toLocaleString()}</span>
+                                    ${fuelGaugeHtml}
+                                </div>
+                            </td>
+                            <td class="ship-resource-cell" title="AMMO: ${ship.ammo}/${ship.ammoMax} (${Math.round(ammoRatio*100)}%)">
+                                <div class="ship-cell-container">
+                                    <span class="ship-resource-text">${(ship.ammo ?? '-').toLocaleString()}/${(ship.ammoMax ?? '-').toLocaleString()}</span>
+                                    ${ammoGaugeHtml}
+                                </div>
+                            </td>
+                        </tr>
+                    `;
+                });
+            }
+
+            // テーブルボディに生成したHTMLを設定
+            tbody.innerHTML = html;
+        }
+
+        // ====================================================================================
+        // 処理ブロック名 : updateFleetHeader
+        // 概要           : 艦隊詳細HUDのテーブルヘッダを現在の表示モードに応じて更新します
+        //                  HPモード（6列）: NAME | LV | CND | HP | FEL | AMO
+        //                  装備モード（9列）: NAME | LV | CND | S1 | S2 | S3 | S4 | S5 | EX
+        // ------------------------------------------------------------------------------------
+        function updateFleetHeader(theadRow) {
+            if (window._showFleetEquipment) {
+                theadRow.innerHTML = `
+                    <th>NAME</th>
+                    <th>LV</th>
+                    <th>CND</th>
+                    <th>S1</th>
+                    <th>S2</th>
+                    <th>S3</th>
+                    <th>S4</th>
+                    <th>S5</th>
+                    <th>EX</th>
+                `;
+            } else {
+                theadRow.innerHTML = `
+                    <th>NAME</th>
+                    <th>LV</th>
+                    <th>CND</th>
+                    <th>HP</th>
+                    <th>FEL</th>
+                    <th>AMO</th>
+                `;
+            }
+        }
+
+        // ====================================================================================
+        // 処理ブロック名 : renderEquipSlot
+        // 概要           : 装備スロット1枠分のHTMLを生成します
+        //                  nullの場合: '-'
+        //                  補強増設: '[補強]...'プレフィックス付きの場合: 補強色
+        //                  通常: 装備名を表示（長文は電光掲示板式スクロールに自動切替）
+        // ------------------------------------------------------------------------------------
+        function renderEquipSlot(equip) {
+            if (!equip) return '-';
+            let name;
+            let isExpansion = false;
+
+            if (typeof equip === 'string' && equip.startsWith('[補強]')) {
+                const eqName = equip.substring(4);
+                name = eqName === '空' ? '空' : eqName;
+                isExpansion = true;
+            } else if (typeof equip === 'string') {
+                name = equip;
+            } else {
+                name = '-';
+            }
+
+            const scrollThreshold = 4;
+            const scrollClass = name.length > scrollThreshold ? 'equip-slot-scroll scroll' : 'equip-slot-scroll';
+            const expansionClass = isExpansion ? 'equip-slot-expansion' : '';
+            return `<div class="equip-slot-container"><span class="${scrollClass} ${expansionClass}" data-name="${name}">${name}</span></div>`;
+        }
+
+        //============================================================================================
+        // 処理ブロック名 : toggleEquipment
+        // 概要           : HP/FEL/AMOセルをタップしたときに、当該セル内の表示を
+        //                  「resource-view（HP/FEL/AMO）」 ⇔ 「equip-view（装備情報）」
+        //                  でopacityアニメーションにより切り替える
+        //                  同一艦船の全HP/FEL/AMOセルを連動させるため、
+        //                  data-ship-index属性で同じ艦船のセルをすべて取得し、
+        //                  それらに .show-equip クラスをトグルします
+        //--------------------------------------------------------------------------------------------
+        function toggleEquipment(cell) {
+            const shipIndex = cell.getAttribute('data-ship-index');
+            if (!shipIndex) return;
+            // 同一艦船の全HP/FEL/AMOセルを取得
+            const cells = document.querySelectorAll(`.ship-hp-cell[data-ship-index="${shipIndex}"], .ship-resource-cell[data-ship-index="${shipIndex}"]`);
+            cells.forEach(c => c.classList.toggle('show-equip'));
+        }
+
+        //============================================================================================
+        // 処理ブロック名 : generateEquipmentBadges
+        // 概要           : 装備配列からバッジ形式のHTMLを生成します
+        //                  各装備は「slot番号 + 装備名」のバッジとして横一列に表示されます
+        //                  null=空スロット、[補強]プレフィックス付き=補強増設として特別表示します
+        //                  固定幅(.equip-badge)内で長文の場合は電光掲示板式スクロール表示に自動切替
+        //                  スクロール判定はテキスト長が5文字を超える場合（艦名と同じ方式）
+        //--------------------------------------------------------------------------------------------
+        function generateEquipmentBadges(equipment) {
+            let html = '';
+            const totalSlots = 6; // 1〜6スロット（最大6装備）
+            for (let i = 0; i < totalSlots; i++) {
+                const slotNum = i + 1;
+                const eq = equipment[i];
+                if (eq === null || eq === undefined) {
+                    // 空スロット：固定幅内でスクロールコンテナを使用して横幅を一定に
+                    const badgeText = `${slotNum}:空`;
+                    html += `<span class="equip-badge empty"><div class="equip-scroll-container"><span class="equip-scroll">${badgeText}</span></div></span>`;
+                } else if (typeof eq === 'string' && eq.startsWith('[補強]')) {
+                    // 補強増設：固定幅内でスクロールコンテナを使用して横幅を一定に
+                    const eqName = eq.substring(3); // [補強]プレフィックスを除去
+                    if (eqName === '空') {
+                        const badgeText = `補:空`;
+                        html += `<span class="equip-badge expansion"><div class="equip-scroll-container"><span class="equip-scroll">${badgeText}</span></div></span>`;
+                    } else if (eqName === '---') {
+                        const badgeText = `補:---`;
+                        html += `<span class="equip-badge expansion"><div class="equip-scroll-container"><span class="equip-scroll">${badgeText}</span></div></span>`;
+                    } else {
+                        // 補強増設の名前が長い場合はスクロール対応
+                        const badgeText = `補:${eqName}`;
+                        const scrollClass = badgeText.length > 5 ? 'equip-scroll scroll' : 'equip-scroll';
+                        html += `<span class="equip-badge expansion"><div class="equip-scroll-container"><span class="${scrollClass}" data-name="${badgeText}">${badgeText}</span></div></span>`;
+                    }
+                } else if (typeof eq === 'string') {
+                    // 通常装備：固定幅内でスクロールコンテナを使用して横幅を一定に
+                    const badgeText = `${slotNum}:${eq}`;
+                    const scrollClass = badgeText.length > 5 ? 'equip-scroll scroll' : 'equip-scroll';
+                    html += `<span class="equip-badge"><div class="equip-scroll-container"><span class="${scrollClass}" data-name="${badgeText}">${badgeText}</span></div></span>`;
+                }
+            }
+            return html;
+        }
+
+        //============================================================================================
+        // 処理ブロック名 : updateMaterialVal
+        // 概要           : 資源・資材の値が更新された際に、値の書き換えと同時に「1秒間の0.2秒周期ネオン点滅発光」アニメーションをトリガーします
+        //                  値が実際に変化した項目のみ発光エフェクトが適用され、SFコックピットのような臨場感を演出します
+        //--------------------------------------------------------------------------------------------
+        function updateMaterialVal(elementId, newValue) {
+            const el = document.getElementById(elementId);
+            if (!el) return;
+            
+            const newText = newValue.toLocaleString();
+            const oldText = el.textContent;
+            
+            // 以前表示されていた値と異なる場合（値の変動が発生した場合）のみ処理を実行
+            if (oldText !== newText) {
+                // 増加・減少を判定するため、現在表示されているテキスト（カンマ区切り）からカンマを除去して数値化します
+                const oldVal = parseInt(oldText.replace(/,/g, ''), 10) || 0;
+                
+                // テキスト値を最新のフォーマット済み数値へ書き換え
+                el.textContent = newText;
+                
+                // 親の資源枠コンテナ要素（.res-hud-item）を動的に探索
+                const parentItem = el.closest('.res-hud-item');
+                if (parentItem) {
+                    // すでに付与されている可能性がある増減アニメーションクラスをすべて除去してクリア
+                    parentItem.classList.remove('res-flash-up', 'res-flash-down');
+                    
+                    // 初回ロード時（oldTextが空、または初期値が'000,000'等のプレースホルダー）は、
+                    // 直前値が実質的に存在しないため、増減のアニメーション発光をスキップしてスルーします
+                    if (oldText && oldText !== '000,000' && oldText !== '0,000' && oldText !== '0') {
+                        // ブラウザのレンダリングエンジンに対して強制リフローを発生させ、アニメーションを確実に再起動
+                        void parentItem.offsetWidth;
+                        
+                        // 最新値が以前の値より大きい場合は「増加(up)」、それ以外は「減少(down)」のクラスを決定
+                        const flashClass = newValue > oldVal ? 'res-flash-up' : 'res-flash-down';
+                        parentItem.classList.add(flashClass);
+                        
+                        // アニメーション（1秒間）が終了したタイミングで、付与した増減クラスを自動的に除去します
+                        // 一度だけ実行されるように { once: true } でイベントをリッスン
+                        parentItem.addEventListener('animationend', () => {
+                            parentItem.classList.remove(flashClass);
+                        }, { once: true });
+                    }
+                }
+            }
+        }
+
+        //============================================================================================
+        // クライアント側で現在適用されている各HUDブロックの最新バージョン（初期値は -1）
+        //============================================================================================
+        let hudVersions = {
+            material: -1,
+            fleets: -1,
+            battle: -1,
+            combat: -1,
+            quests: -1,
+            logs: -1
+        };
+
+        // 艦船詳細テーブルのDOM更新スキップ用キャッシュ変数
+        let lastRenderedFleetId = -1;
+        let lastRenderedShipsJson = "";
+        let lastRenderedMode = "";  // HPモード/装備モードの切り替え検出用
+
+        // ====================================================================================
+        // 処理ブロック名 : updateHud
+        // 概要           : 2秒毎にサーバーからHUD情報(資源・艦隊・戦闘)を非同期取得し、画面に連動反映します
+        //                  各ブロック個別に変更の有無をチェックし、変化があったブロックのみDOMを書き換えます
+        // ------------------------------------------------------------------------------------
+        async function updateHud() {
+            try {
+                // 各HUDブロックの前回適用バージョンをパラメータに付与して要求
+                const params = `materialVer=${hudVersions.material}&fleetsVer=${hudVersions.fleets}&battleVer=${hudVersions.battle}&combatVer=${hudVersions.combat}&questsVer=${hudVersions.quests}&logsVer=${hudVersions.logs}`;
+                const response = await fetch(`/hud?${params}&t=${Date.now()}`);
+
+                // Session expired (401) 検知時にリダイレクトし、ポーリングループを停止
+                if (response.status === 401) {
+                    console.warn("HUD: Session expired. Redirecting to login...");
+                    window.location.href = '/login-page';
+                    return;
+                }
+
+                // データ未同期（204）の場合はHUDを更新せず、次回のポーリングで再試行
+                if (response.status === 204) {
+                    return;
+                }
+
+                if (!response.ok) throw new Error("HUD fetch failed");
+                const data = await response.json();
+
+                // ----------------------------------------------------------------------------
+                // 1. 資源・資材データの連動更新 (データ変更時のみ実行)
+                // ----------------------------------------------------------------------------
+                if (data.material && data.material.changed) {
+                    hudVersions.material = data.material.version;
+                    const mat = data.material.data;
+                    if (mat) {
+                        // 各資源の値更新処理を、発光点滅エフェクト（updateMaterialVal）に委ねます
+                        updateMaterialVal('res-fuel-val', mat.fuel);
+                        updateMaterialVal('res-ammo-val', mat.ammo);
+                        updateMaterialVal('res-steel-val', mat.steel);
+                        updateMaterialVal('res-baux-val', mat.bauxite);
+                        updateMaterialVal('res-bucket-val', mat.bucket);
+                    }
+                }
+
+                // ----------------------------------------------------------------------------
+                // 2. 1〜4艦隊ステータスデータの連動更新 (データ変更時のみ実行)
+                // ----------------------------------------------------------------------------
+                // 艦隊データをグローバル変数に保存し、艦隊タブ切替時に参照可能にする
+                if (data.fleets && data.fleets.changed) {
+                    hudVersions.fleets = data.fleets.version;
+                    const fleetsData = data.fleets.data;
+                    
+                    if (fleetsData && fleetsData.length > 0) {
+                        window._fleetData = fleetsData; // グローバル変数に艦隊データを保存
+
+                        const fleetHud = document.getElementById('fleet-hud');
+                        fleetHud.innerHTML = ''; // 既存表示をクリアして最新状態へ書き換え
+
+                        fleetsData.forEach(fleet => {
+                        const item = document.createElement('div');
+                        let stateClass = 'fleet-state-ready';
+                        
+                        // 艦隊の状態値に応じたCSSクラスの選定
+                        if (fleet.state === 'MISSION') stateClass = 'fleet-state-expedition';
+                        else if (fleet.state === 'DOCKING') stateClass = 'fleet-state-docking';
+                        else if (fleet.state === 'STANDBY') stateClass = 'fleet-state-warning';
+                        else if (fleet.state === 'EMERGENCY') stateClass = 'fleet-state-critical';
+
+                        item.className = `fleet-hud-item ${stateClass}`;
+                        
+                        // 現在艦隊詳細タブに表示中の艦隊に対応する番号を目立たせる
+                        if (fleet.id === currentDetailFleetId) {
+                            item.classList.add('active');
+                        }
+                        
+                        // 艦隊番号バッジの生成 (例: 01)
+                        const numSpan = document.createElement('span');
+                        numSpan.className = 'fleet-num';
+                        numSpan.textContent = fleet.id.toString().padStart(2, '0');
+                        
+                        // 状態表示テキストの生成
+                        const statusSpan = document.createElement('span');
+                        statusSpan.className = 'fleet-status';
+                        statusSpan.textContent = fleet.stateText;
+
+                        item.appendChild(numSpan);
+                        item.appendChild(statusSpan);
+                        fleetHud.appendChild(item);
+                    });
+
+                    // 操作説明テキストを最下段に追加
+                    const label = document.createElement('span');
+                    label.className = 'fleet-hud-label';
+                    label.textContent = 'Tap 2 Toggle';
+                    fleetHud.appendChild(label);
+
+                    // 艦隊詳細テーブルを更新（現在表示中の艦隊IDを使用）
+                    renderFleetDetail(currentDetailFleetId);
+                }
+            }
+
+            // ----------------------------------------------------------------------------
+            // 3. 作戦海域・戦闘予測の連動更新 (データ変更時のみ実行)
+            // ----------------------------------------------------------------------------
+            if (data.battle && data.battle.changed) {
+                hudVersions.battle = data.battle.version;
+                const bat = data.battle.data;
+                if (bat) {
+                    document.getElementById('battle-area').textContent = bat.area;
+                    document.getElementById('battle-enemy').textContent = bat.enemy;
+                    document.getElementById('battle-predict').textContent = bat.predict;
+                }
+            }
+
+            // ----------------------------------------------------------------------------
+            // 4. 詳細戦闘情報の連動更新 (TACTICAL SYSTEM統合型・艦隊詳細HUD風高密度テーブル)
+            // ----------------------------------------------------------------------------
+            if (data.combat && data.combat.changed) {
+                hudVersions.combat = data.combat.version;
+                const com = data.combat.data;
+                if (com) {
+                    // A. 統合ヘッダ 1行目の更新 (陣形・交戦形態・触接)
+                    document.getElementById('combat-formation').textContent = `FORM: ${com.formation || '------'}`;
+                    document.getElementById('combat-engagement').textContent = `ENGAGE: ${com.engagement || '------'}`;
+                    document.getElementById('combat-touch').textContent = `TOUCH: ${com.touch || '------'}`;
+
+                    // B. 統合ヘッダ 2行目の更新 (損害率・勝利区分・航空戦・予測)
+                    const damageEl = document.getElementById('combat-damage');
+                    if (com.damageRate !== undefined && com.damageRate !== null) {
+                        damageEl.textContent = `DMG: ${com.damageRate}%`;
+                        damageEl.style.display = '';
+                    } else {
+                        damageEl.style.display = 'none';
+                    }
+
+                    const victoryEl = document.getElementById('combat-victory');
+                    if (com.victory !== undefined && com.victory !== null && com.victory !== '') {
+                        victoryEl.textContent = `RESULT: ${com.victory}`;
+                        if (com.victory.includes('敗') || com.victory.includes('T-L') || com.victory.includes('B-L')) {
+                            victoryEl.classList.add('defeat');
+                        } else {
+                            victoryEl.classList.remove('defeat');
+                        }
+                        victoryEl.style.display = '';
+                    } else {
+                        victoryEl.style.display = 'none';
+                    }
+
+                    const airEl = document.getElementById('combat-air');
+                    if (com.airBattle !== undefined && com.airBattle !== null && com.airBattle !== '') {
+                        airEl.textContent = `AIR: ${com.airBattle}`;
+                        airEl.style.display = '';
+                    } else {
+                        airEl.style.display = 'none';
+                    }
+
+                    document.getElementById('battle-predict').textContent = com.predict || 'NO PREDICT';
+
+                    // 敵艦隊構成テキスト更新
+                    const enemyText = com.enemyDesc || 'NO SIGNAL';
+                    document.getElementById('battle-enemy').textContent = `ENEMY: ${enemyText}`;
+
+                    // B. 戦闘艦隊テーブルの動的構築 (艦隊詳細HUD風の高密度レイアウト)
+                    const container = document.getElementById('combat-fleets-container');
+                    container.innerHTML = '';
+
+                    // 艦隊テーブル生成ヘルパー関数
+                    function createCombatFleetTable(title, ships, isEnemy) {
+                        if (!ships || ships.length === 0) return null;
+
+                        const section = document.createElement('div');
+                        section.className = 'combat-fleet-section';
+
+                        const titleEl = document.createElement('div');
+                        titleEl.className = `combat-fleet-title${isEnemy ? ' enemy' : ''}`;
+                        titleEl.textContent = title;
+                        section.appendChild(titleEl);
+
+                        const table = document.createElement('table');
+                        table.className = 'combat-ship-table';
+
+                        // ヘッダ行
+                        const thead = document.createElement('thead');
+                        thead.innerHTML = '<tr><th>NAME</th><th>HP</th><th>ST</th></tr>';
+                        table.appendChild(thead);
+
+                        // ボディ行
+                        const tbody = document.createElement('tbody');
+                        ships.forEach(ship => {
+                            const tr = document.createElement('tr');
+
+                            // 状態判定
+                            let statusClass = 'status-ok';
+                            let statusText = 'OK';
+                            if (ship.status === 'WARNING') { statusClass = 'status-warning'; statusText = 'WARN'; }
+                            else if (ship.status === 'EMERGENCY') { statusClass = 'status-emergency'; statusText = 'BREAK'; }
+                            else if (ship.status === 'SUNK') { statusClass = 'status-sunk'; statusText = 'SUNK'; }
+
+                            const shipName = ship.name || '---';
+                            const nameClass = shipName.length > 3 ? 'combat-ship-name-scroll scroll' : 'combat-ship-name-scroll';
+                            
+                            // HPセグメントゲージ生成
+                            const hpVal = ship.hp ?? '-';
+                            const maxHpVal = ship.maxHp ?? '-';
+                            const hpText = `${hpVal}/${maxHpVal}`;
+                            
+                            let gaugeHtml = '';
+                            if (hpVal !== '-' && maxHpVal !== '-' && parseInt(maxHpVal) > 0) {
+                                const hpRate = Math.max(0, Math.min(1, parseInt(hpVal) / parseInt(maxHpVal)));
+                                const hpSegments = Math.round(hpRate * 10);
+                                
+                                // 状態判定によるゲージカラー
+                                let barClass = '';
+                                if (statusClass === 'status-emergency') {
+                                    barClass = 'critical';
+                                } else if (statusClass === 'status-warning') {
+                                    barClass = 'warning';
+                                }
+                                
+                                gaugeHtml = '<div class="combat-segment-gauge">';
+                                for (let i = 1; i <= 10; i++) {
+                                    const segClass = i <= hpSegments
+                                        ? `gauge-segment active ${barClass}`.trim()
+                                        : 'gauge-segment';
+                                    gaugeHtml += `<span class="${segClass}"></span>`;
+                                }
+                                gaugeHtml += '</div>';
+                            } else {
+                                // 撃沈時・データなし: グレーアウトのゲージ
+                                gaugeHtml = '<div class="combat-segment-gauge">';
+                                for (let i = 1; i <= 10; i++) {
+                                    gaugeHtml += '<span class="gauge-segment sunk"></span>';
+                                }
+                                gaugeHtml += '</div>';
+                            }
+                            
+                            tr.innerHTML = `
+                                <td class="combat-ship-name-cell">
+                                    <div class="combat-ship-name-container" title="${shipName}">
+                                        <span class="${nameClass}" data-name="${shipName}">${shipName}</span>
+                                    </div>
+                                </td>
+                                <td class="combat-ship-hp-cell">
+                                    <div class="combat-cell-container">
+                                        <span class="combat-hp-text">${hpText}</span>
+                                        ${gaugeHtml}
+                                    </div>
+                                </td>
+                                <td class="combat-ship-status ${statusClass}">${statusText}</td>
+                            `;
+                            tbody.appendChild(tr);
+                        });
+                        table.appendChild(tbody);
+                        section.appendChild(table);
+                        return section;
+                    }
+
+                    // 味方主力艦隊
+                    const friendMain = createCombatFleetTable('FRIEND MAIN', com.friendShips, false);
+                    if (friendMain) container.appendChild(friendMain);
+
+                    // 味方随伴艦隊 (連合艦隊時のみ)
+                    const friendSub = createCombatFleetTable('FRIEND SUB', com.friendEscortShips, false);
+                    if (friendSub) container.appendChild(friendSub);
+
+                    // 敵主力艦隊
+                    const enemyMain = createCombatFleetTable('ENEMY MAIN', com.enemyShips, true);
+                    if (enemyMain) container.appendChild(enemyMain);
+
+                    // 敵随伴艦隊 (敵連合艦隊時のみ)
+                    const enemySub = createCombatFleetTable('ENEMY SUB', com.enemyEscortShips, true);
+                    if (enemySub) container.appendChild(enemySub);
+                }
+            }
+
+            // ----------------------------------------------------------------------------
+            // 5. 新規追加：受領中任務データの連動更新 (8スロット分・データ変更またはトグル切替時のみ実行)
+            // ----------------------------------------------------------------------------
+            const questStateKey = (data.quests ? data.quests.version : 0) + "_" + window._showQuestProgress;
+            
+            if (data.quests && (data.quests.changed || window._lastQuestsKey !== questStateKey)) {
+                window._lastQuestsKey = questStateKey;
+                hudVersions.quests = data.quests.version;
+                const qData = data.quests.data;
+                
+                if (qData) {
+                    const questListDiv = document.getElementById('quest-list');
+                    if (questListDiv) {
+                        questListDiv.innerHTML = ''; // 最新データで再構築
+                        
+                        const maxSlots = 8;
+                        for (let i = 0; i < maxSlots; i++) {
+                            const quest = qData[i];
+                            const row = document.createElement('div');
+                            row.className = 'quest-slot-row';
+                            
+                            // 達成率100%の任務の場合に点滅クラスを付与
+                            if (quest && quest.progressRate >= 1.0) {
+                                row.classList.add('quest-mission-ready');
+                            }
+                            
+                            if (quest) {
+                                // 実際の任務データが存在する場合の処理
+                                const qIdSpan = document.createElement('span');
+                                qIdSpan.className = 'quest-id';
+                                // 任務ID（例: 201や303）を視覚的な統一感を持たせるため、4桁のゼロ埋め形式（例: 0201、0303）にフォーマットします
+                                const formattedId = String(quest.id).padStart(4, '0');
+                                qIdSpan.textContent = `[${formattedId}]`;
+                                
+                                const container = document.createElement('div');
+                                container.className = 'quest-text-container';
+                                
+                                // 1. 作戦名表示用パネル
+                                const namePanel = document.createElement('div');
+                                namePanel.className = 'quest-view-panel quest-name-panel';
+                                
+                                const scrollSpan = document.createElement('span');
+                                const nameVal = quest.name || '---';
+                                scrollSpan.textContent = nameVal;
+                                scrollSpan.setAttribute('data-text', nameVal);
+                                
+                                // 作戦名は8文字分表示を想定し、それ以上だったらスクロール（幅縮小対応）
+                                if (nameVal.length > 8) {
+                                    scrollSpan.className = 'quest-text-scroll scroll';
+                                } else {
+                                    scrollSpan.className = 'quest-text-scroll';
+                                }
+                                namePanel.appendChild(scrollSpan);
+                                
+                                // 2. 進捗・進捗率表示用パネル
+                                const progressPanel = document.createElement('div');
+                                progressPanel.className = 'quest-view-panel quest-progress-panel';
+                                
+                                const progTextSpan = document.createElement('span');
+                                progTextSpan.className = 'quest-progress-text';
+                                const percentText = `${Math.round(quest.progressRate * 100)}%`;
+                                progTextSpan.textContent = `${quest.progressText} (${percentText})`;
+                                
+                                // 10段階セグメントゲージ（アンバーオレンジ配色）の生成処理
+                                const barContainer = document.createElement('div');
+                                barContainer.className = 'quest-progress-segment-gauge';
+                                
+                                // 進捗率（0.0〜1.0）を10段階のセグメント数に変換して丸めます
+                                const questSegments = Math.round(quest.progressRate * 10);
+                                for (let j = 1; j <= 10; j++) {
+                                    const segment = document.createElement('span');
+                                    // HPバー等の共通部品クラス「gauge-segment」を適用し、進捗率以内のセグメントにのみ「active（点灯）」クラスを付与します
+                                    segment.className = 'gauge-segment' + (j <= questSegments ? ' active' : '');
+                                    barContainer.appendChild(segment);
+                                }
+                                
+                                progressPanel.appendChild(progTextSpan);
+                                progressPanel.appendChild(barContainer);
+                                
+                                container.appendChild(namePanel);
+                                container.appendChild(progressPanel);
+                                row.appendChild(qIdSpan);
+                                row.appendChild(container);
+                                
+                                // 現在のグローバルトグル状態に合わせる
+                                if (window._showQuestProgress) {
+                                    row.classList.add('show-progress');
+                                }
+                            } else {
+                                // 空スロットの場合
+                                row.classList.add('empty-quest-row');
+                                
+                                const qIdSpan = document.createElement('span');
+                                qIdSpan.className = 'quest-id';
+                                qIdSpan.style.color = 'rgba(255, 102, 0, 0.3)'; // 透過させて目立たなくする
+                                qIdSpan.textContent = '[----]';
+                                
+                                const container = document.createElement('div');
+                                container.className = 'quest-text-container';
+                                
+                                const scrollSpan = document.createElement('span');
+                                scrollSpan.className = 'quest-text-scroll';
+                                scrollSpan.style.color = 'rgba(163, 247, 191, 0.25)';
+                                scrollSpan.textContent = 'NO QUEST ACTIVE';
+                                
+                                container.appendChild(scrollSpan);
+                                row.appendChild(qIdSpan);
+                                row.appendChild(container);
+                            }
+                            
+                            questListDiv.appendChild(row);
+                        }
+                    }
+                }
+            }
+
+            // ----------------------------------------------------------------------------
+            // 6. ログデータの連動更新 (データ変更時のみ実行)
+            // ----------------------------------------------------------------------------
+            if (data.logs && data.logs.changed) {
+                hudVersions.logs = data.logs.version;
+                const logData = data.logs.data;
+                if (logData) {
+                    const logListDiv = document.getElementById('log-list');
+                    if (logListDiv) {
+                        logListDiv.innerHTML = '';
+                        logData.forEach(log => {
+                            const entry = document.createElement('div');
+                            entry.className = `log-entry priority-${log.priority}`;
+                            const pClass = `p${log.priority}`;
+                            const escapedMessage = log.message.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"');
+                            entry.innerHTML = `
+                                <span class="log-time">${log.time}</span>
+                                <span class="log-priority ${pClass}">P${log.priority}</span>
+                                <span class="log-message" title="${escapedMessage}">${escapedMessage}</span>
+                            `;
+                            logListDiv.appendChild(entry);
+                        });
+                    }
+                }
+            }
+            } catch (error) {
+                console.error("HUD synchronization error:", error);
+            }
+            // 2秒間隔でポーリング更新処理を再帰実行
+            setTimeout(updateHud, 2000);
+        }
+        
+        // 初回ロード時に自動同期を開始
+        updateHud();
+
+        //============================================================================================
+        // 処理ブロック名 : drawMagnifier
+        // 概要           : 最新のゲーム画面（#game-screen）から仮想カーソル周辺の領域を
+        //                  最下部のTRANSMITボタンのアスペクト比に合わせて動的に切り出し、
+        //                  ボタン背景のCanvasへアスペクト比を維持したまま拡大描写します。
+        //--------------------------------------------------------------------------------------------
+        function drawMagnifier() {
+            if (!magCtx || !screen || screen.width === 0) return;
+
+            const container = document.querySelector('.magnifier-container');
+            if (!container) return;
+
+            const rect = container.getBoundingClientRect();
+            const canvasWidth = rect.width || 72;
+            const canvasHeight = rect.height || 34;
+
+            // Canvasの描画バッファ解像度を実際の表示サイズに動的に同期させ、画像の潰れを防止
+            if (magCanvas.width !== canvasWidth || magCanvas.height !== canvasHeight) {
+                magCanvas.width = canvasWidth;
+                magCanvas.height = canvasHeight;
+            }
+
+            // ゲーム画面（#game-screen）の現在のスマホ画面上の表示サイズを取得します
+            const screenRect = screen.getBoundingClientRect();
+            const displayWidth = screenRect.width || 1;
+
+            // 物理ズーム倍率自動補正：
+            // 拡大表示パネル自体のCSSサイズ（canvasWidth）が 100px から 250px のように巨大化・変更された場合、
+            // 単純な切り出しを行うと「見かけ上の拡大率が倍率設定（targetZoom）を超えて巨大になりすぎる」現象が発生します。
+            // 拡大パネルのサイズ（物理的な表示サイズ）に依存せず、画面上で「2倍設定なら正確に2倍の大きさ」に見えるように、
+            // ゲーム画面の表示上の解像度と拡大パネルの物理ピクセル対比から、逆算して切り出し幅（cropWidth）を自動補正します。
+            const cropDisplayWidth = canvasWidth / targetZoom;
+            const cropWidth = cropDisplayWidth * (screen.width / displayWidth);
+
+            // 縦幅はコンテナのアスペクト比に完全同期させてアスペクト比の歪みを防止
+            const cropHeight = cropWidth * (canvasHeight / canvasWidth);
+
+            // カーソルのピクセル座標
+            const cursorPixelX = vCursorX * screen.width;
+            const cursorPixelY = vCursorY * screen.height;
+
+            // 理想の切り抜き座標（カーソルが中心になるように）
+            let idealSx = cursorPixelX - (cropWidth / 2);
+            let idealSy = cursorPixelY - (cropHeight / 2);
+
+            // 切り抜きサイズを画像サイズ内に収める
+            let actualCropWidth = Math.min(cropWidth, screen.width);
+            let actualCropHeight = Math.min(cropHeight, screen.height);
+
+            // 切り抜き座標を有効範囲にクリップ（iOS Safariで画像が歪むのを防止）
+            let sx = Math.max(0, Math.min(idealSx, screen.width - actualCropWidth));
+            let sy = Math.max(0, Math.min(idealSy, screen.height - actualCropHeight));
+
+            // カーソルが切り抜き領域内の相対位置
+            const cursorInCropX = cursorPixelX - sx;
+            const cursorInCropY = cursorPixelY - sy;
+
+            // 拡大鏡での目標位置（中心）
+            const targetInCanvasX = canvasWidth / 2;
+            const targetInCanvasY = canvasHeight / 2;
+
+            // 拡大率
+            const scaleX = canvasWidth / actualCropWidth;
+            const scaleY = canvasHeight / actualCropHeight;
+
+            // 出力オフセット（カーソルが中心に来るように調整）
+            const dx = targetInCanvasX - cursorInCropX * scaleX;
+            const dy = targetInCanvasY - cursorInCropY * scaleY;
+
+            // Canvas描画
+            magCtx.clearRect(0, 0, canvasWidth, canvasHeight);
+            magCtx.drawImage(
+                screen,
+                sx, sy, actualCropWidth, actualCropHeight, // 元画像の切り抜き位置とサイズ（クリップ済み）
+                dx, dy, canvasWidth, canvasHeight // カーソルが中心に来るようにオフセット調整
+            );
+        }
+
+        // 画像ロード完了時の drawMagnifier 呼び出しは不要（canvas に変更したため削除）
+        // 代わりに updateScreenDiff / updateScreenLegacy の img.onload 内で drawMagnifier() を呼び出す
+
+        //============================================================================================
+        // 移動制御通信の最適化（In-Flight 制御によるパケット詰まり・通信遅延の防止）
+        //============================================================================================
+        let isMoveSending = false;
+        let pendingMoveCoords = null;
+
+        function sendMoveControl(x, y) {
+            if (isMoveSending) {
+                pendingMoveCoords = { x, y };
+                return;
+            }
+            isMoveSending = true;
+            fetch(`/control?action=move&x=${x}&y=${y}`)
+                .catch(() => {})
+                .finally(() => {
+                    isMoveSending = false;
+                    if (pendingMoveCoords) {
+                        const next = pendingMoveCoords;
+                        pendingMoveCoords = null;
+                        sendMoveControl(next.x, next.y);
+                    }
+                });
+        }
+
+        //============================================================================================
+        // 仮想カーソル表示＆拡大鏡描画の requestAnimationFrame 同期化（描画遅延のゼロ化）
+        //============================================================================================
+        let isCursorUpdatePending = false;
+
+        function scheduleCursorUpdate() {
+            if (isCursorUpdatePending) return;
+            isCursorUpdatePending = true;
+            requestAnimationFrame(() => {
+                isCursorUpdatePending = false;
+                updateCursorDisplay();
+            });
+        }
+
+        // カーソル表示更新
+        function updateCursorDisplay() {
+            const rect = screen.getBoundingClientRect();
+            const x = rect.left + (vCursorX * rect.width);
+            const y = rect.top + (vCursorY * rect.height);
+            cursor.style.left = x + 'px';
+            cursor.style.top = y + 'px';
+            debug.textContent = `POS-X: ${Math.round(vCursorX*100)}% POS-Y: ${Math.round(vCursorY*100)}%`;
+            
+            // 仮想カーソルの移動に合わせて右上のタクティカルスコープもリアルタイム描画更新
+            drawMagnifier();
+        }
+
+        // 拡大鏡表示用の遅延タイマーID
+        let magnifierTimer = null;
+
+        // トラックパッド操作
+        pad.addEventListener('pointerdown', e => {
+            lastX = e.clientX;
+            lastY = e.clientY;
+            pad.setPointerCapture(e.pointerId);
+            
+            // すでに開始されているタイマーがあれば確実にリセット・クリア
+            if (magnifierTimer) {
+                clearTimeout(magnifierTimer);
+            }
+
+            // 1秒（1000ミリ秒）ドラッグ状態を維持・保持したタイミングで拡大表示パネルを表示する遅延処理をセット
+            magnifierTimer = setTimeout(() => {
+                const magnifier = document.querySelector('.magnifier-container');
+                if (magnifier) {
+                    magnifier.classList.add('visible');
+                }
+            }, 1000);
+        });
+
+        // トラックパッド操作終了（指を離したとき）に拡大表示パネルを非表示にし、保留中の表示タイマーもクリアします
+        pad.addEventListener('pointerup', e => {
+            if (magnifierTimer) {
+                clearTimeout(magnifierTimer);
+                magnifierTimer = null;
+            }
+            const magnifier = document.querySelector('.magnifier-container');
+            if (magnifier) {
+                magnifier.classList.remove('visible');
+            }
+        });
+
+        // トラックパッド操作キャンセル（システム割り込み等の発生時）に拡大表示パネルを非表示にし、保留中の表示タイマーもクリアします
+        pad.addEventListener('pointercancel', e => {
+            if (magnifierTimer) {
+                clearTimeout(magnifierTimer);
+                magnifierTimer = null;
+            }
+            const magnifier = document.querySelector('.magnifier-container');
+            if (magnifier) {
+                magnifier.classList.remove('visible');
+            }
+        });
+
+        // トラックパッド操作 (ポインタ移動による相対移動量を絶対割合座標へと変換して送信します)
+        pad.addEventListener('pointermove', e => {
+            // [FIX] ボタンを押していない状態では仮想ポインタを移動しない
+            if (e.buttons === 0) return;
+
+            // 動的FPS制御：操作検出でタイムスタンプを更新（アクティブ状態に復帰）
+            const isSlowFpsMode = (Date.now() - lastOperationTime) >= ACTIVE_TIMEOUT;
+            lastOperationTime = Date.now();
+            
+            // SLEEP/IDLE状態からの即時復帰のため、直ちに画面更新をトリガー
+            if (isSlowFpsMode) {
+                clearTimeout(updateTimer);
+                updateTimer = setTimeout(updateScreen, 50);
+            }
+            // 即座に状態バッジをACTに復帰
+            const stateBadge = document.getElementById('state-badge');
+            stateBadge.textContent = 'ACT';
+            stateBadge.className = 'badge';
+            const dx = e.clientX - lastX;
+            const dy = e.clientY - lastY;
+            lastX = e.clientX;
+            lastY = e.clientY;
+            
+            // クライアント側でマウスポインタの絶対割合座標 (0.0〜1.0) を更新します
+            // 設定された操作感度（targetSensitivity）を基準感度（0.002）に掛け合わせます
+            const baseSensitivity = 0.002;
+            const sensitivity = baseSensitivity * targetSensitivity;
+            vCursorX = Math.max(0, Math.min(1.0, vCursorX + dx * sensitivity));
+            vCursorY = Math.max(0, Math.min(1.0, vCursorY + dy * sensitivity));
+            
+            // クライアント側のポインタ表示を rAF 同期で遅延ゼロ更新
+            scheduleCursorUpdate();
+            
+            // サーバー側には最新の「絶対割合座標 (x, y)」を通信最適化関数経由で送信
+            sendMoveControl(vCursorX, vCursorY);
+        });
+
+        // クリックボタン操作
+        const clickBtnElement = document.getElementById('click-btn');
+        clickBtnElement.addEventListener('pointerdown', e => {
+            e.preventDefault();
+            // 動的FPS制御：操作検出でタイムスタンプを更新（アクティブ状態に復帰）
+            const isSlowFpsMode = (Date.now() - lastOperationTime) >= ACTIVE_TIMEOUT;
+            lastOperationTime = Date.now();
+            
+            // SLEEP/IDLE状態からの即時復帰のため、直ちに画面更新をトリガー
+            if (isSlowFpsMode) {
+                clearTimeout(updateTimer);
+                updateTimer = setTimeout(updateScreen, 50);
+            }
+            // 即座に状態バッジをACTに復帰
+            const stateBadge = document.getElementById('state-badge');
+            stateBadge.textContent = 'ACT';
+            stateBadge.className = 'badge';
+            fetch('/control?action=click');
+        });
+
+        //============================================================================================
+        // 艦隊ステータスHUDのシングルクリック/シングルタップで艦隊詳細HUDを切り替え
+        //============================================================================================
+        (function() {
+            const fleetHud = document.getElementById('fleet-hud');
+            if (!fleetHud) return;
+
+            // シングルクリックイベント（マウス/トラックパッド用）
+            fleetHud.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                switchFleetDetail();
+            });
+
+            // シングルタップイベント（タッチデバイス用）
+            fleetHud.addEventListener('touchend', (e) => {
+                // スクロール中などのキャンセル不可なタッチイベントでのエラーを防ぐため、cancelableである場合のみpreventDefaultを呼ぶ
+                if (e.cancelable) {
+                    e.preventDefault();
+                }
+                e.stopPropagation();
+                switchFleetDetail();
+            }, { passive: false });
+        })();
+
+        //============================================================================================
+        // 艦隊詳細HUD（#fleet-detail-panel）のタップで表示モードをトグル切り替え
+        // HP/FEL/AMO ⇔ 装備情報の全セル連動トグル（艦隊ステータスHUDのswitchFleetDetail()と同様方式）
+        //============================================================================================
+        window._showFleetEquipment = false;  // 装備表示モードのグローバルフラグ（初期値：HP/FEL/AMO表示）
+        (function() {
+            const detailPanel = document.getElementById('fleet-detail-panel');
+            if (!detailPanel) return;
+
+            // クリックイベント（マウス/トラックパッド用）
+            detailPanel.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                window._showFleetEquipment = !window._showFleetEquipment;
+                // テーブル全体を再構築（ヘッダ+ボディの列数切替）
+                renderFleetDetail(currentDetailFleetId);
+            });
+
+            // タッチイベント（タッチデバイス用）
+            detailPanel.addEventListener('touchend', (e) => {
+                // スクロール中などのキャンセル不可なタッチイベントでのエラーを防ぐため、cancelableである場合のみpreventDefaultを呼ぶ
+                if (e.cancelable) {
+                    e.preventDefault();
+                }
+                e.stopPropagation();
+                window._showFleetEquipment = !window._showFleetEquipment;
+                // テーブル全体を再構築（ヘッダ+ボディの列数切替）
+                renderFleetDetail(currentDetailFleetId);
+            }, { passive: false });
+        })();
+
+        window.addEventListener('resize', updateCursorDisplay);
+        updateCursorDisplay();
+
+        // ----------------------------------------------------------------------------
+        // 受領中任務HUDの「作戦名」と「進捗情報」を5秒ごとに交互にトグルするタイマー
+        // ----------------------------------------------------------------------------
+        window._showQuestProgress = false;
+        setInterval(() => {
+            window._showQuestProgress = !window._showQuestProgress;
+            const rows = document.querySelectorAll('.quest-slot-row');
+            rows.forEach(row => {
+                // 空スロット以外の有効な任務スロットにのみトグルを適用
+                if (!row.classList.contains('empty-quest-row')) {
+                    if (window._showQuestProgress) {
+                        row.classList.add('show-progress');
+                    } else {
+                        row.classList.remove('show-progress');
+                    }
+                }
+            });
+        }, 5000);
+
+
+        //============================================================================================
+        // 横画面（Landscape）用：操作パネルの折り畳み/展開トグル
+        // IIFE内に完全に閉じ込め、グローバルスコープへの漏洩を防止
+        //============================================================================================
+        (function initTrackpadPanel() {
+            // --- 内部状態（IIFE内に閉じ込める）---
+            let isExpanded = false;
+
+            // --- DOM要素の取得 ---
+            const toggleBtn = document.getElementById('trackpad-toggle');
+            const trackpadArea = document.getElementById('trackpad-area');
+            // [FIX] 2026/07/27 overlay要素の取得を削除。フィルター方式へ変更
+            const viewport = document.getElementById('viewport');
+            if (!toggleBtn || !trackpadArea) return;
+
+            // --- パネルを閉じる専用関数 ---
+            // [FIX] 2026/07/27 togglePanel()内でisExpandedが先にトグルされるため、
+            //  呼び出し時にisExpandedがfalseになっている。ガード条件を削除して
+            //  無条件にクラス削除処理を実行するように修正。
+            function closePanel() {
+                isExpanded = false;
+                trackpadArea.classList.remove('panel-expanded');
+                toggleBtn.classList.remove('panel-expanded');
+                toggleBtn.setAttribute('aria-expanded', 'false');
+                // [FIX] 2026/07/27 オーバーレイ方式をフィルター方式へ変更
+                if (viewport) {
+                    viewport.classList.remove('overlay-active');
+                }
+            }
+
+            // --- パネルを切り替える関数 ---
+            function togglePanel(e) {
+                if (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+                isExpanded = !isExpanded;
+
+                if (isExpanded) {
+                    trackpadArea.classList.add('panel-expanded');
+                    toggleBtn.classList.add('panel-expanded');
+                    toggleBtn.setAttribute('aria-expanded', 'true');
+                    // [FIX] 2026/07/27 オーバーレイ方式をフィルター方式へ変更
+                    if (viewport) {
+                        viewport.classList.add('overlay-active');
+                    }
+                } else {
+                    closePanel();
+                }
+            }
+
+            // --- イベントリスナー ---
+            toggleBtn.addEventListener('click', (e) => {
+                togglePanel(e);
+            });
+            // [FIX] 2026/07/27 トグルボタンのpointerdownでstopPropagationを追加
+            // 親要素(#trackpad)のsetPointerCaptureを阻止し、clickイベントが正しく発火するようにする
+            toggleBtn.addEventListener('pointerdown', e => {
+                e.stopPropagation();
+            });
+            // [FIX] Step 1: stopPropagation()を削除し、タッチイベントチェーンを修復（pointerdown→pointerup→click）
+
+            // [FIX] 2026/07/27 オーバーレイのpointer-eventsをnone化したため、clickイベントは発生しない。
+            // 不要なイベントハンドラを削除。
+            // if (overlay) {
+            //     overlay.addEventListener('click', () => {
+            //         closePanel();
+            //     });
+            // }
+
+            // --- 画面回転時にパネル状態をリセット ---
+            function resetPanelState() {
+                closePanel();
+            }
+
+            // モダン: screen.orientation API（推奨）
+            if (screen && screen.orientation) {
+                screen.orientation.addEventListener('change', resetPanelState);
+            }
+
+            // フォールバック: legacy orientationchange イベント
+            window.addEventListener('orientationchange', resetPanelState);
+        })();
+
+    </script>
+</body>
+</html>

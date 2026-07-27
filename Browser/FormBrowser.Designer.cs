@@ -39,6 +39,12 @@
 			this.ToolMenu_Zoom = new System.Windows.Forms.ToolStripDropDownButton();
 			this.toolStripSeparator2 = new System.Windows.Forms.ToolStripSeparator();
 			this.ToolMenu_Mute = new System.Windows.Forms.ToolStripButton();
+			this.ToolMenu_ColorFilter = new System.Windows.Forms.ToolStripDropDownButton();
+			this.ToolMenu_ColorFilter_None = new System.Windows.Forms.ToolStripMenuItem();
+			this.ToolMenu_ColorFilter_Grayscale = new System.Windows.Forms.ToolStripMenuItem();
+			this.toolStripSeparator_PrivacyFilter = new System.Windows.Forms.ToolStripSeparator();
+			this.ToolMenu_ColorFilter_HoverCover = new System.Windows.Forms.ToolStripMenuItem();
+			this.ToolMenu_ColorFilter_LowContrast = new System.Windows.Forms.ToolStripMenuItem();
 			this.toolStripSeparator13 = new System.Windows.Forms.ToolStripSeparator();
 			this.ToolMenu_Refresh = new System.Windows.Forms.ToolStripButton();
 			this.ToolMenu_NavigateToLogInPage = new System.Windows.Forms.ToolStripButton();
@@ -132,6 +138,7 @@
 			this.ToolMenu_Zoom,
 			this.toolStripSeparator2,
 			this.ToolMenu_Mute,
+			this.ToolMenu_ColorFilter,
 			this.toolStripSeparator13,
 			this.ToolMenu_Refresh,
 			this.ToolMenu_NavigateToLogInPage,
@@ -177,6 +184,55 @@
 			this.ToolMenu_Mute.Size = new System.Drawing.Size(23, 22);
 			this.ToolMenu_Mute.Text = "ミュート";
 			this.ToolMenu_Mute.Click += new System.EventHandler(this.ToolMenu_Mute_Click);
+			// 
+			// ToolMenu_ColorFilter
+			// 
+			this.ToolMenu_ColorFilter.DisplayStyle = System.Windows.Forms.ToolStripItemDisplayStyle.Image;
+			this.ToolMenu_ColorFilter.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
+            this.ToolMenu_ColorFilter_None,
+            this.ToolMenu_ColorFilter_Grayscale,
+            this.ToolMenu_ColorFilter_LowContrast,
+			this.toolStripSeparator_PrivacyFilter,
+			this.ToolMenu_ColorFilter_HoverCover});
+			this.ToolMenu_ColorFilter.Name = "ToolMenu_ColorFilter";
+			this.ToolMenu_ColorFilter.Size = new System.Drawing.Size(29, 22);
+			this.ToolMenu_ColorFilter.Text = "プライバシーフィルタの切り替え";
+			// 
+			// ToolMenu_ColorFilter_None
+			// 
+			this.ToolMenu_ColorFilter_None.Name = "ToolMenu_ColorFilter_None";
+			this.ToolMenu_ColorFilter_None.Size = new System.Drawing.Size(200, 22);
+			this.ToolMenu_ColorFilter_None.Text = "なし";
+			// 
+			// ToolMenu_ColorFilter_Grayscale
+			// 
+			this.ToolMenu_ColorFilter_Grayscale.Name = "ToolMenu_ColorFilter_Grayscale";
+			this.ToolMenu_ColorFilter_Grayscale.Size = new System.Drawing.Size(200, 22);
+			this.ToolMenu_ColorFilter_Grayscale.Text = "グレースケール";
+			// 
+			// ToolMenu_ColorFilter_LowContrast
+			// 
+			this.ToolMenu_ColorFilter_LowContrast.Name = "ToolMenu_ColorFilter_LowContrast";
+			this.ToolMenu_ColorFilter_LowContrast.Size = new System.Drawing.Size(200, 22);
+			this.ToolMenu_ColorFilter_LowContrast.Text = "低コントラスト";
+			// 
+			// toolStripSeparator_PrivacyFilter
+			// 
+			this.toolStripSeparator_PrivacyFilter.Name = "toolStripSeparator_PrivacyFilter";
+			this.toolStripSeparator_PrivacyFilter.Size = new System.Drawing.Size(197, 6);
+			// 
+			// ToolMenu_ColorFilter_HoverCover
+			// 
+			this.ToolMenu_ColorFilter_HoverCover.Name = "ToolMenu_ColorFilter_HoverCover";
+			this.ToolMenu_ColorFilter_HoverCover.Size = new System.Drawing.Size(200, 22);
+			this.ToolMenu_ColorFilter_HoverCover.Text = "画面カバーを有効化";
+			this.ToolMenu_ColorFilter_HoverCover.CheckOnClick = true;
+			// 
+			// ToolMenu_ColorFilter_LowContrast
+			// 
+			this.ToolMenu_ColorFilter_LowContrast.Name = "ToolMenu_ColorFilter_LowContrast";
+			this.ToolMenu_ColorFilter_LowContrast.Size = new System.Drawing.Size(200, 22);
+			this.ToolMenu_ColorFilter_LowContrast.Text = "低コントラスト";
 			// 
 			// toolStripSeparator13
 			// 
@@ -564,6 +620,17 @@
 			// 
 			this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.None;
 			this.ClientSize = new System.Drawing.Size(284, 261);
+		
+		// 
+		// PrivacyOverlayPanel
+		// 
+		this.PrivacyOverlayPanel = new System.Windows.Forms.Panel();
+		this.PrivacyOverlayPanel.Dock = System.Windows.Forms.DockStyle.Fill;
+		this.PrivacyOverlayPanel.BackColor = System.Drawing.Color.Black;
+		this.PrivacyOverlayPanel.Visible = false; // 初期状態は非表示
+		// OverlayPanelをコントロールの最前面(Z-Index的に上)とするため、SizeAdjuster内部など最前面として振る舞える位置へ
+		this.SizeAdjuster.Controls.Add(this.PrivacyOverlayPanel);
+		
 			this.Controls.Add(this.SizeAdjuster);
 			this.Controls.Add(this.ToolMenu);
 			this.Font = new System.Drawing.Font("Meiryo UI", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Pixel);
@@ -584,17 +651,25 @@
 
 		#endregion
 
+		private System.Windows.Forms.ToolStripMenuItem ToolMenu_ColorFilter_HoverCover;
+		private System.Windows.Forms.ToolStripSeparator toolStripSeparator_PrivacyFilter;
+
 		private System.Windows.Forms.Panel SizeAdjuster;
 		private Browser.ExtraToolStrip ToolMenu;
 		private System.Windows.Forms.ToolStripButton ToolMenu_ScreenShot;
 		private System.Windows.Forms.ToolStripSeparator toolStripSeparator1;
 		private System.Windows.Forms.ToolStripDropDownButton ToolMenu_Zoom;
 		private System.Windows.Forms.ToolStripSeparator toolStripSeparator2;
+		private System.Windows.Forms.ToolStripDropDownButton ToolMenu_ColorFilter;
+		private System.Windows.Forms.ToolStripMenuItem ToolMenu_ColorFilter_None;
+		private System.Windows.Forms.ToolStripMenuItem ToolMenu_ColorFilter_Grayscale;
+		private System.Windows.Forms.ToolStripMenuItem ToolMenu_ColorFilter_LowContrast;
 		private System.Windows.Forms.ToolStripButton ToolMenu_Refresh;
 		private System.Windows.Forms.ToolStripButton ToolMenu_NavigateToLogInPage;
 		private System.Windows.Forms.ToolStripDropDownButton ToolMenu_Other;
 		private System.Windows.Forms.ToolStripMenuItem ToolMenu_Other_ScreenShot;
 		private System.Windows.Forms.ToolStripSeparator toolStripSeparator4;
+		public System.Windows.Forms.Panel PrivacyOverlayPanel;
 		private System.Windows.Forms.ToolStripMenuItem ToolMenu_Other_Zoom;
 		private System.Windows.Forms.ToolStripSeparator toolStripSeparator3;
 		private System.Windows.Forms.ToolStripMenuItem ToolMenu_Other_Refresh;
