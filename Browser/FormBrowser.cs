@@ -584,38 +584,9 @@ namespace Browser
 			BrowserHost.AsyncRemoteRun(() => BrowserHost.Proxy.GetIconResource());
 
 
-			// 2026/06/10 myi 新規作成（設定されたポート・リッスンアドレスを用いてリモート操作サーバーを開始）
-			// Note: CefSharp の初期化(InitializeBrowser)は、本体から WCF で SetProxy が届いたタイミングで
-			// プロキシ設定(proxy-server)付きで実行されるため、ここでの早期呼び出しは行わない。
-			// 2026/07/14 myi 変更（パスワードパラメータの追加）
-			int port = Configuration.RemoteControllerPort;
-			if (port <= 0 || port > 65535)
-			{
-				port = 8080;
-			}
-			string address = Configuration.RemoteControllerAddress;
-			if (string.IsNullOrEmpty(address))
-			{
-				address = "*";
-			}
-			string password = Configuration.RemoteControllerPassword;
-
-			// 2026/07/26 myi 変更（レースコンディション修正：生成〜フラッシュを同一ロック内に収めた）
-			// RemoteController の初期化直後に UpdateHudData が呼ばれた場合に
-			// データの更新順序が逆転するリスクを回避するため、
-			// インスタンス生成からバッファフラッシュまでを同一のロックブロック内に含める。
-			lock (_hudBufferLock)
-			{
-				_remoteController = new RemoteController(this, port, address, password);
-				_remoteController.Start();
-
-				// RemoteController 初期化前に到着したHUDデータをフラッシュする
-				if (_bufferedHudJson != null)
-				{
-					_remoteController.UpdateHudData(_bufferedHudJson);
-					_bufferedHudJson = null;
-				}
-			}
+			// Note: RemoteController の初期化は、プロキシ設定付きで Cef.Initialize が実行される
+			// InitializeBrowser() 内で行います。FormBrowser_Load で生成すると CefSharp の型ロードに伴い
+			// Cef.Initialize がプロキシ無しのデフォルト設定で早期初期化されてしまうのを防ぎます。
 		}
 
 
@@ -688,6 +659,27 @@ namespace Browser
 			Browser.FrameLoadEnd += Browser_FrameLoadEnd;
 			Browser.IsBrowserInitializedChanged += Browser_IsBrowserInitializedChanged;
 			SizeAdjuster.Controls.Add(Browser);
+
+			// 遠隔操作サーバーの起動（Cef.Initialize 完了後に安全に生成）
+			if (_remoteController == null)
+			{
+				int port = Configuration.RemoteControllerPort;
+				if (port <= 0 || port > 65535) port = 8080;
+				string address = string.IsNullOrEmpty(Configuration.RemoteControllerAddress) ? "*" : Configuration.RemoteControllerAddress;
+				string password = Configuration.RemoteControllerPassword;
+
+				lock (_hudBufferLock)
+				{
+					_remoteController = new RemoteController(this, port, address, password);
+					_remoteController.Start();
+
+					if (_bufferedHudJson != null)
+					{
+						_remoteController.UpdateHudData(_bufferedHudJson);
+						_bufferedHudJson = null;
+					}
+				}
+			}
 		}
 
 
@@ -1548,11 +1540,19 @@ namespace Browser
 			ushort port;
 			if (ushort.TryParse(proxy, out port))
 			{
-				ProxySettings = "http=127.0.0.1:" + port;
+				ProxySettings = "127.0.0.1:" + port;
 			}
-			else if (!string.IsNullOrEmpty(proxy) && !proxy.Contains("="))
+			else if (!string.IsNullOrEmpty(proxy))
 			{
-				ProxySettings = $"http={proxy};https={proxy}";
+				var match = System.Text.RegularExpressions.Regex.Match(proxy, @":(\d+)");
+				if (match.Success && ushort.TryParse(match.Groups[1].Value, out port))
+				{
+					ProxySettings = "127.0.0.1:" + port;
+				}
+				else
+				{
+					ProxySettings = proxy;
+				}
 			}
 			else
 			{

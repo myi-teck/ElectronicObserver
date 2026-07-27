@@ -2236,11 +2236,11 @@
             }
 
             #game-screen {
-                max-width: none;
-                max-height: 100dvh;
                 width: auto;
-                height: 100dvh;
-                object-fit: contain;
+                height: auto;
+                max-width: 100%;
+                max-height: 100dvh;
+                aspect-ratio: 5 / 3;
             }
 
             /* -----------------------------------------------------------------
@@ -3861,6 +3861,7 @@
 
                 // データ未同期（204）の場合はHUDを更新せず、次回のポーリングで再試行
                 if (response.status === 204) {
+                    console.log("[HUD] Data not synchronized yet (204). Will retry on next poll.");
                     return;
                 }
 

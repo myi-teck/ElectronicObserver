@@ -1,4 +1,4 @@
-﻿using DynaJson;
+using DynaJson;
 using ElectronicObserver.Utility;
 using ElectronicObserver.Utility.Mathematics;
 using System;
@@ -388,7 +388,7 @@ namespace ElectronicObserver.Observer
 
 			}
 
-			if (baseurl.Contains("/kcsapi/") && e.HttpClient.Response.ContentType == "text/plain")
+			if (baseurl.Contains("/kcsapi/") && (e.HttpClient.Response.ContentType != null && e.HttpClient.Response.ContentType.Contains("text/plain")))
 			{
 				// 非同期でGUIスレッドに渡すので取っておく
 				// stringはイミュータブルなのでOK

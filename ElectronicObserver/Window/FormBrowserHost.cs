@@ -77,6 +77,21 @@ namespace ElectronicObserver.Window
 			Completed = 7,
 		}
 
+		private static readonly object _debugLogLock = new object();
+		public static void DebugLog(string msg)
+		{
+			try
+			{
+				lock (_debugLogLock)
+				{
+					string path = @"c:\PRJ1\_自作\EO\ElectronicObserver\debug_investigation.log";
+					string line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [FormBrowserHost] [Thread:{Environment.CurrentManagedThreadId}] {msg}{Environment.NewLine}";
+					System.IO.File.AppendAllText(path, line);
+				}
+			}
+			catch { }
+		}
+
 		/// <summary>
 		/// 初期化ステージカウント
 		/// 完了したらログインページを開く (各処理が終わらないと正常にロードできないため)
@@ -87,7 +102,7 @@ namespace ElectronicObserver.Window
 			get { return _initializationStage; }
 			set
 			{
-				//AddLog( 1, _initializationStage + " -> " + value );
+				DebugLog($"InitializationStage changing from {_initializationStage} -> {value}");
 				if (_initializationStage != InitializationStageFlag.Completed && value == InitializationStageFlag.Completed)
 				{
 					if (Utility.Configuration.Config.FormBrowser.IsEnabled)
@@ -171,6 +186,7 @@ namespace ElectronicObserver.Window
 		/// </summary>
 		public void Navigate(string url)
 		{
+			DebugLog($"Navigate called. url: '{url}', Browser is null?: {Browser == null}, Proxy is null?: {Browser?.Proxy == null}");
 			Browser.AsyncRemoteRun(() => Browser.Proxy.Navigate(url));
 		}
 
@@ -512,17 +528,23 @@ namespace ElectronicObserver.Window
 		{
 			var config = Utility.Configuration.Config.Connection;
 
+			string result;
 			if (!string.IsNullOrEmpty(config.DownstreamProxy))
 			{
-				return config.DownstreamProxy;
+				result = config.DownstreamProxy;
 
 			}
-			if (config.UseSystemProxy)
+			else if (config.UseSystemProxy)
 			{
-				return APIObserver.Instance.ProxyPort.ToString();
+				result = APIObserver.Instance.ProxyPort.ToString();
 
 			}
-			return string.Format("http=127.0.0.1:{0};https=127.0.0.1:{0}", APIObserver.Instance.ProxyPort);
+			else
+			{
+				result = string.Format("http=127.0.0.1:{0};https=127.0.0.1:{0}", APIObserver.Instance.ProxyPort);
+			}
+			DebugLog($"BuildDownstreamProxy returning: '{result}' (UseSystemProxy={config.UseSystemProxy}, APIObserver Port={APIObserver.Instance.ProxyPort})");
+			return result;
 		}
 
 	
@@ -530,6 +552,7 @@ namespace ElectronicObserver.Window
 
 		public void SetProxyCompleted()
 		{
+			DebugLog($"SetProxyCompleted called from Browser process. Current Stage before flag: {InitializationStage}");
 			InitializationStage |= InitializationStageFlag.SetProxyCompleted;
 		}
 
@@ -548,11 +571,17 @@ namespace ElectronicObserver.Window
 						// プロセスが存命の場合は再接続を促す（SyncHudData で自動処理される）
 						Utility.Logger.Add(1, "ブラウザプロセスは存命です。次回HUD同期時に再接続を試行します。");
 					}
+					else
+					{
+						Utility.Logger.Add(1, "ブラウザプロセスが終了しています。再接続不可能です。");
+					}
 				}
 			}
 			else
 			{
 				Utility.ErrorReporter.SendErrorReport(e, "ブラウザプロセス間で通信エラーが発生しました。");
+				// プロキシが存在する場合は再接続可能
+				Utility.Logger.Add(2, "通信エラーが発生しましたが、再接続を試行します。");
 			}
 		}
 
@@ -674,9 +703,60 @@ namespace ElectronicObserver.Window
 		/// </summary>
 		private void SyncHudData()
 		{
-			if (Browser == null || Browser.Closed || Browser.Proxy == null)
+			if (Browser == null || Browser.Closed)
 				return;
-
+	
+			// プロキシが null の場合、再接続を試みる
+			if (Browser.Proxy == null)
+			{
+				// 再接続レート制限：5秒以内の再接続試行はスキップ
+				lock (_reconnectLock)
+				{
+					if (DateTime.Now - _lastReconnectAttempt < ReconnectInterval)
+						return;
+	
+					// ブラウザプロセスが存命か確認
+					if (BrowserProcess == null || BrowserProcess.HasExited)
+					{
+						// プロセスが終了している場合は再接続不可能
+						Utility.Logger.Add(1, "ブラウザプロセスが終了しているため、HUDデータ同期をスキップします。");
+						return;
+					}
+	
+					_lastReconnectAttempt = DateTime.Now;
+				}
+	
+				try
+				{
+					// ChannelFactory を再作成して再接続
+					Browser.Connect(ServerUri + "Browser/Browser", forceRecreate: true);
+				}
+				catch (Exception ex)
+				{
+					Utility.Logger.Add(1, $"ブラウザ再接続失敗: {ex.Message}");
+					return;
+				}
+	
+				// 再接続後も Proxy が null ならスキップ
+				if (Browser.Proxy == null)
+					return;
+	
+				// 再接続成功ログ
+				Utility.Logger.Add(2, "ブラウザへの再接続に成功しました。HUDデータ同期を再開します。");
+	
+				// 再接続後の状態整合性確保（SetProxy 再設定）
+				// 再接続後の新しいチャネルにはプロキシ設定が未設定なため、再設定が必要
+				try
+				{
+					Browser.AsyncRemoteRun(() => Browser.Proxy.SetProxy(BuildDownstreamProxy()));
+				}
+				catch (Exception proxyEx)
+				{
+					Utility.Logger.Add(1, $"再接続後のプロキシ設定失敗: {proxyEx.Message}");
+					// プロキシ設定の失敗は致命的ではないため、HUD同期は継続する
+				}
+			}
+	
 			try
 			{
 				var db = KCDatabase.Instance;
@@ -1186,10 +1266,12 @@ namespace ElectronicObserver.Window
 
 				// WCFを介してブラウザ（サブプロセス）の UpdateHudData に送信
 				string hudJson = sb.ToString();
+				DebugLog($"SyncHudData sending HUD JSON len={hudJson.Length}. Snippet: {hudJson.Substring(0, Math.Min(250, hudJson.Length))}");
 				Browser.AsyncRemoteRun(() => Browser.Proxy.UpdateHudData(hudJson));
 			}
 			catch (Exception ex)
 			{
+				DebugLog($"SyncHudData exception: {ex}");
 				Utility.Logger.Add(1, $"遠隔HUDデータ同期エラー: {ex.Message}");
 			}
 		}
