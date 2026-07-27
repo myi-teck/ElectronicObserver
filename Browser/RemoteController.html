@@ -2424,6 +2424,15 @@
                 </div>
             </div>
 
+            <!-- 通信プロトコル設定 -->
+            <div class='setting-group'>
+                <label>PROTOCOL</label>
+                <div class='btn-group' id='protocol-group'>
+                    <button class='settings-btn' data-protocol='auto'>AUTO</button>
+                    <button class='settings-btn' data-protocol='websocket'>WS</button>
+                    <button class='settings-btn' data-protocol='http'>HTTP</button>
+                </div>
+            </div>
             <!-- ブラウザ操作設定 -->
             <div class='setting-group'>
                 <label>ブラウザ操作</label>
@@ -2627,6 +2636,280 @@
     </button>
 
     <script>
+        //============================================================================================
+        // ProtocolManager: WebSocket / HTTP の自動切替・フォールバック・再接続を管理
+        //============================================================================================
+        const ProtocolManager = {
+            MODES: { AUTO: 'auto', WEBSOCKET: 'websocket', HTTP: 'http' },
+            currentMode: null,
+            effectiveMode: null,       // 現在実際に動作しているモード (ws / http)
+            wsConnection: null,
+            wsReconnectAttempts: 0,
+            maxReconnectAttempts: 5,
+            reconnectDelayMs: 1000,
+            wsHeartbeatTimer: null,
+            wsHeartbeatIntervalMs: 15000, // 15秒
+            httpPollingActive: false,
+
+            init() {
+                this.currentMode = localStorage.getItem('protocolMode') || this.MODES.AUTO;
+                this.effectiveMode = null;
+                this.updateUIProtocolButtons();
+                this.startConnection();
+            },
+
+            startConnection() {
+                // 既存の接続をクリーンアップ
+                this.closeWebSocket();
+                this.httpPollingActive = false;
+
+                if (this.currentMode === this.MODES.WEBSOCKET) {
+                    this.effectiveMode = 'ws';
+                    this.attemptWebSocket();
+                } else if (this.currentMode === this.MODES.AUTO) {
+                    this.effectiveMode = 'ws';
+                    this.attemptWebSocket();
+                } else {
+                    // HTTP モード
+                    this.effectiveMode = 'http';
+                    this.httpPollingActive = true;
+                    this.updateConnStatus('HTTP', true);
+                }
+            },
+
+            attemptWebSocket() {
+                const wsUrl = `ws://${location.hostname}:${location.port}/ws`;
+                try {
+                    this.wsConnection = new WebSocket(wsUrl);
+                } catch (e) {
+                    console.warn('[ProtocolManager] WebSocket creation failed:', e.message);
+                    // 接続失敗時は再接続フローを起動
+                    if (this.currentMode === this.MODES.WEBSOCKET) {
+                        this.reconnectWebSocket();
+                    } else if (this.currentMode === this.MODES.AUTO) {
+                        this.fallbackToHttp();
+                    }
+                    return;
+                }
+
+                this.wsConnection.binaryType = 'arraybuffer';
+
+                this.wsConnection.onopen = () => {
+                    console.log('[ProtocolManager] WebSocket connected');
+                    this.wsReconnectAttempts = 0;
+                    this.effectiveMode = 'ws';
+                    this.updateConnStatus('WS', true);
+                    // キーフレーム要求
+                    this.sendWsControl({ action: 'init' });
+                    // Heartbeat タイマー起動
+                    this.startHeartbeat();
+                };
+
+                this.wsConnection.onmessage = (event) => {
+                    if (typeof event.data === 'string') {
+                        // テキストメッセージ（Heartbeat / 制御コマンド）
+                        if (event.data === 'heartbeat') {
+                            // Heartbeat受信 → 無視（接続維持確認のみ）
+                            return;
+                        }
+                        // 制御コマンド（設定変更など）
+                        this.processWsControlMessage(event.data);
+                    } else {
+                        // バイナリメッセージ（WebP フレーム）
+                        this.handleScreenUpdateBinary(event.data);
+                    }
+                };
+
+                this.wsConnection.onerror = () => {
+                    console.warn('[ProtocolManager] WebSocket error');
+                };
+
+                this.wsConnection.onclose = () => {
+                    this.onWsClose();
+                };
+            },
+
+            onWsClose() {
+                console.warn('[ProtocolManager] WebSocket closed');
+                this.stopHeartbeat();
+                this.updateConnStatus('DISCONNECTED', false);
+
+                if (this.currentMode === this.MODES.AUTO) {
+                    // AUTO モードは HTTP にフォールバック
+                    this.fallbackToHttp();
+                } else if (this.currentMode === this.MODES.WEBSOCKET) {
+                    // WEBSOCKET モードは再試行
+                    this.reconnectWebSocket();
+                }
+            },
+
+            reconnectWebSocket() {
+                if (this.wsReconnectAttempts >= this.maxReconnectAttempts) {
+                    console.warn('[ProtocolManager] Max reconnect attempts reached, falling back to HTTP');
+                    this.fallbackToHttp();
+                    return;
+                }
+                const delay = this.reconnectDelayMs * Math.pow(2, this.wsReconnectAttempts);
+                this.wsReconnectAttempts++;
+                this.updateConnStatus(`WS RETRY (${this.wsReconnectAttempts})`, false);
+                console.log(`[ProtocolManager] Reconnecting in ${delay}ms (attempt ${this.wsReconnectAttempts})`);
+                setTimeout(() => this.attemptWebSocket(), delay);
+            },
+
+            fallbackToHttp() {
+                console.log('[ProtocolManager] Falling back to HTTP Polling');
+                this.closeWebSocket();
+                this.effectiveMode = 'http';
+                this.httpPollingActive = true;
+                this.updateConnStatus('HTTP (FB)', true);
+            },
+
+            closeWebSocket() {
+                if (this.wsConnection) {
+                    try { this.wsConnection.close(); } catch {}
+                    this.wsConnection = null;
+                }
+                this.stopHeartbeat();
+            },
+
+            startHeartbeat() {
+                this.stopHeartbeat();
+                this.wsHeartbeatTimer = setInterval(() => {
+                    if (this.wsConnection && this.wsConnection.readyState === WebSocket.OPEN) {
+                        // サーバーへの Heartbeat 送信
+                        this.wsConnection.send('heartbeat');
+                    }
+                }, this.wsHeartbeatIntervalMs);
+            },
+
+            stopHeartbeat() {
+                if (this.wsHeartbeatTimer) {
+                    clearInterval(this.wsHeartbeatTimer);
+                    this.wsHeartbeatTimer = null;
+                }
+            },
+
+            // WebSocket 操作メッセージを送信
+            sendWsControl(data) {
+                if (this.wsConnection && this.wsConnection.readyState === WebSocket.OPEN) {
+                    this.wsConnection.send(JSON.stringify(data));
+                }
+            },
+
+            // サーバーからの制御メッセージを処理
+            processWsControlMessage(jsonStr) {
+                try {
+                    const msg = JSON.parse(jsonStr);
+                    if (msg.type === 'set_quality') {
+                        // サーバーからの画質変更通知 → クライアント側の設定変数に反映
+                        console.log('[ProtocolManager] Server set quality:', msg.quality);
+                        if (typeof msg.quality === 'number') {
+                            targetQuality = msg.quality;
+                            localStorage.setItem('targetQuality', msg.quality);
+                            // UI のアクティブボタンを更新
+                            const buttons = document.querySelectorAll('#quality-group .settings-btn');
+                            buttons.forEach(btn => {
+                                btn.classList.toggle('active', parseInt(btn.getAttribute('data-quality'), 10) === msg.quality);
+                            });
+                        }
+                    } else if (msg.type === 'navigate') {
+                        // サーバーからのナビゲーション指示
+                        console.log('[ProtocolManager] Server navigate:', msg.url);
+                        if (msg.url) {
+                            window.location.href = msg.url;
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[ProtocolManager] Invalid control message:', e.message);
+                }
+            },
+
+            // バイナリ画面更新（WebSocket 経由）
+            // [FIX] 2026/07/27 メモリリーク対策：タイムアウト＋確実な revokeObjectURL 解放
+            handleScreenUpdateBinary(arrayBuffer) {
+                const blob = new Blob([arrayBuffer], { type: 'image/webp' });
+                const objectUrl = URL.createObjectURL(blob);
+                const img = new Image();
+
+                // タイムアウト用タイマー（500ms で未解決の場合は revokeObjectURL を強制解放）
+                let timedOut = false;
+                const timeoutId = setTimeout(() => {
+                    timedOut = true;
+                    URL.revokeObjectURL(objectUrl);
+                    console.warn('[ProtocolManager] Image load timeout, URL revoked');
+                }, 500);
+
+                img.onload = () => {
+                    if (timedOut) return; // タイムアウト済みの場合は処理をスキップ
+                    clearTimeout(timeoutId);
+
+                    gameCtx.clearRect(0, 0, screen.width, screen.height);
+                    gameCtx.drawImage(img, 0, 0);
+                    drawMagnifier();
+
+                    // Blob URL を確実かつ即時に解放
+                    URL.revokeObjectURL(img.src);
+
+                    status.textContent = 'SYNCHRONIZED';
+                    status.classList.add('ok');
+
+                    frameCount++;
+                    updateFpsDisplay();
+                };
+
+                img.onerror = () => {
+                    if (timedOut) return; // タイムアウト済みの場合は処理をスキップ
+                    clearTimeout(timeoutId);
+
+                    // Blob URL を確実かつ即時に解放
+                    URL.revokeObjectURL(img.src);
+                    console.warn('[ProtocolManager] Image decode failed');
+                };
+
+                img.src = objectUrl;
+            },
+
+            // 接続ステータスUIの更新
+            updateConnStatus(text, isConnected) {
+                const el = document.getElementById('conn-status');
+                if (el) {
+                    el.textContent = text;
+                    if (isConnected) {
+                        el.classList.add('ok');
+                    } else {
+                        el.classList.remove('ok');
+                    }
+                }
+            },
+
+            // 設定パネルのボタンのアクティブ状態を更新
+            updateUIProtocolButtons() {
+                const buttons = document.querySelectorAll('#protocol-group .settings-btn');
+                buttons.forEach(btn => {
+                    const mode = btn.getAttribute('data-protocol');
+                    if (mode === this.currentMode) {
+                        btn.classList.add('active');
+                    } else {
+                        btn.classList.remove('active');
+                    }
+                });
+            },
+
+            // モード切り替え
+            setMode(mode) {
+                if (!this.MODES[mode.toUpperCase()]) return;
+                this.currentMode = mode;
+                localStorage.setItem('protocolMode', mode);
+                this.updateUIProtocolButtons();
+                this.startConnection();
+            },
+
+            // 現在の有効モードを返す
+            getEffectiveMode() {
+                return this.effectiveMode;
+            },
+        };
+
         const screen = document.getElementById('game-screen');
 
         // ─── canvas の描画コンテキストを取得する（差分WebP・レガシーJPEGの両モードで共用）
@@ -2718,7 +3001,7 @@
             if (dist > dragThreshold && !isDraggingOnViewport) {
                 isDraggingOnViewport = true;
                 // ドラッグ開始：カーソル位置にマウスダウン
-                fetch('/control?action=mousedown');
+                sendControlAction('mousedown');
             }
 
             // カーソルをタッチ位置に追従（絶対座標）
@@ -2731,13 +3014,13 @@
 
             if (isDraggingOnViewport) {
                 // ドラッグ中だった場合：マウスアップ
-                fetch('/control?action=mouseup');
+                sendControlAction('mouseup');
             } else if (elapsed <= tapTimeout) {
                 // 短時間だった場合：タップ（既存のtouch_click）
                 const rect = screen.getBoundingClientRect();
                 const x = Math.max(0, Math.min(1.0, (viewportTouchStartX - rect.left) / rect.width));
                 const y = Math.max(0, Math.min(1.0, (viewportTouchStartY - rect.top) / rect.height));
-                fetch(`/control?action=touch_click&x=${x}&y=${y}`);
+                sendControlAction('touch_click', x, y);
             }
 
             isDraggingOnViewport = false;
@@ -2754,7 +3037,7 @@
             viewportTouchStartTime = Date.now();
 
             // マウスダウン（ドラッグ開始の準備）
-            fetch('/control?action=mousedown');
+            sendControlAction('mousedown');
 
             // 動的FPS制御
             activateViewportFpsControl();
@@ -2775,7 +3058,7 @@
             isMouseDownOnViewport = false;
 
             // マウスアップ
-            fetch('/control?action=mouseup');
+            sendControlAction('mouseup');
 
             // タップ判定（短時間・短距離）
             const elapsed = Date.now() - viewportTouchStartTime;
@@ -3114,6 +3397,37 @@
             localStorage.setItem('targetSensitivity', value.toString()); // 設定値をlocalStorageへ保存
         });
 
+        //============================================================================================
+        // 通信プロトコル設定 (AUTO / WS / HTTP)
+        //============================================================================================
+        (function initProtocolButtons() {
+            const group = document.getElementById('protocol-group');
+            if (!group) return;
+
+            const buttons = group.querySelectorAll('.settings-btn');
+            const currentMode = ProtocolManager.currentMode;
+
+            buttons.forEach(btn => {
+                const mode = btn.getAttribute('data-protocol');
+
+                // 初期状態の適用
+                if (mode === currentMode) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+
+                btn.addEventListener('click', () => {
+                    buttons.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    ProtocolManager.setMode(mode);
+                });
+            });
+        })();
+
+        // ページロード時に ProtocolManager を初期化
+        ProtocolManager.init();
+
         // 拡大率設定変更の監視および保存
         initSettingsButtons('zoom-group', targetZoom, value => {
             targetZoom = value;
@@ -3296,6 +3610,16 @@
         //                  2026/06/02 myi 変更：Fetchタイムアウト制御による堅牢化と処理の簡略化。
         //============================================================================================
         async function updateScreenDiff() {
+            // WebSocket モード時は HTTP ポーリングをスキップ（サーバーからのストリーミングで画面更新）
+            if (ProtocolManager.effectiveMode === 'ws') {
+                // 排他ロックを解放
+                isUpdating = false;
+                // 次の更新タイマーを設定（動的ディレイ）
+                const nextDelay = getDynamicDelay();
+                updateTimer = setTimeout(updateScreen, nextDelay);
+                return;
+            }
+
             // すでに非同期の更新処理が実行中である場合は、多重起動を防ぐため即座に処理をスキップします
             if (isUpdating) return;
             isUpdating = true; // 排他ロックを確保
@@ -4333,12 +4657,21 @@
         // 代わりに updateScreenDiff / updateScreenLegacy の img.onload 内で drawMagnifier() を呼び出す
 
         //============================================================================================
-        // 移動制御通信の最適化（In-Flight 制御によるパケット詰まり・通信遅延の防止）
+        // 移動制御通信の最適化（WebSocket / HTTP 自動切替）
+        // WebSocket 利用時は非同期送信（レスポンスを待たず、Optimistic UI）
+        // HTTP 時は In-Flight 制御によるパケット詰まり防止
         //============================================================================================
         let isMoveSending = false;
         let pendingMoveCoords = null;
 
         function sendMoveControl(x, y) {
+            // WebSocket が利用可能な場合は非同期送信（Optimistic UI）
+            if (ProtocolManager.effectiveMode === 'ws') {
+                ProtocolManager.sendWsControl({ action: 'move', x, y });
+                return;
+            }
+
+            // HTTP モード時は従来の In-Flight 制御
             if (isMoveSending) {
                 pendingMoveCoords = { x, y };
                 return;
@@ -4354,6 +4687,23 @@
                         sendMoveControl(next.x, next.y);
                     }
                 });
+        }
+
+        //============================================================================================
+        // 制御コマンド送信（WebSocket / HTTP 自動切替）
+        //============================================================================================
+        function sendControlAction(action, x, y) {
+            if (ProtocolManager.effectiveMode === 'ws') {
+                const data = { action };
+                if (x !== undefined) data.x = x;
+                if (y !== undefined) data.y = y;
+                ProtocolManager.sendWsControl(data);
+            } else {
+                let url = `/control?action=${action}`;
+                if (x !== undefined) url += `&x=${x}`;
+                if (y !== undefined) url += `&y=${y}`;
+                fetch(url).catch(() => {});
+            }
         }
 
         //============================================================================================
@@ -4484,7 +4834,7 @@
             const stateBadge = document.getElementById('state-badge');
             stateBadge.textContent = 'ACT';
             stateBadge.className = 'badge';
-            fetch('/control?action=click');
+            sendControlAction('click');
         });
 
         //============================================================================================

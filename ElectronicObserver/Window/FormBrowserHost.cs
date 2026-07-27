@@ -50,8 +50,24 @@ namespace ElectronicObserver.Window
 
 		/// <summary>
 		/// モバイル遠隔操作画面へ定期的にHUDデータを同期するためのタイマー
+		/// 2秒周期でイベントドリブンなフラグを確認し、変更あり時のみ送信する
+		/// （低頻度バックアップタイマーとして機能し、イベント通知漏れ時のフォールバック）
 		/// </summary>
 		private Timer _hudTimer;
+
+		/// <summary>
+		/// HUDデータ同期用のStringBuilderの初期容量（典型的なHUD JSONサイズの推定値）
+		/// リサイズ回数を削減するため、十分な初期容量を確保する
+		/// </summary>
+		private const int HudJsonInitialCapacity = 32768;
+
+		/// <summary>
+		/// HUDデータが変更されたことを示すフラグ（スレッドセーフな書き換え用）
+		/// データ変更イベントで 1 にセットされ、SyncHudData で 0 にリセットされる
+		/// Interlocked.Exchange を使用するため int 型を使用する
+		/// </summary>
+		private int _hudDataChanged = 1;
+
 
 		/// <summary>
 		/// 再接続を抑制するための最終再接続試行時刻
@@ -495,6 +511,59 @@ namespace ElectronicObserver.Window
 				APIObserver.Instance.APIList["api_start2/getData"].ResponseReceived +=
 					(string apiname, dynamic data) => InitialAPIReceived(apiname, data);
 
+				// HUDデータ変更トリガーのAPIイベント購読
+				// 資源変更
+				APIObserver.Instance.APIList["api_get_member/material"].ResponseReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				APIObserver.Instance.APIList["api_port/port"].ResponseReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				// 艦隊状態変更
+				APIObserver.Instance.APIList["api_get_member/deck"].ResponseReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				APIObserver.Instance.APIList["api_get_member/ndock"].ResponseReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				// 戦闘状態変更（単艦隊）
+				APIObserver.Instance.APIList["api_req_sortie/battle"].ResponseReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				APIObserver.Instance.APIList["api_req_sortie/battleresult"].ResponseReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				// 戦闘状態変更（連合艦隊）
+				APIObserver.Instance.APIList["api_req_combined_battle/battle"].ResponseReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				APIObserver.Instance.APIList["api_req_combined_battle/battleresult"].ResponseReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				// 戦闘状態変更（練習戦闘）
+				APIObserver.Instance.APIList["api_req_practice/battle"].ResponseReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				APIObserver.Instance.APIList["api_req_practice/battle_result"].ResponseReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				// クエスト状態変更
+				APIObserver.Instance.APIList["api_req_quest/clearitemget"].ResponseReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				// 建造開始
+				APIObserver.Instance.APIList["api_req_kousyou/createship"].RequestReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				// 建造完了（kdock 更新時）
+				APIObserver.Instance.APIList["api_get_member/kdock"].ResponseReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				// 入渠開始・加速
+				APIObserver.Instance.APIList["api_req_nyukyo/start"].RequestReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				APIObserver.Instance.APIList["api_req_nyukyo/speedchange"].RequestReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				// 補給
+				APIObserver.Instance.APIList["api_req_hokyu/charge"].ResponseReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				// 装備変更（装備交換）
+				APIObserver.Instance.APIList["api_req_kaisou/slot_exchange_index"].ResponseReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				// 編成変更
+				APIObserver.Instance.APIList["api_req_hensei/change"].RequestReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+				// 強化（運変化など）
+				APIObserver.Instance.APIList["api_req_kaisou/powerup"].ResponseReceived +=
+					(string apiname, dynamic data) => OnDataChanged();
+
 				// プロキシをセット
 				Browser.AsyncRemoteRun(() => Browser.Proxy.SetProxy(BuildDownstreamProxy()));
 				APIObserver.Instance.ProxyStarted += () =>
@@ -515,6 +584,8 @@ namespace ElectronicObserver.Window
 				{
 					if (data.Priority >= 1 && Browser != null && !Browser.Closed && Browser.Proxy != null)
 					{
+						// データ変更フラグを立ててから SyncHudData を呼び出す
+						OnDataChanged();
 						// 定期更新と同じ SyncHudData を利用（クライアント側で差分処理を行う）
 						// Invoke しないのは、GUIスレッドの処理順序を乱さないため
 						Task.Run(() => SyncHudData());
@@ -699,12 +770,30 @@ namespace ElectronicObserver.Window
 		#endregion
 
 		/// <summary>
+		/// HUDデータが変更されたことを通知します（スレッドセーフ）。
+		/// 各データ変更トリガー箇所で呼び出されます。
+		/// </summary>
+		public void OnDataChanged()
+		{
+			System.Threading.Interlocked.Exchange(ref _hudDataChanged, 1);
+		}
+
+		/// <summary>
 		/// 2秒毎にゲーム内データをJSON化し、WCFを介してブラウザ（サブプロセス）に送信します。
+		/// データ変更フラグが立っている場合のみ送信し、変更なしの場合はスキップします。
 		/// </summary>
 		private void SyncHudData()
 		{
 			if (Browser == null || Browser.Closed)
 				return;
+
+			// データ変更フラグを確認（スレッドセーフに取得・リセット）
+			int changed = System.Threading.Interlocked.Exchange(ref _hudDataChanged, 0);
+			if (changed == 0)
+			{
+				// データ変更なし：同期をスキップ
+				return;
+			}
 	
 			// プロキシが null の場合、再接続を試みる
 			if (Browser.Proxy == null)
@@ -760,7 +849,7 @@ namespace ElectronicObserver.Window
 			try
 			{
 				var db = KCDatabase.Instance;
-				var sb = new StringBuilder();
+				var sb = new StringBuilder(HudJsonInitialCapacity);
 				sb.Append("{");
 
 				// ----------------------------------------------------------------------------

@@ -44,6 +44,7 @@
 //============================================================================================
 
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
@@ -51,7 +52,9 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.WebSockets;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using CefSharp;
@@ -90,6 +93,40 @@ namespace Browser
 		/// 読み書きを排他制御するためのロックオブジェクト。
 		/// </summary>
 		private readonly object _hudLock = new object();
+
+		//====================================================================================
+		// WebSocket 通信関連フィールド・定数
+		//------------------------------------------------------------------------------------
+		// 2026/07/27 新規作成（WebSocket セッション管理）
+		private readonly ConcurrentDictionary<string, WebSocketSession> _webSocketSessions = new ConcurrentDictionary<string, WebSocketSession>();
+
+		// 2026/07/27 新規作成（バッファプール：GC 負荷削減）
+		private static readonly ArrayPool<byte> _bufferPool = ArrayPool<byte>.Shared;
+
+		// 2026/07/27 新規作成（WebSocket 定数）
+		private const int WebSocketHeartbeatIntervalMs = 15000; // 15秒
+		private const int WebSocketMaxQueueSize = 1;            // Drop Frame 用キュー上限（最新1枚のみ保持）
+
+		//====================================================================================
+		// IPC 最適化 - スクリプト事前構築
+		//------------------------------------------------------------------------------------
+		// 2026/07/27 新規作成（EvaluateScriptAsync 用スクリプトの事前構築：GC 負荷削減）
+		// 高頻度呼び出し（10FPS）の CaptureCanvasAsync で使用するスクリプトを
+		// 定数として事前定義し、呼び出し毎の文字列生成によるGC負荷を排除する。
+		private const string CaptureScriptTemplate = @"(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.pull({0});}})()";
+
+		// 事前構築した2つのバリアントを使用（string.Format は静的フィールド初期化により実行時にゼロコスト）
+		private static readonly string CaptureScriptInit = string.Format(CaptureScriptTemplate, "true");
+		private static readonly string CaptureScriptNormal = string.Format(CaptureScriptTemplate, "false");
+
+		// 2026/07/27 新規作成（set_quality アクション用スクリプトの事前構築）
+		// 動的な品質値のみを連結し、固定部分は定数として事前定義する。
+		private const string QualityScriptPrefix = "if(window._kancolleCaptureEngine)window._kancolleCaptureEngine.webpQuality=";
+		private const char QualityScriptSuffix = ';';
+
+		// 2026/07/27 新規作成（WebSocket Heartbeat 用バイト列の事前構築）
+		// 毎回の Encoding.UTF8.GetBytes("heartbeat") による一時バッファ割り当てを排除する。
+		private static readonly byte[] HeartbeatBytes = Encoding.UTF8.GetBytes("heartbeat");
 
 		// 2026/07/22 myi 新規作成（ブルートフォース対策：IPアドレスごとのログイン失敗追跡）
 		private readonly ConcurrentDictionary<string, (int count, DateTime lastAttempt)> _loginAttempts = new ConcurrentDictionary<string, (int count, DateTime lastAttempt)>();
@@ -169,6 +206,162 @@ namespace Browser
 
 		// 2026/07/22 myi 新規作成（クリーンアップ最適化：前回実行時刻を保持）
 		private DateTime _lastCleanupTime = DateTime.MinValue;
+
+		//====================================================================================
+		// WebSocketSession クラス
+		//------------------------------------------------------------------------------------
+		/// <summary>
+		/// WebSocket 接続セッション情報を保持します。
+		/// HttpListener の WebSocket はスレッドセーフではないため、
+		/// 送信処理は lock で排他制御し、単一の送信ループタスクで管理します。
+		/// </summary>
+		private class WebSocketSession : IDisposable
+		{
+			public System.Net.WebSockets.WebSocket WebSocket { get; }
+			public string SessionId { get; }
+			public CancellationTokenSource CancellationToken { get; }
+			public DateTime LastHeartbeat { get; set; }
+	
+			/// <summary>
+			/// バッファ操作の排他制御用ロック（SetLatestFrame / GetLatestFrame / ReturnFrame）
+			/// </summary>
+			private readonly object _bufferLock = new object();
+	
+			/// <summary>
+			/// 送信用の SemaphoreSlim（await 可能な排他制御用。TOCTOU 対策）
+			/// </summary>
+			public readonly SemaphoreSlim SendSemaphore = new SemaphoreSlim(1, 1);
+	
+			/// <summary>
+			/// 各ループタスクの参照（Dispose 時のクリーンアップ用）
+			/// </summary>
+			public Task CaptureTask { get; set; }
+			public Task SendTask { get; set; }
+			public Task ReceiveTask { get; set; }
+	
+			/// <summary>
+			/// Drop Frame 用最新フレームバッファ（ArrayPool からレンタル）
+			/// null の場合はフレームなし
+			/// </summary>
+			private byte[] _latestFrameBuffer;
+	
+			/// <summary>
+			/// 最新フレームの有効データ長
+			/// </summary>
+			private int _latestFrameLength;
+	
+			/// <summary>
+			/// フレーム更新フラグ（キャプチャタスクが立てる）
+			/// </summary>
+			private bool _frameUpdated;
+	
+			/// <summary>
+			/// フレーム到着イベント（キャプチャタスク → 送信タスク間の通知）
+			/// </summary>
+			private readonly ManualResetEventSlim _frameEvent = new ManualResetEventSlim(false);
+
+			public WebSocketSession(System.Net.WebSockets.WebSocket ws, string sessionId)
+			{
+				WebSocket = ws;
+				SessionId = sessionId;
+				CancellationToken = new CancellationTokenSource();
+				LastHeartbeat = DateTime.UtcNow;
+				_latestFrameBuffer = null;
+				_latestFrameLength = 0;
+			}
+
+			/// <summary>
+			/// 最新フレームの到着を待機します（送信タスクから呼び出し）。
+			/// タイムアウト後またはフレーム到着時に true、キャンセル時は false を返す。
+			/// </summary>
+			public bool WaitForFrame(int timeoutMs, CancellationToken token)
+			{
+				return _frameEvent.Wait(timeoutMs, token);
+			}
+
+			/// <summary>
+			/// 最新フレームをセットします（キャプチャタスクから呼び出し）。
+			/// 既存のフレームがある場合は破棄（ArrayPool へ返却）し、新しいフレームで上書き。
+			/// 操作全体は _bufferLock で排他制御されておりアトミック。
+			/// </summary>
+			public void SetLatestFrame(byte[] data)
+			{
+				byte[] pooledBuffer = _bufferPool.Rent(data.Length);
+				Array.Copy(data, pooledBuffer, data.Length);
+
+				lock (_bufferLock)
+				{
+					// 既存フレームがあれば返却（ArrayPool へ）
+					if (_latestFrameBuffer != null)
+					{
+						_bufferPool.Return(_latestFrameBuffer, clearArray: true);
+					}
+
+					_latestFrameBuffer = pooledBuffer;
+					_latestFrameLength = data.Length;
+					_frameUpdated = true;
+				}
+				_frameEvent.Set();
+			}
+
+			/// <summary>
+			/// 最新フレームを取得してフラグをリセットします（送信タスクから呼び出し）。
+			/// ArrayPool からレンタルされたバッファを ArraySegment としてそのまま返し、
+			/// 送信完了後には ReturnFrame で返却することを期待する。
+			/// フレームがない場合は default(ArraySegment<byte>) (Count == 0) を返す。
+			/// 操作全体は _bufferLock で排他制御されておりアトミック。
+			/// </summary>
+			public ArraySegment<byte> GetLatestFrame()
+			{
+				lock (_bufferLock)
+				{
+					if (!_frameUpdated) return default(ArraySegment<byte>);
+					_frameUpdated = false;
+					_frameEvent.Reset();
+
+					byte[] frame = _latestFrameBuffer;
+					int length = _latestFrameLength;
+
+					// 所有権を送信側に完全に移行（null 化して誤返却を防止）
+					_latestFrameBuffer = null;
+					_latestFrameLength = 0;
+
+					// ArrayPool バッファをそのまま ArraySegment として返す（コピー不要）
+					return new ArraySegment<byte>(frame, 0, length);
+				}
+			}
+
+			/// <summary>
+			/// 送信完了後、ArrayPool から借りたフレームバッファを返却します。
+			/// </summary>
+			public void ReturnFrame(ArraySegment<byte> segment)
+			{
+				if (segment.Array != null && segment.Count > 0)
+				{
+					_bufferPool.Return(segment.Array, clearArray: true);
+				}
+			}
+
+			public void Dispose()
+			{
+				CancellationToken.Cancel();
+				_frameEvent.Set(); // 待機中の送信タスクを解放
+
+				// 残っているフレームバッファを返却
+				lock (_bufferLock)
+				{
+					if (_latestFrameBuffer != null)
+					{
+						_bufferPool.Return(_latestFrameBuffer, clearArray: true);
+						_latestFrameBuffer = null;
+					}
+				}
+
+				CancellationToken.Dispose();
+				SendSemaphore.Dispose();
+				_frameEvent.Dispose();
+			}
+		}
 
 		//====================================================================================
 		// パスワード更新
@@ -632,6 +825,11 @@ namespace Browser
 				{
 					// モバイル端末からのHUD情報要求に対し、実際のゲーム内ステータスをJSONで返します
 					SendHudData(req, res);
+				}
+				else if (path == "/ws")
+				{
+					// WebSocket アップグレード要求
+					await HandleWebSocketAsync(context);
 				}
 				else
 				{
@@ -1257,7 +1455,9 @@ namespace Browser
 					// 品質を0.05〜1.0の範囲にスケール変換
 					double qualityScale = Math.Max(0.05, Math.Min(1.0, qVal / 100.0));
 					var kancolleFrame = _parent.GetKanColleFrame();
-					kancolleFrame?.ExecuteJavaScriptAsync($"if(window._kancolleCaptureEngine) window._kancolleCaptureEngine.webpQuality = {qualityScale};");
+					// IPC 最適化: 文字列補間ではなく事前構築された定数 + 連結を使用し、GC負荷を削減
+					var script = QualityScriptPrefix + qualityScale.ToString(System.Globalization.CultureInfo.InvariantCulture) + QualityScriptSuffix;
+					kancolleFrame?.ExecuteJavaScriptAsync(script);
 				}
 					#endregion
 					// 2026/07/14 myi 新規作成（ドラッグ操作対応）
@@ -1700,14 +1900,8 @@ namespace Browser
 				return Tuple.Create("error", "Browser not initialized");
 			}
 
-			// EvaluateScriptAsync を用いて、ブラウザのJSエンジンからキャッシュを引き抜く
-			string script = $@"
-				(function() {{
-					if (window._kancolleCaptureEngine) {{
-						return window._kancolleCaptureEngine.pull({(isInit ? "true" : "false")});
-					}}
-					return null;
-				}})();";
+			// IPC 最適化: 事前構築されたスクリプト定数を使用し、呼び出し毎の文字列生成によるGC負荷を排除
+			string script = isInit ? CaptureScriptInit : CaptureScriptNormal;
 
 			try
 			{
@@ -1842,6 +2036,442 @@ namespace Browser
 			_listener?.Close();
 			_sessions.Clear();
 			_refreshTokens.Clear();
+
+			// WebSocket セッションのクリーンアップ
+			// CancellationToken の Cancel を先に呼び出し、各ループタスクを停止を通知
+			foreach (var kvp in _webSocketSessions)
+			{
+				kvp.Value.CancellationToken.Cancel();
+			}
+
+			// 各ループタスクの完了を待機（最大5秒）
+			var allTasks = new List<Task>();
+			foreach (var kvp in _webSocketSessions)
+			{
+				var session = kvp.Value;
+				if (session.CaptureTask != null) allTasks.Add(session.CaptureTask);
+				if (session.SendTask != null) allTasks.Add(session.SendTask);
+				if (session.ReceiveTask != null) allTasks.Add(session.ReceiveTask);
+			}
+
+			if (allTasks.Count > 0)
+			{
+				try
+				{
+					Task.WaitAll(allTasks.ToArray(), TimeSpan.FromSeconds(5));
+				}
+				catch (AggregateException ex)
+				{
+					// 各タスクの例外をログ出力（OperationCanceledException は正常終了とみなす）
+					foreach (var inner in ex.InnerExceptions)
+					{
+						if (!(inner is OperationCanceledException))
+						{
+							Console.WriteLine($"RemoteController: ループタスク終了時の例外: {inner.Message}");
+						}
+					}
+				}
+			}
+
+			// セッションの Dispose（CancellationTokenSource, SemaphoreSlim, バッファ返却等）
+			foreach (var kvp in _webSocketSessions)
+			{
+				kvp.Value.Dispose();
+			}
+			_webSocketSessions.Clear();
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : HandleWebSocketAsync
+		// 概要           : WebSocket アップグレード要求を処理し、バイナリストリーミングを開始します。
+		//                  キャプチャタスクと送信タスクを分離し、SendAsyncのawaitによる遅延蓄積を防ぎます。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/27
+		// version        : 1.00
+	//------------------------------------------------------------------------------------
+		private async Task HandleWebSocketAsync(HttpListenerContext context)
+		{
+			var req = context.Request;
+			var res = context.Response;
+
+			// 認証チェック
+			if (!IsAuthenticated(req, res))
+			{
+				res.StatusCode = 401;
+				res.Close();
+				return;
+			}
+
+			try
+			{
+				// WebSocket アップグレード
+				var acceptResult = await context.AcceptWebSocketAsync(null);
+				var ws = acceptResult.WebSocket;
+
+				// セッションIDを生成（クッキーから取得、または新規発行）
+				string sessionId = GetCookieValue(req, "session_id") ?? Guid.NewGuid().ToString("N");
+				if (string.IsNullOrEmpty(GetCookieValue(req, "session_id")))
+				{
+					// セッションを発行してクッキーを設定
+					_sessions.TryAdd(sessionId, new SessionInfo(sessionId));
+				}
+
+				var session = new WebSocketSession(ws, sessionId);
+					_webSocketSessions.TryAdd(sessionId, session);
+	
+					// 3つの独立タスクを開始（キャプチャ / 送信 / 受信）
+					// タスクをセッションに保持し、Dispose 時に適切にクリーンアップ可能にする
+					session.CaptureTask = Task.Run(() => WebSocketCaptureLoopAsync(session));
+					session.SendTask = Task.Run(() => WebSocketSendLoopAsync(session));
+					session.ReceiveTask = Task.Run(() => WebSocketReceiveLoopAsync(session));
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"RemoteController: WebSocket アップグレードエラー: {ex.Message}");
+				try { res.StatusCode = 500; res.Close(); } catch { }
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : WebSocketCaptureLoopAsync
+		// 概要           : 画面キャプチャを専用タスクで実行し、最新1枚をセッションにセットします。
+		//                  SendAsyncのawaitによる遅延蓄積を防ぐため、送信タスクとは分離しています。
+		//                  Drop Frame: 最新1枚以外は破棄して送信しない。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/27
+		// version        : 1.00
+	//------------------------------------------------------------------------------------
+		private async Task WebSocketCaptureLoopAsync(WebSocketSession session)
+		{
+			var token = session.CancellationToken.Token;
+
+			try
+			{
+				while (!token.IsCancellationRequested)
+				{
+					// 画面キャプチャ
+					var capture = await CaptureCanvasAsync(false);
+					string type = capture.Item1;
+					string dataUrl = capture.Item2;
+
+					if (type == "full" && !string.IsNullOrEmpty(dataUrl))
+					{
+						byte[] webpData = ConvertToBytes(dataUrl, "data:image/webp");
+						if (webpData != null && webpData.Length > 0)
+						{
+							// SetLatestFrame は既存フレームを自動的に破棄（ArrayPool 返却）し、
+							// 最新1枚のみを保持する。これにより Drop Frame が実現される。
+							session.SetLatestFrame(webpData);
+						}
+					}
+					// type == "none" の場合は差分なしなので何もしない
+
+					// FPS 制御（100ms = 10FPS）
+					await Task.Delay(100, token);
+				}
+			}
+			catch (OperationCanceledException) { /* 正常終了 */ }
+			catch (Exception ex)
+			{
+				Console.WriteLine($"RemoteController: WebSocket キャプチャループエラー: {ex.Message}");
+			}
+		}
+
+		//====================================================================================
+			// 処理ブロック名 : WebSocketSendLoopAsync
+			// 概要           : 送信専用のループタスク。SemaphoreSlim で await 可能な排他制御を行い、
+			//                  WebSocket.State チェックと SendAsync を同一ロックブロック内で実行して
+			//                  TOCTOU (Time-of-Check to Time-of-Use) 競合を防ぐ。
+			//                  ArrayPool バッファを ArraySegment としてそのまま送信し、
+			//                  送信完了後に ReturnFrame で返却（不要なコピーを排除）。
+			//------------------------------------------------------------------------------------
+			// author         : myi
+			// creation date  : 2026/07/27
+			// version        : 2.00 (TOCTOU 対策, ArraySegment 直接送信, SemaphoreSlim 導入)
+		//------------------------------------------------------------------------------------
+			private async Task WebSocketSendLoopAsync(WebSocketSession session)
+			{
+				var ws = session.WebSocket;
+				var token = session.CancellationToken.Token;
+	
+				try
+				{
+					while (!token.IsCancellationRequested)
+					{
+						// フレーム到着を待機（1秒タイムアウト）
+						bool signaled = session.WaitForFrame(1000, token);
+	
+						if (token.IsCancellationRequested) break;
+	
+						// 最新フレームを取得（ArraySegment として直接取得、コピー不要）
+						ArraySegment<byte> frame = session.GetLatestFrame();
+						if (frame.Count > 0)
+						{
+							// SemaphoreSlim で排他制御：State チェックと SendAsync を同一ブロック内で実行
+							// これにより TOCTOU 競合を防ぎ、接続切断時の例外発生を抑制する
+							await session.SendSemaphore.WaitAsync(token);
+							try
+							{
+								if (ws.State != WebSocketState.Open)
+								{
+									// 接続が既に閉じている場合は終了（finallyでフレーム返却）
+									break;
+								}
+	
+								// 送信（State チェックと同一ロック内で実行）
+								await ws.SendAsync(frame, WebSocketMessageType.Binary, true, token);
+							}
+							finally
+							{
+								// 送信完了（または例外発生）後、ArrayPool バッファを返却
+								session.ReturnFrame(frame);
+								session.SendSemaphore.Release();
+							}
+						}
+	
+						// Heartbeat 処理
+						if ((DateTime.UtcNow - session.LastHeartbeat).TotalMilliseconds > WebSocketHeartbeatIntervalMs)
+						{
+							await session.SendSemaphore.WaitAsync(token);
+							try
+							{
+								if (ws.State != WebSocketState.Open) break;
+								await SendHeartbeatAsync(ws, token);
+							}
+							finally
+							{
+								session.SendSemaphore.Release();
+							}
+							session.LastHeartbeat = DateTime.UtcNow;
+						}
+					}
+				}
+				catch (OperationCanceledException) { /* 正常終了 */ }
+				catch (Exception ex)
+				{
+					Console.WriteLine($"RemoteController: WebSocket 送信ループエラー: {ex.Message}");
+				}
+				finally
+				{
+					_webSocketSessions.TryRemove(session.SessionId, out _);
+					session.Dispose();
+				}
+			}
+
+		//====================================================================================
+		// 処理ブロック名 : WebSocketReceiveLoopAsync
+		// 概要           : WebSocket からクライアントの操作イベントを受信するループ。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/27
+		// version        : 1.00
+	//------------------------------------------------------------------------------------
+		private async Task WebSocketReceiveLoopAsync(WebSocketSession session)
+		{
+			var ws = session.WebSocket;
+			var token = session.CancellationToken.Token;
+
+			// バッファプールから受信バッファを割り当て
+			byte[] receiveBuffer = _bufferPool.Rent(4096);
+
+			try
+			{
+				while (!token.IsCancellationRequested && ws.State == WebSocketState.Open)
+				{
+					var result = await ws.ReceiveAsync(
+						new ArraySegment<byte>(receiveBuffer), token);
+
+					if (result.MessageType == WebSocketMessageType.Close)
+					{
+						await ws.CloseAsync(
+							WebSocketCloseStatus.NormalClosure,
+							"Closing", token);
+						break;
+					}
+
+					if (result.MessageType == WebSocketMessageType.Binary
+						|| result.MessageType == WebSocketMessageType.Text)
+					{
+						// 受信データをコピーしてから処理（バッファは再利用されるため）
+						byte[] messageBytes = new byte[result.Count];
+						Array.Copy(receiveBuffer, messageBytes, result.Count);
+						string message = Encoding.UTF8.GetString(messageBytes, 0, result.Count);
+						ProcessWebSocketControlMessage(message);
+					}
+				}
+			}
+			catch (OperationCanceledException) { /* 正常終了 */ }
+			catch (Exception ex)
+			{
+				Console.WriteLine($"RemoteController: WebSocket 受信ループエラー: {ex.Message}");
+			}
+			finally
+			{
+				// 受信バッファを必ず返却
+				_bufferPool.Return(receiveBuffer, clearArray: true);
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : ProcessWebSocketControlMessage
+		// 概要           : WebSocket 経由で受信した制御メッセージを処理します。
+		//                  形式: JSON { "action": "move", "x": 0.5, "y": 0.5 }
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/27
+		// version        : 1.00
+	//------------------------------------------------------------------------------------
+		private void ProcessWebSocketControlMessage(string message)
+		{
+			try
+			{
+				string action = ExtractJsonString(message, "action");
+				string xStr = ExtractJsonString(message, "x");
+				string yStr = ExtractJsonString(message, "y");
+
+				if (action == "move" && double.TryParse(xStr, out double x) && double.TryParse(yStr, out double y))
+				{
+					_cursorX = Math.Max(0, Math.Min(1.0, x));
+					_cursorY = Math.Max(0, Math.Min(1.0, y));
+					TriggerMouseMove();
+				}
+				else if (action == "click")
+				{
+					TriggerMouseClick();
+				}
+				else if (action == "touch_click" && double.TryParse(xStr, out double tx) && double.TryParse(yStr, out double ty))
+				{
+					_cursorX = Math.Max(0, Math.Min(1.0, tx));
+					_cursorY = Math.Max(0, Math.Min(1.0, ty));
+					TriggerMouseClick();
+				}
+				else if (action == "mousedown")
+				{
+					TriggerMouseDown();
+				}
+				else if (action == "mouseup")
+				{
+					TriggerMouseUp();
+				}
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"RemoteController: WebSocket 制御メッセージ処理エラー: {ex.Message}");
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : ExtractJsonString
+		// 概要           : JSON 文字列から指定されたキーの値を抽出します（軽量パース）。
+		//                  エスケープ文字 (\") に対応し、キー名の境界チェックを追加。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/27
+		// version        : 1.00
+	//------------------------------------------------------------------------------------
+		private string ExtractJsonString(string json, string key)
+		{
+			// キー名の境界チェック（例: "action" を検索する際、"faction" と混同しない）
+			string search = $"\"{key}\"";
+			int idx = -1;
+			int pos = 0;
+			while ((pos = json.IndexOf(search, pos)) != -1)
+			{
+				// キー名の前後が { , または空白であれば正当なキー
+				bool leftOk = pos == 0 || json[pos - 1] == '{' || json[pos - 1] == ',';
+				if (leftOk)
+				{
+					idx = pos;
+					break;
+				}
+				pos++;
+			}
+			if (idx == -1) return null;
+
+			// コロンを検索
+			int colonIdx = json.IndexOf(':', idx + search.Length);
+			if (colonIdx == -1) return null;
+
+			// コロン後の空白をスキップ
+			int startIdx = colonIdx + 1;
+			while (startIdx < json.Length && (json[startIdx] == ' ' || json[startIdx] == '\t' || json[startIdx] == '\n' || json[startIdx] == '\r'))
+				startIdx++;
+
+			if (startIdx >= json.Length) return null;
+
+			if (json[startIdx] == '"')
+			{
+				// 文字列値（エスケープ文字対応）
+				var sb = new StringBuilder();
+				int i = startIdx + 1;
+				while (i < json.Length)
+				{
+					if (json[i] == '\\' && i + 1 < json.Length)
+					{
+						// エスケープシーケンス
+						char next = json[i + 1];
+						switch (next)
+						{
+							case '"': sb.Append('"'); i += 2; break;
+							case '\\': sb.Append('\\'); i += 2; break;
+							case '/': sb.Append('/'); i += 2; break;
+							case 'n': sb.Append('\n'); i += 2; break;
+							case 'r': sb.Append('\r'); i += 2; break;
+							case 't': sb.Append('\t'); i += 2; break;
+							case 'b': sb.Append('\b'); i += 2; break;
+							case 'f': sb.Append('\f'); i += 2; break;
+							default: sb.Append(json[i]); i++; break; // 不明なエスケープはそのまま
+						}
+					}
+					else if (json[i] == '"')
+					{
+						// 文字列の終端
+						break;
+					}
+					else
+					{
+						sb.Append(json[i]);
+						i++;
+					}
+				}
+				return sb.ToString();
+			}
+			else
+			{
+				// 数値値・ブール値・null
+				int endIdx = startIdx;
+				while (endIdx < json.Length && json[endIdx] != ',' && json[endIdx] != '}' && json[endIdx] != ' ' && json[endIdx] != '\n' && json[endIdx] != '\r' && json[endIdx] != '\t')
+					endIdx++;
+				return json.Substring(startIdx, endIdx - startIdx);
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : SendHeartbeatAsync
+		// 概要           : WebSocket の Heartbeat (Ping) を送信します。
+		//                  .NET Framework 4.8 の WebSocket は Ping/Pong メッセージをサポートしないため、
+		//                  アプリケーションレベルの Heartbeat として Text メッセージを送信します。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/27
+		// version        : 1.00
+	//------------------------------------------------------------------------------------
+		private async Task SendHeartbeatAsync(System.Net.WebSockets.WebSocket ws, CancellationToken token)
+		{
+			try
+			{
+				// IPC 最適化: 事前構築されたバイト列を使用し、毎回の Encoding.UTF8.GetBytes によるGC負荷を排除
+				await ws.SendAsync(
+					new ArraySegment<byte>(HeartbeatBytes),
+					WebSocketMessageType.Text,
+					true, token);
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"RemoteController: Heartbeat 送信エラー: {ex.Message}");
+			}
 		}
 	}
 }
