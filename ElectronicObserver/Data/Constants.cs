@@ -577,6 +577,10 @@ namespace ElectronicObserver.Data
 					return "夜間熟練搭乗員";
 				case 102:
 					return "航空特別増加食";
+				case 103:
+					return "工廠拡張キー";
+				case 104:
+					return "工廠資源";
 				case 1000:
 					return "(★6)熟練搭乗員";
 				case 1001:
@@ -673,6 +677,102 @@ namespace ElectronicObserver.Data
 					return "(★8～)緊急修理資材";
 				case 1057:
 					return "(★9～)緊急修理資材";
+				case 1060:
+					return "(★6)工廠資源";
+				case 1061:
+					return "(★7)工廠資源";
+				case 1062:
+					return "(★8)工廠資源";
+				case 1063:
+					return "(★9)工廠資源";
+				case 1064:
+					return "(★6～)工廠資源";
+				case 1065:
+					return "(★7～)工廠資源";
+				case 1066:
+					return "(★8～)工廠資源";
+				case 1067:
+					return "(★9～)工廠資源";
+				case 1070:
+					return "(★6)高速建造材";
+				case 1071:
+					return "(★7)高速建造材";
+				case 1072:
+					return "(★8)高速建造材";
+				case 1073:
+					return "(★9)高速建造材";
+				case 1074:
+					return "(★6～)高速建造材";
+				case 1075:
+					return "(★7～)高速建造材";
+				case 1076:
+					return "(★8～)高速建造材";
+				case 1077:
+					return "(★9～)高速建造材";
+				case 1080:
+					return "(★6)新型噴進装備開発資材";
+				case 1081:
+					return "(★7)新型噴進装備開発資材";
+				case 1082:
+					return "(★8)新型噴進装備開発資材";
+				case 1083:
+					return "(★9)新型噴進装備開発資材";
+				case 1084:
+					return "(★6～)新型噴進装備開発資材";
+				case 1085:
+					return "(★7～)新型噴進装備開発資材";
+				case 1086:
+					return "(★8～)新型噴進装備開発資材";
+				case 1087:
+					return "(★9～)新型噴進装備開発資材";
+				case 1090:
+					return "(★6)戦闘糧食";
+				case 1091:
+					return "(★7)戦闘糧食";
+				case 1092:
+					return "(★8)戦闘糧食";
+				case 1093:
+					return "(★9)戦闘糧食";
+				case 1094:
+					return "(★6～)戦闘糧食";
+				case 1095:
+					return "(★7～)戦闘糧食";
+				case 1096:
+					return "(★8～)戦闘糧食";
+				case 1097:
+					return "(★9～)戦闘糧食";
+				case 1100:
+					return "(★6)戦闘糧食(特別なおにぎり)";
+				case 1101:
+					return "(★7)戦闘糧食(特別なおにぎり)";
+				case 1102:
+					return "(★8)戦闘糧食(特別なおにぎり)";
+				case 1103:
+					return "(★9)戦闘糧食(特別なおにぎり)";
+				case 1104:
+					return "(★6～)戦闘糧食(特別なおにぎり)";
+				case 1105:
+					return "(★7～)戦闘糧食(特別なおにぎり)";
+				case 1106:
+					return "(★8～)戦闘糧食(特別なおにぎり)";
+				case 1107:
+					return "(★9～)戦闘糧食(特別なおにぎり)";
+				case 1110:
+					return "(★6)秋刀魚の缶詰";
+				case 1111:
+					return "(★7)秋刀魚の缶詰";
+				case 1112:
+					return "(★8)秋刀魚の缶詰";
+				case 1113:
+					return "(★9)秋刀魚の缶詰";
+				case 1114:
+					return "(★6～)秋刀魚の缶詰";
+				case 1115:
+					return "(★7～)秋刀魚の缶詰";
+				case 1116:
+					return "(★8～)秋刀魚の缶詰";
+				case 1117:
+					return "(★9～)秋刀魚の缶詰";
 				default:
 					return "不明";
 			}

@@ -48,7 +48,7 @@ namespace ElectronicObserver.Utility.Data
 						foreach (var eq in ship.SlotInstance.Where(eq => eq != null))
 						{
 							if (eq != null)
-								sb.AppendFormat(@"""i{0}"":{{""id"":{1},""rf"":{2},""mas"":{3}}},", eqcount.ToString(), eq.EquipmentID, eq.Level, eq.AircraftLevel);
+								sb.AppendFormat(@"""i{0}"":{{""id"":{1},""rf"":{2},""mas"":{3},""ac"":{4}}},", eqcount.ToString(), eq.EquipmentID, eq.Level, eq.AircraftLevel, ship.AircraftMax[eqcount - 1]);
 							eqcount++;
 						}
 						if (ship.IsExpansionSlotAvailable && ship.ExpansionSlotInstance != null)
@@ -160,6 +160,12 @@ namespace ElectronicObserver.Utility.Data
 					string.Join(",", apiExp),
 					ship.ExpansionSlot,
 					(ship.SallyArea >= 0 ? ship.SallyArea : 0));
+				if (ship.Isonslotmax)
+				{
+					var maxs = ship.AircraftMax;
+					var values = string.Join(",", Enumerable.Range(0, 5).Select(i => i < maxs.Count ? maxs[i].ToString() : "0"));
+					sb.AppendFormat(@",""api_onslot_max"":[{0}]", values);
+				}
 				if (ship.SpItemKind > 0)
 				{
 					switch (ship.SpItemKind)

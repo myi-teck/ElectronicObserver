@@ -160,10 +160,10 @@ namespace ElectronicObserver.Data.Quest
 						case 339:
 							Progress = 1;
 							break;
-                        case 340:
-                            Progress = 1;
-                            break;
-                        case 350:
+						case 340:
+							Progress = 1;
+							break;
+						case 350:
 							Progress = 1;
 							break;
 						case 356:
@@ -182,6 +182,12 @@ namespace ElectronicObserver.Data.Quest
 							Progress = 1;
 							break;
 						case 381:
+							Progress = 1;
+							break;
+						case 382:
+							Progress = 1;
+							break;
+						case 383:
 							Progress = 1;
 							break;
 						default:
@@ -205,10 +211,10 @@ namespace ElectronicObserver.Data.Quest
 						case 339:
 							Progress = 2;
 							break;
-                        case 340:
-                            Progress = 2;
-                            break;
-                        case 342:
+						case 340:
+							Progress = 2;
+							break;
+						case 342:
 							Progress = 3;
 							break;
 						case 345:
@@ -269,6 +275,12 @@ namespace ElectronicObserver.Data.Quest
 							Progress = 2;
 							break;
 						case 381:
+							Progress = 2;
+							break;
+						case 382:
+							Progress = 2;
+							break;
+						case 383:
 							Progress = 2;
 							break;
 						case 1138:

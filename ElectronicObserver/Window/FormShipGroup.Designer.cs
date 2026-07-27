@@ -110,6 +110,8 @@
 			this.toolStripSeparator3 = new System.Windows.Forms.ToolStripSeparator();
 			this.MenuMember_CSVOutput = new System.Windows.Forms.ToolStripMenuItem();
 			this.MenuMember_OpenShipAttackDetail = new System.Windows.Forms.ToolStripMenuItem();
+			this.MenuMember_CopyID = new System.Windows.Forms.ToolStripMenuItem();
+			this.MenuMember_CopyName = new System.Windows.Forms.ToolStripMenuItem();
 			this.MenuGroup = new System.Windows.Forms.ContextMenuStrip(this.components);
 			this.MenuGroup_Add = new System.Windows.Forms.ToolStripMenuItem();
 			this.MenuGroup_Copy = new System.Windows.Forms.ToolStripMenuItem();
@@ -124,8 +126,7 @@
 			this.Status_ShipCount = new System.Windows.Forms.ToolStripStatusLabel();
 			this.Status_LevelTotal = new System.Windows.Forms.ToolStripStatusLabel();
 			this.Status_LevelAverage = new System.Windows.Forms.ToolStripStatusLabel();
-			this.MenuMember_CopyName = new System.Windows.Forms.ToolStripMenuItem();
-			this.MenuMember_CopyID = new System.Windows.Forms.ToolStripMenuItem();
+			this.MenuMember_CopyNameReading = new System.Windows.Forms.ToolStripMenuItem();
 			((System.ComponentModel.ISupportInitialize)(this.ShipView)).BeginInit();
 			this.MenuMember.SuspendLayout();
 			this.MenuGroup.SuspendLayout();
@@ -685,9 +686,10 @@
 			this.MenuMember_CSVOutput,
 			this.MenuMember_OpenShipAttackDetail,
 			this.MenuMember_CopyID,
-			this.MenuMember_CopyName});
+			this.MenuMember_CopyName,
+			this.MenuMember_CopyNameReading});
 			this.MenuMember.Name = "MenuMember";
-			this.MenuMember.Size = new System.Drawing.Size(216, 258);
+			this.MenuMember.Size = new System.Drawing.Size(216, 280);
 			this.MenuMember.Opening += new System.ComponentModel.CancelEventHandler(this.MenuMember_Opening);
 			// 
 			// MenuMember_AddToGroup
@@ -756,21 +758,19 @@
 			this.MenuMember_OpenShipAttackDetail.Text = "攻撃詳細を開く(&I)";
 			this.MenuMember_OpenShipAttackDetail.Click += new System.EventHandler(this.MenuMember_OpenShipAttackDetail_Click);
 			// 
-			// MenuMember_CopyName
-			// 
-			this.MenuMember_CopyName.Name = "MenuMember_CopyName";
-			this.MenuMember_CopyName.Size = new System.Drawing.Size(215, 22);
-			this.MenuMember_CopyName.Text = "艦娘名をコピー";
-			this.MenuMember_CopyName.Click += new System.EventHandler(this.MenuMember_CopyName_Click);
-			this.MenuMember_CopyName.Visible = false;
-			// 
 			// MenuMember_CopyID
 			// 
 			this.MenuMember_CopyID.Name = "MenuMember_CopyID";
 			this.MenuMember_CopyID.Size = new System.Drawing.Size(215, 22);
 			this.MenuMember_CopyID.Text = "個人IDをコピー";
 			this.MenuMember_CopyID.Click += new System.EventHandler(this.MenuMember_CopyID_Click);
-			this.MenuMember_CopyID.Visible = false;
+			// 
+			// MenuMember_CopyName
+			// 
+			this.MenuMember_CopyName.Name = "MenuMember_CopyName";
+			this.MenuMember_CopyName.Size = new System.Drawing.Size(215, 22);
+			this.MenuMember_CopyName.Text = "艦娘名をコピー";
+			this.MenuMember_CopyName.Click += new System.EventHandler(this.MenuMember_CopyName_Click);
 			// 
 			// MenuGroup
 			// 
@@ -902,6 +902,13 @@
 			this.Status_LevelAverage.Name = "Status_LevelAverage";
 			this.Status_LevelAverage.Size = new System.Drawing.Size(0, 17);
 			// 
+			// MenuMember_CopyNameReading
+			// 
+			this.MenuMember_CopyNameReading.Name = "MenuMember_CopyNameReading";
+			this.MenuMember_CopyNameReading.Size = new System.Drawing.Size(215, 22);
+			this.MenuMember_CopyNameReading.Text = "読み名をコピー";
+			this.MenuMember_CopyNameReading.Click += new System.EventHandler(this.MenuMember_CopyNameReading_Click);
+			// 
 			// FormShipGroup
 			// 
 			this.AutoHidePortion = 150D;
@@ -1020,5 +1027,6 @@
 		private System.Windows.Forms.DataGridViewTextBoxColumn ShipView_NightBattlePower;
 		private System.Windows.Forms.DataGridViewTextBoxColumn ShipView_Locked;
 		private System.Windows.Forms.DataGridViewTextBoxColumn ShipView_SallyArea;
+		private System.Windows.Forms.ToolStripMenuItem MenuMember_CopyNameReading;
 	}
 }
