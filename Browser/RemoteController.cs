@@ -84,6 +84,13 @@ namespace Browser
 		/// </summary>
 		private readonly object _passwordLock = new object();
 
+		// 2026/07/26 myi 新規作成（HUDデータ更新のロックオブジェクト）
+		/// <summary>
+		/// UpdateHudData と SendHudData 間のHUDキャッシュ（_cachedHudJson, 各バージョン）への
+		/// 読み書きを排他制御するためのロックオブジェクト。
+		/// </summary>
+		private readonly object _hudLock = new object();
+
 		// 2026/07/22 myi 新規作成（ブルートフォース対策：IPアドレスごとのログイン失敗追跡）
 		private readonly ConcurrentDictionary<string, (int count, DateTime lastAttempt)> _loginAttempts = new ConcurrentDictionary<string, (int count, DateTime lastAttempt)>();
 		private const int MaxLoginAttempts = 5;
@@ -252,15 +259,18 @@ namespace Browser
 		/// </summary>
 		public void UpdateHudData(string hudJson)
 		{
-			_cachedHudJson = hudJson;
+			lock (_hudLock)
+			{
+				_cachedHudJson = hudJson;
 
-			// 各セクションの抽出と個別バージョン更新チェック
-			UpdateSectionVersion(hudJson, "material", ref _lastMaterialJson, ref _materialVersion);
-			UpdateSectionVersion(hudJson, "fleets", ref _lastFleetsJson, ref _fleetsVersion);
-			UpdateSectionVersion(hudJson, "battle", ref _lastBattleJson, ref _battleVersion);
-			UpdateSectionVersion(hudJson, "combat", ref _lastCombatJson, ref _combatVersion);
-			UpdateSectionVersion(hudJson, "quests", ref _lastQuestsJson, ref _questsVersion);
-			UpdateSectionVersion(hudJson, "logs", ref _lastLogsJson, ref _logsVersion);
+				// 各セクションの抽出と個別バージョン更新チェック
+				UpdateSectionVersion(hudJson, "material", ref _lastMaterialJson, ref _materialVersion);
+				UpdateSectionVersion(hudJson, "fleets", ref _lastFleetsJson, ref _fleetsVersion);
+				UpdateSectionVersion(hudJson, "battle", ref _lastBattleJson, ref _battleVersion);
+				UpdateSectionVersion(hudJson, "combat", ref _lastCombatJson, ref _combatVersion);
+				UpdateSectionVersion(hudJson, "quests", ref _lastQuestsJson, ref _questsVersion);
+				UpdateSectionVersion(hudJson, "logs", ref _lastLogsJson, ref _logsVersion);
+			}
 		}
 
 		/// <summary>
@@ -1518,62 +1528,84 @@ namespace Browser
 				string jsonResponse;
 
 				// キャッシュされた実データが存在する場合は、各ブロックごとの差分データJSONを動的に構築して返却します
-				if (!string.IsNullOrEmpty(_cachedHudJson))
+				// スレッドセーフのために lock で囲む
+				string cachedHudJson;
+				string lastMaterialJson, lastFleetsJson, lastBattleJson, lastCombatJson, lastQuestsJson, lastLogsJson;
+				long materialVersion, fleetsVersion, battleVersion, combatVersion, questsVersion, logsVersion;
+
+				lock (_hudLock)
+				{
+					cachedHudJson = _cachedHudJson;
+					lastMaterialJson = _lastMaterialJson;
+					lastFleetsJson = _lastFleetsJson;
+					lastBattleJson = _lastBattleJson;
+					lastCombatJson = _lastCombatJson;
+					lastQuestsJson = _lastQuestsJson;
+					lastLogsJson = _lastLogsJson;
+					materialVersion = _materialVersion;
+					fleetsVersion = _fleetsVersion;
+					battleVersion = _battleVersion;
+					combatVersion = _combatVersion;
+					questsVersion = _questsVersion;
+					logsVersion = _logsVersion;
+				}
+
+				if (!string.IsNullOrEmpty(cachedHudJson))
 				{
 					var sb = new StringBuilder();
 					sb.Append("{");
 
 					// 1. material（資源）
-					sb.Append("\"material\":{\"changed\":").Append(clientMaterialVer != _materialVersion ? "true" : "false");
-					sb.Append(",\"version\":").Append(_materialVersion);
-					if (clientMaterialVer != _materialVersion && _lastMaterialJson != null)
+					sb.Append("\"material\":{\"changed\":").Append(clientMaterialVer != materialVersion ? "true" : "false");
+					sb.Append(",\"version\":").Append(materialVersion);
+					if (clientMaterialVer != materialVersion && lastMaterialJson != null)
 					{
-						sb.Append(",\"data\":").Append(_lastMaterialJson);
+						sb.Append(",\"data\":").Append(lastMaterialJson);
 					}
 					sb.Append("},");
 
 					// 2. fleets（艦隊）
-					sb.Append("\"fleets\":{\"changed\":").Append(clientFleetsVer != _fleetsVersion ? "true" : "false");
-					sb.Append(",\"version\":").Append(_fleetsVersion);
-					if (clientFleetsVer != _fleetsVersion && _lastFleetsJson != null)
+					sb.Append("\"fleets\":{\"changed\":").Append(clientFleetsVer != fleetsVersion ? "true" : "false");
+					sb.Append(",\"version\":").Append(fleetsVersion);
+					if (clientFleetsVer != fleetsVersion && lastFleetsJson != null)
 					{
-						sb.Append(",\"data\":").Append(_lastFleetsJson);
+						sb.Append(",\"data\":").Append(lastFleetsJson);
 					}
 					sb.Append("},");
 
 					// 3. battle（作戦）
-					sb.Append("\"battle\":{\"changed\":").Append(clientBattleVer != _battleVersion ? "true" : "false");
-					sb.Append(",\"version\":").Append(_battleVersion);
-					if (clientBattleVer != _battleVersion && _lastBattleJson != null)
+					sb.Append("\"battle\":{\"changed\":").Append(clientBattleVer != battleVersion ? "true" : "false");
+					sb.Append(",\"version\":").Append(battleVersion);
+					if (clientBattleVer != battleVersion && lastBattleJson != null)
 					{
-						sb.Append(",\"data\":").Append(_lastBattleJson);
+						sb.Append(",\"data\":").Append(lastBattleJson);
 					}
 					sb.Append("},");
 
 					// 4. combat（戦闘）
-					sb.Append("\"combat\":{\"changed\":").Append(clientCombatVer != _combatVersion ? "true" : "false");
-					sb.Append(",\"version\":").Append(_combatVersion);
-					if (clientCombatVer != _combatVersion && _lastCombatJson != null)
+					sb.Append("\"combat\":{\"changed\":").Append(clientCombatVer != combatVersion ? "true" : "false");
+					sb.Append(",\"version\":").Append(combatVersion);
+					if (clientCombatVer != combatVersion && lastCombatJson != null)
 					{
-						sb.Append(",\"data\":").Append(_lastCombatJson);
+						sb.Append(",\"data\":").Append(lastCombatJson);
 					}
 					sb.Append("},");
 
 					// 5. quests（任務）
-					sb.Append("\"quests\":{\"changed\":").Append(clientQuestsVer != _questsVersion ? "true" : "false");
-					sb.Append(",\"version\":").Append(_questsVersion);
-					if (clientQuestsVer != _questsVersion && _lastQuestsJson != null)
+					sb.Append("\"quests\":{\"changed\":").Append(clientQuestsVer != questsVersion ? "true" : "false");
+					sb.Append(",\"version\":").Append(questsVersion);
+					if (clientQuestsVer != questsVersion && lastQuestsJson != null)
 					{
-						sb.Append(",\"data\":").Append(_lastQuestsJson);
+						sb.Append(",\"data\":").Append(lastQuestsJson);
 					}
 					sb.Append("},");
 
 					// 6. logs（ログ）
-					sb.Append("\"logs\":{\"changed\":").Append(clientLogsVer != _logsVersion ? "true" : "false");
-					sb.Append(",\"version\":").Append(_logsVersion);
-					if (clientLogsVer != _logsVersion && _lastLogsJson != null)
+					sb.Append("\"logs\":{\"changed\":").Append(clientLogsVer != logsVersion ? "true" : "false");
+					sb.Append(",\"version\":").Append(logsVersion);
+					if (clientLogsVer != logsVersion && lastLogsJson != null)
 					{
-						sb.Append(",\"data\":").Append(_lastLogsJson);
+						sb.Append(",\"data\":").Append(lastLogsJson);
 					}
 					sb.Append("}");
 

@@ -412,7 +412,20 @@ namespace Browser
 
 		internal ChromiumWebBrowser Browser = null;
 
-		private RemoteController _remoteController;
+		private volatile RemoteController _remoteController;
+
+		// 2026/07/26 myi 新規作成（RemoteController 初期化前のHUDデータバッファ）
+		/// <summary>
+		/// _remoteController が null の間に到着したHUDデータをバッファリングします。
+		/// _remoteController が初期化された後にフラッシュされます。
+		/// </summary>
+		private string _bufferedHudJson = null;
+
+		// 2026/07/26 myi 新規作成（HUDデータバッファの同期用ロック）
+		/// <summary>
+		/// _bufferedHudJson へのアクセスを同期するためのロックオブジェクトです。
+		/// </summary>
+		private readonly object _hudBufferLock = new object();
 
 		private string ProxySettings = null;
 	
@@ -587,8 +600,22 @@ namespace Browser
 			}
 			string password = Configuration.RemoteControllerPassword;
 
-			_remoteController = new RemoteController(this, port, address, password);
-			_remoteController.Start();
+			// 2026/07/26 myi 変更（レースコンディション修正：生成〜フラッシュを同一ロック内に収めた）
+			// RemoteController の初期化直後に UpdateHudData が呼ばれた場合に
+			// データの更新順序が逆転するリスクを回避するため、
+			// インスタンス生成からバッファフラッシュまでを同一のロックブロック内に含める。
+			lock (_hudBufferLock)
+			{
+				_remoteController = new RemoteController(this, port, address, password);
+				_remoteController.Start();
+
+				// RemoteController 初期化前に到着したHUDデータをフラッシュする
+				if (_bufferedHudJson != null)
+				{
+					_remoteController.UpdateHudData(_bufferedHudJson);
+					_bufferedHudJson = null;
+				}
+			}
 		}
 
 
@@ -1206,7 +1233,24 @@ namespace Browser
 		/// </summary>
 		public void UpdateHudData(string hudJson)
 		{
-			_remoteController?.UpdateHudData(hudJson);
+			lock (_hudBufferLock)
+			{
+				if (_remoteController == null)
+				{
+					_bufferedHudJson = hudJson;
+					return;
+				}
+
+				// 1. バッファにある古いデータを先に送信
+				if (_bufferedHudJson != null)
+				{
+					_remoteController.UpdateHudData(_bufferedHudJson);
+					_bufferedHudJson = null;
+				}
+
+				// 2. 最新データを送信して上書きする（ロック内に含める）
+				_remoteController.UpdateHudData(hudJson);
+			}
 		}
 
 		private void Browser_FrameLoadEnd(object sender, FrameLoadEndEventArgs e)
