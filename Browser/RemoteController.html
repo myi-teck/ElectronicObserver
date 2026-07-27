@@ -4432,6 +4432,9 @@
 
         // トラックパッド操作 (ポインタ移動による相対移動量を絶対割合座標へと変換して送信します)
         pad.addEventListener('pointermove', e => {
+            // [FIX] ボタンを押していない状態では仮想ポインタを移動しない
+            if (e.buttons === 0) return;
+
             // 動的FPS制御：操作検出でタイムスタンプを更新（アクティブ状態に復帰）
             const isSlowFpsMode = (Date.now() - lastOperationTime) >= ACTIVE_TIMEOUT;
             lastOperationTime = Date.now();
