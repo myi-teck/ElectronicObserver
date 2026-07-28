@@ -2678,7 +2678,10 @@
             },
 
             attemptWebSocket() {
-                const wsUrl = `ws://${location.hostname}:${location.port}/ws`;
+                const portStr = location.port ? ':' + location.port : '';
+                const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${location.hostname}${portStr}/ws`;
+                console.log('[ProtocolManager] WebSocket 接続試行中:', wsUrl);
                 try {
                     this.wsConnection = new WebSocket(wsUrl);
                 } catch (e) {
@@ -2695,11 +2698,12 @@
                 this.wsConnection.binaryType = 'arraybuffer';
 
                 this.wsConnection.onopen = () => {
-                    console.log('[ProtocolManager] WebSocket connected');
+                    console.log('[ProtocolManager] WebSocket connected successfully:', wsUrl);
                     this.wsReconnectAttempts = 0;
                     this.effectiveMode = 'ws';
                     this.updateConnStatus('WS', true);
-                    // キーフレーム要求
+                    // キーフレーム要求（初期画面の取得）
+                    console.log('[ProtocolManager] init キーフレーム要求を送信します');
                     this.sendWsControl({ action: 'init' });
                     // Heartbeat タイマー起動
                     this.startHeartbeat();

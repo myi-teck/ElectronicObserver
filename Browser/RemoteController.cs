@@ -112,12 +112,9 @@ namespace Browser
 		//------------------------------------------------------------------------------------
 		// 2026/07/27 新規作成（EvaluateScriptAsync 用スクリプトの事前構築：GC 負荷削減）
 		// 高頻度呼び出し（10FPS）の CaptureCanvasAsync で使用するスクリプトを
-		// 定数として事前定義し、呼び出し毎の文字列生成によるGC負荷を排除する。
-		private const string CaptureScriptTemplate = @"(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.pull({0});}})()";
-
-		// 事前構築した2つのバリアントを使用（string.Format は静的フィールド初期化により実行時にゼロコスト）
-		private static readonly string CaptureScriptInit = string.Format(CaptureScriptTemplate, "true");
-		private static readonly string CaptureScriptNormal = string.Format(CaptureScriptTemplate, "false");
+		// 定数として事前定義し、呼び出し毎の文字列生成によるGC負荷および FormatException を排除する。
+		private const string CaptureScriptInit = "(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.pull(true);}})()";
+		private const string CaptureScriptNormal = "(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.pull(false);}})()";
 
 		// 2026/07/27 新規作成（set_quality アクション用スクリプトの事前構築）
 		// 動的な品質値のみを連結し、固定部分は定数として事前定義する。
@@ -520,6 +517,19 @@ namespace Browser
 		}
 
 		/// <summary>
+		/// メインプロセスのログ機能（AddLog）へログメッセージを安全に転送・記録します。
+		/// </summary>
+		private void Log(int priority, string message)
+		{
+			try
+			{
+				Console.WriteLine(message);
+				_parent?.AddLog(priority, message);
+			}
+			catch { }
+		}
+
+		/// <summary>
 		/// 2026/06/10 myi 新規作成（リッスンアドレスパラメータの追加）
 		/// 2026/07/14 myi 変更（パスワードパラメータの追加）
 		/// </summary>
@@ -537,6 +547,8 @@ namespace Browser
 		public void Start()
 		{
 			if (_isRunning) return;
+
+			Log(2, $"[RemoteController] Start() 呼び出し: Address={_address}, Port={_port}");
 
 			// エラーメッセージのnetsh案内用コマンドリスト
 			var netshCommands = new List<string>();
@@ -590,11 +602,35 @@ namespace Browser
 
 				_listener.Start();
 				_isRunning = true;
+				Log(2, $"[RemoteController] 遠隔操作サーバーが正常に起動しました: http://{_address}:{_port}/");
 
 				Task.Run(() => ListenLoop());
 			}
 			catch (Exception ex)
 			{
+				Log(3, $"[RemoteController] 指定アドレス '{_address}:{_port}' での HttpListener 起動失敗: {ex.Message}");
+
+				// ワイルドカード/特定アドレス指定での起動失敗時、まず localhost/127.0.0.1 への自動フォールバックを試行
+				try
+				{
+					Log(2, $"[RemoteController] http://localhost:{_port}/ へのフォールバック起動を試みます...");
+					var fallbackListener = new HttpListener();
+					fallbackListener.Prefixes.Add($"http://localhost:{_port}/");
+					fallbackListener.Prefixes.Add($"http://127.0.0.1:{_port}/");
+					fallbackListener.Start();
+
+					_listener = fallbackListener;
+					_isRunning = true;
+					Log(2, $"[RemoteController] localhost フォールバック起動に成功しました (http://localhost:{_port}/)");
+
+					Task.Run(() => ListenLoop());
+					return;
+				}
+				catch (Exception fallbackEx)
+				{
+					Log(3, $"[RemoteController] localhost フォールバック起動も失敗しました: {fallbackEx.Message}");
+				}
+
 				// 2026/06/10 myi 新規作成（[::]使用時のエラー原因についての親切な案内文生成）
 				string errorNotice = "";
 				if (ex.Message.Contains("サポートされていません") && 
@@ -2085,19 +2121,22 @@ namespace Browser
 		// 処理ブロック名 : HandleWebSocketAsync
 		// 概要           : WebSocket アップグレード要求を処理し、バイナリストリーミングを開始します。
 		//                  キャプチャタスクと送信タスクを分離し、SendAsyncのawaitによる遅延蓄積を防ぎます。
+		//                  例外発生時は Abort() により確実にソケットリソースを破棄します。
 		//------------------------------------------------------------------------------------
 		// author         : myi
 		// creation date  : 2026/07/27
-		// version        : 1.00
-	//------------------------------------------------------------------------------------
+		// version        : 2.00 (WebSocket.Abort 導入, 例外ハンドリング強化)
+		//------------------------------------------------------------------------------------
 		private async Task HandleWebSocketAsync(HttpListenerContext context)
 		{
 			var req = context.Request;
 			var res = context.Response;
+			System.Net.WebSockets.WebSocket ws = null;
 
 			// 認証チェック
 			if (!IsAuthenticated(req, res))
 			{
+				Log(2, $"[RemoteController] WebSocket 接続拒否: 未認証 (IP: {req.RemoteEndPoint})");
 				res.StatusCode = 401;
 				res.Close();
 				return;
@@ -2107,28 +2146,31 @@ namespace Browser
 			{
 				// WebSocket アップグレード
 				var acceptResult = await context.AcceptWebSocketAsync(null);
-				var ws = acceptResult.WebSocket;
+				ws = acceptResult.WebSocket;
 
 				// セッションIDを生成（クッキーから取得、または新規発行）
 				string sessionId = GetCookieValue(req, "session_id") ?? Guid.NewGuid().ToString("N");
 				if (string.IsNullOrEmpty(GetCookieValue(req, "session_id")))
 				{
-					// セッションを発行してクッキーを設定
 					_sessions.TryAdd(sessionId, new SessionInfo(sessionId));
 				}
 
 				var session = new WebSocketSession(ws, sessionId);
-					_webSocketSessions.TryAdd(sessionId, session);
-	
-					// 3つの独立タスクを開始（キャプチャ / 送信 / 受信）
-					// タスクをセッションに保持し、Dispose 時に適切にクリーンアップ可能にする
-					session.CaptureTask = Task.Run(() => WebSocketCaptureLoopAsync(session));
-					session.SendTask = Task.Run(() => WebSocketSendLoopAsync(session));
-					session.ReceiveTask = Task.Run(() => WebSocketReceiveLoopAsync(session));
+				_webSocketSessions.TryAdd(sessionId, session);
+
+				Log(2, $"[RemoteController] WebSocket 接続確立: SessionID={sessionId}, IP={req.RemoteEndPoint}");
+
+				// 3つの独立タスクを開始（キャプチャ / 送信 / 受信）
+				session.CaptureTask = Task.Run(() => WebSocketCaptureLoopAsync(session));
+				session.SendTask = Task.Run(() => WebSocketSendLoopAsync(session));
+				session.ReceiveTask = Task.Run(() => WebSocketReceiveLoopAsync(session));
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"RemoteController: WebSocket アップグレードエラー: {ex.Message}");
+				Log(3, $"[RemoteController] WebSocket アップグレードエラー (IP: {req.RemoteEndPoint}): {ex.GetType().Name} - {ex.Message}");
+				
+				// リソースリーク防止のため強制的にソケットを破棄
+				try { ws?.Abort(); } catch { }
 				try { res.StatusCode = 500; res.Close(); } catch { }
 			}
 		}
@@ -2142,7 +2184,7 @@ namespace Browser
 		// author         : myi
 		// creation date  : 2026/07/27
 		// version        : 1.00
-	//------------------------------------------------------------------------------------
+		//------------------------------------------------------------------------------------
 		private async Task WebSocketCaptureLoopAsync(WebSocketSession session)
 		{
 			var token = session.CancellationToken.Token;
@@ -2168,97 +2210,99 @@ namespace Browser
 					}
 					// type == "none" の場合は差分なしなので何もしない
 
-					// FPS 制御（100ms = 10FPS）
-					await Task.Delay(100, token);
+					// 動的 FPS 制御（画面変化時は 16ms ≒ 最大60FPS、静止時は 50ms 待機でCPU・通信負荷を最小化）
+					int delayMs = (type == "full") ? 16 : 50;
+					await Task.Delay(delayMs, token);
 				}
 			}
 			catch (OperationCanceledException) { /* 正常終了 */ }
 			catch (Exception ex)
 			{
-				Console.WriteLine($"RemoteController: WebSocket キャプチャループエラー: {ex.Message}");
+				Log(3, $"[RemoteController] WebSocket キャプチャループエラー (Session: {session.SessionId}): {ex.Message}");
 			}
 		}
 
 		//====================================================================================
-			// 処理ブロック名 : WebSocketSendLoopAsync
-			// 概要           : 送信専用のループタスク。SemaphoreSlim で await 可能な排他制御を行い、
-			//                  WebSocket.State チェックと SendAsync を同一ロックブロック内で実行して
-			//                  TOCTOU (Time-of-Check to Time-of-Use) 競合を防ぐ。
-			//                  ArrayPool バッファを ArraySegment としてそのまま送信し、
-			//                  送信完了後に ReturnFrame で返却（不要なコピーを排除）。
-			//------------------------------------------------------------------------------------
-			// author         : myi
-			// creation date  : 2026/07/27
-			// version        : 2.00 (TOCTOU 対策, ArraySegment 直接送信, SemaphoreSlim 導入)
+		// 処理ブロック名 : WebSocketSendLoopAsync
+		// 概要           : 送信専用のループタスク。SemaphoreSlim で await 可能な排他制御を行い、
+		//                  WebSocket.State チェックと SendAsync を同一ロックブロック内で実行して
+		//                  TOCTOU (Time-of-Check to Time-of-Use) 競合を防ぐ。
+		//                  ArrayPool バッファを ArraySegment としてそのまま送信し、
+		//                  送信完了後に ReturnFrame で返却（不要なコピーを排除）。
 		//------------------------------------------------------------------------------------
-			private async Task WebSocketSendLoopAsync(WebSocketSession session)
+		// author         : myi
+		// creation date  : 2026/07/27
+		// version        : 2.00 (TOCTOU 対策, ArraySegment 直接送信, SemaphoreSlim 導入)
+		//------------------------------------------------------------------------------------
+		private async Task WebSocketSendLoopAsync(WebSocketSession session)
+		{
+			var ws = session.WebSocket;
+			var token = session.CancellationToken.Token;
+
+			try
 			{
-				var ws = session.WebSocket;
-				var token = session.CancellationToken.Token;
-	
-				try
+				while (!token.IsCancellationRequested)
 				{
-					while (!token.IsCancellationRequested)
+					// フレーム到着を待機（1秒タイムアウト）
+					bool signaled = session.WaitForFrame(1000, token);
+
+					if (token.IsCancellationRequested) break;
+
+					// 最新フレームを取得（ArraySegment として直接取得、コピー不要）
+					ArraySegment<byte> frame = session.GetLatestFrame();
+					if (frame.Count > 0)
 					{
-						// フレーム到着を待機（1秒タイムアウト）
-						bool signaled = session.WaitForFrame(1000, token);
-	
-						if (token.IsCancellationRequested) break;
-	
-						// 最新フレームを取得（ArraySegment として直接取得、コピー不要）
-						ArraySegment<byte> frame = session.GetLatestFrame();
-						if (frame.Count > 0)
+						// SemaphoreSlim で排他制御：State チェックと SendAsync を同一ブロック内で実行
+						// これにより TOCTOU 競合を防ぎ、接続切断時の例外発生を抑制する
+						await session.SendSemaphore.WaitAsync(token);
+						try
 						{
-							// SemaphoreSlim で排他制御：State チェックと SendAsync を同一ブロック内で実行
-							// これにより TOCTOU 競合を防ぎ、接続切断時の例外発生を抑制する
-							await session.SendSemaphore.WaitAsync(token);
-							try
+							if (ws.State != WebSocketState.Open)
 							{
-								if (ws.State != WebSocketState.Open)
-								{
-									// 接続が既に閉じている場合は終了（finallyでフレーム返却）
-									break;
-								}
-	
-								// 送信（State チェックと同一ロック内で実行）
-								await ws.SendAsync(frame, WebSocketMessageType.Binary, true, token);
+								// 接続が既に閉じている場合は終了（finallyでフレーム返却）
+								break;
 							}
-							finally
-							{
-								// 送信完了（または例外発生）後、ArrayPool バッファを返却
-								session.ReturnFrame(frame);
-								session.SendSemaphore.Release();
-							}
+
+							// 送信（State チェックと同一ロック内で実行）
+							await ws.SendAsync(frame, WebSocketMessageType.Binary, true, token);
 						}
-	
-						// Heartbeat 処理
-						if ((DateTime.UtcNow - session.LastHeartbeat).TotalMilliseconds > WebSocketHeartbeatIntervalMs)
+						finally
 						{
-							await session.SendSemaphore.WaitAsync(token);
-							try
-							{
-								if (ws.State != WebSocketState.Open) break;
-								await SendHeartbeatAsync(ws, token);
-							}
-							finally
-							{
-								session.SendSemaphore.Release();
-							}
-							session.LastHeartbeat = DateTime.UtcNow;
+							// 送信完了（または例外発生）後、ArrayPool バッファを返却
+							session.ReturnFrame(frame);
+							session.SendSemaphore.Release();
 						}
 					}
-				}
-				catch (OperationCanceledException) { /* 正常終了 */ }
-				catch (Exception ex)
-				{
-					Console.WriteLine($"RemoteController: WebSocket 送信ループエラー: {ex.Message}");
-				}
-				finally
-				{
-					_webSocketSessions.TryRemove(session.SessionId, out _);
-					session.Dispose();
+
+					// Heartbeat 処理
+					if ((DateTime.UtcNow - session.LastHeartbeat).TotalMilliseconds > WebSocketHeartbeatIntervalMs)
+					{
+						await session.SendSemaphore.WaitAsync(token);
+						try
+						{
+							if (ws.State != WebSocketState.Open) break;
+							await SendHeartbeatAsync(ws, token);
+						}
+						finally
+						{
+							session.SendSemaphore.Release();
+						}
+						session.LastHeartbeat = DateTime.UtcNow;
+					}
 				}
 			}
+			catch (OperationCanceledException) { /* 正常終了 */ }
+			catch (Exception ex)
+			{
+				Log(3, $"[RemoteController] WebSocket 送信ループエラー (Session: {session.SessionId}): {ex.Message}");
+			}
+			finally
+			{
+				Log(2, $"[RemoteController] WebSocket 送信ループ終了: SessionID={session.SessionId}");
+				_webSocketSessions.TryRemove(session.SessionId, out _);
+				session.Dispose();
+			}
+		}
 
 		//====================================================================================
 		// 処理ブロック名 : WebSocketReceiveLoopAsync
@@ -2267,7 +2311,7 @@ namespace Browser
 		// author         : myi
 		// creation date  : 2026/07/27
 		// version        : 1.00
-	//------------------------------------------------------------------------------------
+		//------------------------------------------------------------------------------------
 		private async Task WebSocketReceiveLoopAsync(WebSocketSession session)
 		{
 			var ws = session.WebSocket;
@@ -2285,6 +2329,7 @@ namespace Browser
 
 					if (result.MessageType == WebSocketMessageType.Close)
 					{
+						Log(2, $"[RemoteController] WebSocket 切断リクエスト受信: SessionID={session.SessionId}");
 						await ws.CloseAsync(
 							WebSocketCloseStatus.NormalClosure,
 							"Closing", token);
@@ -2298,14 +2343,14 @@ namespace Browser
 						byte[] messageBytes = new byte[result.Count];
 						Array.Copy(receiveBuffer, messageBytes, result.Count);
 						string message = Encoding.UTF8.GetString(messageBytes, 0, result.Count);
-						ProcessWebSocketControlMessage(message);
+						ProcessWebSocketControlMessage(session, message);
 					}
 				}
 			}
 			catch (OperationCanceledException) { /* 正常終了 */ }
 			catch (Exception ex)
 			{
-				Console.WriteLine($"RemoteController: WebSocket 受信ループエラー: {ex.Message}");
+				Log(3, $"[RemoteController] WebSocket 受信ループエラー (Session: {session.SessionId}): {ex.Message}");
 			}
 			finally
 			{
@@ -2317,13 +2362,13 @@ namespace Browser
 		//====================================================================================
 		// 処理ブロック名 : ProcessWebSocketControlMessage
 		// 概要           : WebSocket 経由で受信した制御メッセージを処理します。
-		//                  形式: JSON { "action": "move", "x": 0.5, "y": 0.5 }
+		//                  形式: JSON { "action": "init" }, { "action": "move", "x": 0.5, "y": 0.5 }
 		//------------------------------------------------------------------------------------
 		// author         : myi
 		// creation date  : 2026/07/27
-		// version        : 1.00
-	//------------------------------------------------------------------------------------
-		private void ProcessWebSocketControlMessage(string message)
+		// version        : 2.00 (action == "init" 初期画面キーフレーム要求対応)
+		//------------------------------------------------------------------------------------
+		private void ProcessWebSocketControlMessage(WebSocketSession session, string message)
 		{
 			try
 			{
@@ -2331,7 +2376,31 @@ namespace Browser
 				string xStr = ExtractJsonString(message, "x");
 				string yStr = ExtractJsonString(message, "y");
 
-				if (action == "move" && double.TryParse(xStr, out double x) && double.TryParse(yStr, out double y))
+				if (action == "init")
+				{
+					Log(2, $"[RemoteController] WebSocket init 要求を受領: 初期化フルフレームを生成します (Session: {session.SessionId})");
+					Task.Run(async () =>
+					{
+						try
+						{
+							var capture = await CaptureCanvasAsync(true); // isInit = true
+							if (capture.Item1 == "full" && !string.IsNullOrEmpty(capture.Item2))
+							{
+								byte[] webpData = ConvertToBytes(capture.Item2, "data:image/webp");
+								if (webpData != null && webpData.Length > 0)
+								{
+									session.SetLatestFrame(webpData);
+									Log(2, $"[RemoteController] WebSocket init フルフレーム生成成功 ({webpData.Length} bytes)");
+								}
+							}
+						}
+						catch (Exception ex)
+						{
+							Log(3, $"[RemoteController] WebSocket init キャプチャエラー: {ex.Message}");
+						}
+					});
+				}
+				else if (action == "move" && double.TryParse(xStr, out double x) && double.TryParse(yStr, out double y))
 				{
 					_cursorX = Math.Max(0, Math.Min(1.0, x));
 					_cursorY = Math.Max(0, Math.Min(1.0, y));
@@ -2358,7 +2427,7 @@ namespace Browser
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"RemoteController: WebSocket 制御メッセージ処理エラー: {ex.Message}");
+				Log(3, $"[RemoteController] WebSocket 制御メッセージ処理エラー: {ex.Message}");
 			}
 		}
 

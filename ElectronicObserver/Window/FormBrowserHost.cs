@@ -112,6 +112,7 @@ namespace ElectronicObserver.Window
 		/// 初期化ステージカウント
 		/// 完了したらログインページを開く (各処理が終わらないと正常にロードできないため)
 		/// </summary>
+		private bool _hasNavigatedToLogInPage = false;
 		private InitializationStageFlag _initializationStage = 0;
 		private InitializationStageFlag InitializationStage
 		{
@@ -121,8 +122,10 @@ namespace ElectronicObserver.Window
 				DebugLog($"InitializationStage changing from {_initializationStage} -> {value}");
 				if (_initializationStage != InitializationStageFlag.Completed && value == InitializationStageFlag.Completed)
 				{
-					if (Utility.Configuration.Config.FormBrowser.IsEnabled)
+					if (Utility.Configuration.Config.FormBrowser.IsEnabled && !_hasNavigatedToLogInPage)
 					{
+						_hasNavigatedToLogInPage = true;
+						DebugLog("InitializationStage Completed: 初回ログインページナビゲーションを実行します。");
 						NavigateToLogInPage();
 					}
 				}
@@ -263,6 +266,7 @@ namespace ElectronicObserver.Window
 
 		public void AddLog(int priority, string message)
 		{
+			DebugLog($"[AddLog:{priority}] {message}");
 			Utility.Logger.Add(priority, message);
 		}
 
@@ -351,41 +355,62 @@ namespace ElectronicObserver.Window
 
 		public void GetIconResource()
 		{
-
-			string[] keys = new string[] {
-				"Browser_ScreenShot",
-				"Browser_Zoom",
-				"Browser_ZoomIn",
-				"Browser_ZoomOut",
-				"Browser_Unmute",
-				"Browser_Mute",
-				"Browser_Refresh",
-				"Browser_Navigate",
-				"Browser_Other",
-			};
-			int unitsize = 16 * 16 * 4;
-
-			byte[] canvas = new byte[unitsize * keys.Length];
-
-			for (int i = 0; i < keys.Length; i++)
+			try
 			{
-				Image img = ResourceManager.Instance.Icons.Images[keys[i]];
-				if (img != null)
+				DebugLog("GetIconResource called from Browser process.");
+				ResourceManager.IconContent[] iconContents = new ResourceManager.IconContent[] {
+					ResourceManager.IconContent.BrowserScreenShot,
+					ResourceManager.IconContent.BrowserZoom,
+					ResourceManager.IconContent.BrowserZoomIn,
+					ResourceManager.IconContent.BrowserZoomOut,
+					ResourceManager.IconContent.BrowserUnmute,
+					ResourceManager.IconContent.BrowserMute,
+					ResourceManager.IconContent.BrowserRefresh,
+					ResourceManager.IconContent.BrowserNavigate,
+					ResourceManager.IconContent.BrowserOther,
+				};
+
+				int unitsize = 16 * 16 * 4;
+				byte[] canvas = new byte[unitsize * iconContents.Length];
+				int validIconCount = 0;
+
+				for (int i = 0; i < iconContents.Length; i++)
 				{
-					using (Bitmap bmp = new Bitmap(img))
+					int iconIndex = (int)iconContents[i];
+					Image img = null;
+					if (iconIndex >= 0 && iconIndex < ResourceManager.Instance.Icons.Images.Count)
 					{
+						img = ResourceManager.Instance.Icons.Images[iconIndex];
+					}
 
-						BitmapData bmpdata = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-						Marshal.Copy(bmpdata.Scan0, canvas, unitsize * i, unitsize);
-						bmp.UnlockBits(bmpdata);
-
+					if (img != null)
+					{
+						using (Bitmap bmp = new Bitmap(img))
+						{
+							BitmapData bmpdata = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+							Marshal.Copy(bmpdata.Scan0, canvas, unitsize * i, unitsize);
+							bmp.UnlockBits(bmpdata);
+							validIconCount++;
+						}
+					}
+					else
+					{
+						DebugLog($"GetIconResource: Icon index {iconIndex} ({iconContents[i]}) not found in ResourceManager.Instance.Icons.");
+						Utility.Logger.Add(2, $"[FormBrowserHost] アイコン '{iconContents[i]}' の取得に失敗しました（null）。");
 					}
 				}
+
+				DebugLog($"GetIconResource sending canvas: {validIconCount}/{iconContents.Length} icons extracted.");
+				Utility.Logger.Add(2, $"[FormBrowserHost] GetIconResource: {validIconCount}/{iconContents.Length} 個のアイコンリソースを取得してサブプロセスへ送信します。");
+				Browser.AsyncRemoteRun(() => Browser.Proxy.SetIconResource(canvas));
 			}
-
-			Browser.AsyncRemoteRun(() => Browser.Proxy.SetIconResource(canvas));
-
+			catch (Exception ex)
+			{
+				DebugLog($"GetIconResource Exception: {ex.Message}");
+				Utility.Logger.Add(3, $"[FormBrowserHost] GetIconResource エラー: {ex.Message}");
+			}
 		}
+
 
 
 		public void RequestNavigation(string baseurl)
@@ -512,57 +537,7 @@ namespace ElectronicObserver.Window
 					(string apiname, dynamic data) => InitialAPIReceived(apiname, data);
 
 				// HUDデータ変更トリガーのAPIイベント購読
-				// 資源変更
-				APIObserver.Instance.APIList["api_get_member/material"].ResponseReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				APIObserver.Instance.APIList["api_port/port"].ResponseReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				// 艦隊状態変更
-				APIObserver.Instance.APIList["api_get_member/deck"].ResponseReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				APIObserver.Instance.APIList["api_get_member/ndock"].ResponseReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				// 戦闘状態変更（単艦隊）
-				APIObserver.Instance.APIList["api_req_sortie/battle"].ResponseReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				APIObserver.Instance.APIList["api_req_sortie/battleresult"].ResponseReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				// 戦闘状態変更（連合艦隊）
-				APIObserver.Instance.APIList["api_req_combined_battle/battle"].ResponseReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				APIObserver.Instance.APIList["api_req_combined_battle/battleresult"].ResponseReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				// 戦闘状態変更（練習戦闘）
-				APIObserver.Instance.APIList["api_req_practice/battle"].ResponseReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				APIObserver.Instance.APIList["api_req_practice/battle_result"].ResponseReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				// クエスト状態変更
-				APIObserver.Instance.APIList["api_req_quest/clearitemget"].ResponseReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				// 建造開始
-				APIObserver.Instance.APIList["api_req_kousyou/createship"].RequestReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				// 建造完了（kdock 更新時）
-				APIObserver.Instance.APIList["api_get_member/kdock"].ResponseReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				// 入渠開始・加速
-				APIObserver.Instance.APIList["api_req_nyukyo/start"].RequestReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				APIObserver.Instance.APIList["api_req_nyukyo/speedchange"].RequestReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				// 補給
-				APIObserver.Instance.APIList["api_req_hokyu/charge"].ResponseReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				// 装備変更（装備交換）
-				APIObserver.Instance.APIList["api_req_kaisou/slot_exchange_index"].ResponseReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				// 編成変更
-				APIObserver.Instance.APIList["api_req_hensei/change"].RequestReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
-				// 強化（運変化など）
-				APIObserver.Instance.APIList["api_req_kaisou/powerup"].ResponseReceived +=
-					(string apiname, dynamic data) => OnDataChanged();
+				SubscribeHudApiEvents();
 
 				// プロキシをセット
 				Browser.AsyncRemoteRun(() => Browser.Proxy.SetProxy(BuildDownstreamProxy()));
@@ -593,6 +568,64 @@ namespace ElectronicObserver.Window
 				};
 
 			}));
+		}
+
+		/// <summary>
+		/// HUDデータ変更検知用のAPIイベントを安全に購読します。
+		/// </summary>
+		private void SubscribeHudApiEvents()
+		{
+			try
+			{
+				void RegisterResponse(string api)
+				{
+					var item = APIObserver.Instance.APIList[api];
+					if (item != null) item.ResponseReceived += (apiname, data) => OnDataChanged();
+					else Utility.Logger.Add(2, $"[FormBrowserHost] APIObserver に '{api}' が未登録です。");
+				}
+
+				void RegisterRequest(string api)
+				{
+					var item = APIObserver.Instance.APIList[api];
+					if (item != null) item.RequestReceived += (apiname, data) => OnDataChanged();
+					else Utility.Logger.Add(2, $"[FormBrowserHost] APIObserver に '{api}' が未登録です。");
+				}
+
+				// 資源・港湾変更
+				RegisterResponse("api_get_member/material");
+				RegisterResponse("api_port/port");
+				// 艦隊状態変更
+				RegisterResponse("api_get_member/deck");
+				RegisterResponse("api_get_member/ndock");
+				// 戦闘状態変更（単艦隊）
+				RegisterResponse("api_req_sortie/battle");
+				RegisterResponse("api_req_sortie/battleresult");
+				// 戦闘状態変更（連合艦隊）
+				RegisterResponse("api_req_combined_battle/battle");
+				RegisterResponse("api_req_combined_battle/battleresult");
+				// 戦闘状態変更（練習戦闘）
+				RegisterResponse("api_req_practice/battle");
+				RegisterResponse("api_req_practice/battle_result");
+				// クエスト状態変更
+				RegisterResponse("api_req_quest/clearitemget");
+				// 建造
+				RegisterRequest("api_req_kousyou/createship");
+				RegisterResponse("api_get_member/kdock");
+				// 入渠
+				RegisterRequest("api_req_nyukyo/start");
+				RegisterRequest("api_req_nyukyo/speedchange");
+				// 補給・改装・編成・近代化改修
+				RegisterResponse("api_req_hokyu/charge");
+				RegisterResponse("api_req_kaisou/slot_exchange_index");
+				RegisterRequest("api_req_hensei/change");
+				RegisterResponse("api_req_kaisou/powerup");
+
+				Utility.Logger.Add(1, "[FormBrowserHost] HUD自動更新用APIイベントの購読を完了しました。");
+			}
+			catch (Exception ex)
+			{
+				Utility.Logger.Add(3, $"[FormBrowserHost] SubscribeHudApiEvents エラー: {ex.Message}");
+			}
 		}
 
 		private string BuildDownstreamProxy()

@@ -663,21 +663,30 @@ namespace Browser
 			// 遠隔操作サーバーの起動（Cef.Initialize 完了後に安全に生成）
 			if (_remoteController == null)
 			{
-				int port = Configuration.RemoteControllerPort;
-				if (port <= 0 || port > 65535) port = 8080;
-				string address = string.IsNullOrEmpty(Configuration.RemoteControllerAddress) ? "*" : Configuration.RemoteControllerAddress;
-				string password = Configuration.RemoteControllerPassword;
-
-				lock (_hudBufferLock)
+				try
 				{
-					_remoteController = new RemoteController(this, port, address, password);
-					_remoteController.Start();
+					int port = Configuration.RemoteControllerPort;
+					if (port <= 0 || port > 65535) port = 8080;
+					string address = string.IsNullOrEmpty(Configuration.RemoteControllerAddress) ? "*" : Configuration.RemoteControllerAddress;
+					string password = Configuration.RemoteControllerPassword;
 
-					if (_bufferedHudJson != null)
+					AddLog(2, $"[FormBrowser] RemoteController の初期化を開始します (Address: {address}, Port: {port})");
+
+					lock (_hudBufferLock)
 					{
-						_remoteController.UpdateHudData(_bufferedHudJson);
-						_bufferedHudJson = null;
+						_remoteController = new RemoteController(this, port, address, password);
+						_remoteController.Start();
+
+						if (_bufferedHudJson != null)
+						{
+							_remoteController.UpdateHudData(_bufferedHudJson);
+							_bufferedHudJson = null;
+						}
 					}
+				}
+				catch (Exception ex)
+				{
+					AddLog(3, $"[FormBrowser] RemoteController 初期化エラー: {ex.Message}");
 				}
 			}
 		}
@@ -763,7 +772,7 @@ namespace Browser
 			ConfigurationUpdated();
 		}
 
-		private void AddLog(int priority, string message)
+		internal void AddLog(int priority, string message)
 		{
 			BrowserHost.AsyncRemoteRun(() => BrowserHost.Proxy.AddLog(priority, message));
 		}
@@ -1575,54 +1584,81 @@ namespace Browser
 
 		public void SetIconResource(byte[] canvas)
 		{
-
-			string[] keys = new string[] {
-				"Browser_ScreenShot",
-				"Browser_Zoom",
-				"Browser_ZoomIn",
-				"Browser_ZoomOut",
-				"Browser_Unmute",
-				"Browser_Mute",
-				"Browser_Refresh",
-				"Browser_Navigate",
-				"Browser_Other",
-			};
-			int unitsize = 16 * 16 * 4;
-
-			for (int i = 0; i < keys.Length; i++)
+			try
 			{
-				Bitmap bmp = new Bitmap(16, 16, PixelFormat.Format32bppArgb);
+				string[] keys = new string[] {
+					"Browser_ScreenShot",
+					"Browser_Zoom",
+					"Browser_ZoomIn",
+					"Browser_ZoomOut",
+					"Browser_Unmute",
+					"Browser_Mute",
+					"Browser_Refresh",
+					"Browser_Navigate",
+					"Browser_Other",
+				};
+				int unitsize = 16 * 16 * 4;
 
-				if (canvas != null)
+				// 画像リストの重複・不整合を防ぐため一度クリア
+				Icons.Images.Clear();
+
+				bool isDataValid = false;
+				if (canvas != null && canvas.Length >= unitsize * keys.Length)
 				{
-					BitmapData bmpdata = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
-					Marshal.Copy(canvas, unitsize * i, bmpdata.Scan0, unitsize);
-					bmp.UnlockBits(bmpdata);
+					// 先頭一部バイトの非0チェックで空データを検知
+					for (int i = 0; i < Math.Min(canvas.Length, 100); i++)
+					{
+						if (canvas[i] != 0) { isDataValid = true; break; }
+					}
 				}
 
-				Icons.Images.Add(keys[i], bmp);
+				if (!isDataValid)
+				{
+					AddLog(3, "[FormBrowser] SetIconResource: 警告 - 受信したアイコンデータが null または全ピクセル透明 (ARGB=0) です。");
+				}
+				else
+				{
+					AddLog(2, $"[FormBrowser] SetIconResource: 有効なアイコンデータ ({canvas.Length} bytes) を正常に受領しました。");
+				}
+
+				for (int i = 0; i < keys.Length; i++)
+				{
+					Bitmap bmp = new Bitmap(16, 16, PixelFormat.Format32bppArgb);
+
+					if (canvas != null && canvas.Length >= unitsize * (i + 1))
+					{
+						BitmapData bmpdata = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+						Marshal.Copy(canvas, unitsize * i, bmpdata.Scan0, unitsize);
+						bmp.UnlockBits(bmpdata);
+					}
+
+					Icons.Images.Add(keys[i], bmp);
+				}
+
+				ToolMenu_ScreenShot.Image = ToolMenu_Other_ScreenShot.Image =
+					Icons.Images["Browser_ScreenShot"];
+				ToolMenu_Zoom.Image = ToolMenu_Other_Zoom.Image =
+					Icons.Images["Browser_Zoom"];
+				ToolMenu_Other_Zoom_Increment.Image =
+					Icons.Images["Browser_ZoomIn"];
+				ToolMenu_Other_Zoom_Decrement.Image =
+					Icons.Images["Browser_ZoomOut"];
+				ToolMenu_Refresh.Image = ToolMenu_Other_Refresh.Image =
+					Icons.Images["Browser_Refresh"];
+				ToolMenu_NavigateToLogInPage.Image = ToolMenu_Other_NavigateToLogInPage.Image =
+					Icons.Images["Browser_Navigate"];
+				ToolMenu_Other.Image =
+					Icons.Images["Browser_Other"];
+
+				ToolMenu_ColorFilter.Image = Icons.Images["Browser_ScreenShot"]; // TODO: 専用アイコンが無い為、とりあえずスクリーンショットと同じアイコン
+				ToolMenu_ColorFilter.Text = "プライバシーフィルタの切り替え";
+
+				SetVolumeState();
 			}
-
-
-			ToolMenu_ScreenShot.Image = ToolMenu_Other_ScreenShot.Image =
-				Icons.Images["Browser_ScreenShot"];
-			ToolMenu_Zoom.Image = ToolMenu_Other_Zoom.Image =
-				Icons.Images["Browser_Zoom"];
-			ToolMenu_Other_Zoom_Increment.Image =
-				Icons.Images["Browser_ZoomIn"];
-			ToolMenu_Other_Zoom_Decrement.Image =
-				Icons.Images["Browser_ZoomOut"];
-			ToolMenu_Refresh.Image = ToolMenu_Other_Refresh.Image =
-				Icons.Images["Browser_Refresh"];
-			ToolMenu_NavigateToLogInPage.Image = ToolMenu_Other_NavigateToLogInPage.Image =
-				Icons.Images["Browser_Navigate"];
-			ToolMenu_Other.Image =
-				Icons.Images["Browser_Other"];
-
-			ToolMenu_ColorFilter.Image = Icons.Images["Browser_ScreenShot"]; // TODO: 専用アイコンが無い為、とりあえずスクリーンショットと同じアイコン
-			ToolMenu_ColorFilter.Text = "プライバシーフィルタの切り替え";
-
-			SetVolumeState();
+			catch (Exception ex)
+			{
+				AddLog(3, $"[FormBrowser] SetIconResource エラー: {ex.Message}");
+			}
 		}
 
 
