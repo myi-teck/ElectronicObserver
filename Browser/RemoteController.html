@@ -1264,16 +1264,169 @@
          * 初期状態は max-height: 0 + overflow: hidden で折りたたまれている。
          * .settings-closed クラスが除去されると max-height が展開してアニメーションする。
          */
+        /* 変更: flex-wrapを解除、左右2カラムのflex構成に変更 */
         #settings-panel {
             overflow: hidden;
-            max-height: 280px; /* 開いた状態の最大高さ（新グループ分拡張） */
+            max-height: 280px;
             transition: max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease;
             opacity: 1;
             display: flex;
-            flex-direction: row;
-            flex-wrap: wrap;
-            gap: 6px;
+            flex-direction: row;       /* 変更: row (左右並列) */
+            flex-wrap: nowrap;         /* 変更: nowrap (折り返しなし) */
+            gap: 0;                     /* 変更: 0 (マスターとディテールを密接に) */
             padding: 4px 0 4px;
+        }
+
+        /* 閉じた状態：max-height と opacity をゼロにして折りたたみアニメーション */
+        #settings-panel.settings-closed {
+            max-height: 0;
+            opacity: 0;
+            padding: 0;
+        }
+
+        /* --- 新規: マスターリスト (#settings-master-list) --- */
+        #settings-master-list {
+            width: 110px;                    /* 固定幅（項目名が収まる最小幅） */
+            flex-shrink: 0;                   /* 縮小防止 */
+            overflow-y: auto;                 /* 縦スクロール有効 */
+            overflow-x: hidden;
+            border-right: 1px solid rgba(0, 255, 102, 0.2);
+            padding: 2px;
+            max-height: 260px;                /* max-heightからリストの高さを制御 */
+        }
+
+        /* スクロールバーのNERV風カスタマイズ */
+        #settings-master-list::-webkit-scrollbar {
+            width: 4px;
+        }
+        #settings-master-list::-webkit-scrollbar-track {
+            background: rgba(0, 255, 102, 0.05);
+        }
+        #settings-master-list::-webkit-scrollbar-thumb {
+            background: rgba(0, 255, 102, 0.3);
+            border-radius: 2px;
+        }
+
+        /* --- 新規: マスターリストの各項目 (.master-item) --- */
+        .master-item {
+            padding: 4px 8px;
+            font-size: 8px;
+            color: rgba(163, 247, 191, 0.6);
+            cursor: pointer;
+            border-radius: 3px;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
+            border: 1px solid transparent;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            font-weight: bold;
+            user-select: none;
+            -webkit-user-select: none;
+            /* Reviewer01指摘: 項目名のオーバーフロー対策（「プライバシーフィルター」等） */
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .master-item:hover {
+            background: rgba(0, 255, 102, 0.1);
+            color: var(--accent-color);
+        }
+
+        .master-item.active {
+            background: rgba(0, 255, 102, 0.15);
+            border-color: var(--accent-color);
+            color: var(--accent-color);
+            text-shadow: 0 0 4px rgba(0, 255, 102, 0.6);
+        }
+
+        .master-item:active {
+            transform: scale(0.97);
+        }
+
+        /* --- 新規: スクロール制御ボタン (#settings-scroll-controls) --- */
+        #settings-scroll-controls {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 2px;
+            padding: 2px;
+            flex-shrink: 0;
+        }
+
+        .scroll-btn {
+            width: 20px;
+            height: 16px;
+            background: rgba(2, 15, 6, 0.9);
+            border: 1px solid rgba(0, 255, 102, 0.3);
+            border-radius: 3px;
+            color: rgba(163, 247, 191, 0.6);
+            font-size: 8px;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+            user-select: none;
+            -webkit-user-select: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .scroll-btn:hover {
+            background: rgba(0, 255, 102, 0.1);
+            color: var(--accent-color);
+        }
+
+        .scroll-btn:active {
+            transform: scale(0.95);
+        }
+
+        /* --- 新規: ディテールエリア (#settings-detail-area) --- */
+        #settings-detail-area {
+            flex: 1;                         /* 残りスペースを占有 */
+            overflow-y: auto;                /* 選択多数時のはみ出し防止 */
+            overflow-x: hidden;
+            padding: 4px 8px;
+        }
+
+        .detail-panel {
+            display: none;                   /* 非表示（JSで切り替え） */
+        }
+
+        .detail-panel.active {
+            display: block;                  /* 選択中のパネルを表示 */
+        }
+
+        /* --- 新規: レスポンシブ対応（モバイル幅でのレイアウト崩れ対策） --- */
+        @media (max-width: 480px) {
+            #settings-panel {
+                flex-direction: column;
+                max-height: 400px; /* noneだとtransitionアニメーションが無効化されるため数値指定 */
+            }
+
+            #settings-master-list {
+                width: 100%;
+                max-height: 120px;
+                border-right: none;
+                border-bottom: 1px solid rgba(0, 255, 102, 0.2);
+                display: flex;
+                flex-direction: row;
+                flex-wrap: nowrap;
+                overflow-x: auto;
+                overflow-y: hidden;
+            }
+
+            .master-item {
+                flex-shrink: 0;
+                min-width: 70px; /* 横並び時に項目が圧縮されないよう幅確保 */
+            }
+
+            #settings-scroll-controls {
+                display: none; /* モバイルではネイティブスクロールに依存 */
+            }
+
+            #settings-detail-area {
+                flex: 1;
+                overflow-y: auto;
+            }
         }
 
         /* 確認モーダルオーバーレイ */
@@ -1330,12 +1483,6 @@
             color: var(--accent-color);
         }
         
-        /* 閉じた状態：max-height と opacity をゼロにして折りたたみアニメーション */
-        #settings-panel.settings-closed {
-            max-height: 0;
-            opacity: 0;
-            padding: 0;
-        }
 
         /* 設定グループ (ラベル + ボタン横並び) */
         .setting-group {
@@ -2356,113 +2503,172 @@
     </div>
 
     <div id='trackpad-area'>
-        <!-- システム設定トグルパネル (SYSTEM SETUP) -->
+        <!-- システム設定トグルパネル (SYSTEM SETUP) - 左右2カラムマスター・ディテール構成 -->
         <div id='settings-panel' class='settings-closed'>
-            <div class='setting-group'>
-                <label>目標FPS</label>
-                <div class='btn-group' id='fps-group'>
-                    <button class='settings-btn' data-fps='0.5'>0.5</button>
-                    <button class='settings-btn' data-fps='1'>1</button>
-                    <button class='settings-btn' data-fps='2'>2</button>
-                    <button class='settings-btn' data-fps='5'>5</button>
-                    <button class='settings-btn' data-fps='10'>10</button>
-                    <button class='settings-btn' data-fps='20'>20</button>
-                    <button class='settings-btn' data-fps='30'>30</button>
-                    <button class='settings-btn active' data-fps='60'>MAX</button>
-                </div>
-            </div>
-            <div class='setting-group'>
-                <label>配信画質</label>
-                <div class='btn-group' id='quality-group'>
-                    <button class='settings-btn' data-quality='20'>省エネ</button>
-                    <button class='settings-btn active' data-quality='40'>標準</button>
-                    <button class='settings-btn' data-quality='70'>高画質</button>
-                    <button class='settings-btn' data-quality='90'>最高</button>
-                    <button class='settings-btn' data-quality='100'>無圧縮</button>
-                </div>
-            </div>
-            <!-- 自動FPS制御ON/OFF -->
-            <div class='setting-group'>
-                <label>自動FPS制御</label>
-                <div class='btn-group' id='auto-fps-group'>
-                    <button class='settings-btn active' data-auto-fps='1'>有効</button>
-                    <button class='settings-btn' data-auto-fps='0'>無効</button>
-                </div>
-            </div>
-            <!-- 操作感度設定 (0.5x 〜 2.0x) -->
-            <div class='setting-group'>
-                <label>操作感度</label>
-                <div class='btn-group' id='sensitivity-group'>
-                    <button class='settings-btn' data-sensitivity='0.5'>0.5x</button>
-                    <button class='settings-btn' data-sensitivity='0.8'>0.8x</button>
-                    <button class='settings-btn active' data-sensitivity='1.0'>標準</button>
-                    <button class='settings-btn' data-sensitivity='1.5'>1.5x</button>
-                    <button class='settings-btn' data-sensitivity='2.0'>2.0x</button>
-                </div>
-            </div>
-            <!-- 拡大率設定 (2.0x 〜 5.0x) -->
-            <div class='setting-group'>
-                <label>拡大率</label>
-                <div class='btn-group' id='zoom-group'>
-                    <button class='settings-btn' data-zoom='2.0'>2x</button>
-                    <button class='settings-btn active' data-zoom='3.0'>3x</button>
-                    <button class='settings-btn' data-zoom='4.0'>4x</button>
-                    <button class='settings-btn' data-zoom='5.0'>5x</button>
-                </div>
-            </div>
-            <!-- ドラッグ距離閾値設定 -->
-            <div class='setting-group'>
-                <label>ドラッグ距離</label>
-                <div class='btn-group' id='drag-distance-group'>
-                    <button class='settings-btn' data-drag-distance='5'>5px</button>
-                    <button class='settings-btn active' data-drag-distance='10'>10px</button>
-                    <button class='settings-btn' data-drag-distance='15'>15px</button>
-                    <button class='settings-btn' data-drag-distance='20'>20px</button>
-                    <button class='settings-btn' data-drag-distance='30'>30px</button>
-                </div>
-            </div>
-            <!-- タップ時間閾値設定 -->
-            <div class='setting-group'>
-                <label>タップ時間</label>
-                <div class='btn-group' id='tap-timeout-group'>
-                    <button class='settings-btn' data-tap-timeout='150'>150ms</button>
-                    <button class='settings-btn' data-tap-timeout='200'>200ms</button>
-                    <button class='settings-btn active' data-tap-timeout='300'>300ms</button>
-                    <button class='settings-btn' data-tap-timeout='500'>500ms</button>
-                </div>
+            <!-- 左側: スクロール可能な設定項目リスト -->
+            <div id='settings-master-list'>
+                <div class='master-item active' data-target='fps-group'>目標FPS</div>
+                <div class='master-item' data-target='quality-group'>配信画質</div>
+                <div class='master-item' data-target='auto-fps-group'>自動FPS制御</div>
+                <div class='master-item' data-target='sensitivity-group'>操作感度</div>
+                <div class='master-item' data-target='zoom-group'>拡大率</div>
+                <div class='master-item' data-target='drag-distance-group'>ドラッグ距離</div>
+                <div class='master-item' data-target='tap-timeout-group'>タップ時間</div>
+                <div class='master-item' data-target='protocol-group'>PROTOCOL</div>
+                <div class='master-item' data-target='browser-nav-group'>ブラウザ操作</div>
+                <div class='master-item' data-target='filter-group'>プライバシーフィルター</div>
+                <div class='master-item' data-target='nightvision-group'>暗視</div>
             </div>
 
-            <!-- 通信プロトコル設定 -->
-            <div class='setting-group'>
-                <label>PROTOCOL</label>
-                <div class='btn-group' id='protocol-group'>
-                    <button class='settings-btn' data-protocol='auto'>AUTO</button>
-                    <button class='settings-btn' data-protocol='websocket'>WS</button>
-                    <button class='settings-btn' data-protocol='http'>HTTP</button>
-                </div>
+            <!-- スクロールボタン（↑↓） -->
+            <div id='settings-scroll-controls'>
+                <button id='settings-scroll-up' class='scroll-btn'>▲</button>
+                <button id='settings-scroll-down' class='scroll-btn'>▼</button>
             </div>
-            <!-- ブラウザ操作設定 -->
-            <div class='setting-group'>
-                <label>ブラウザ操作</label>
-                <div class='btn-group'>
-                    <button class='settings-btn' id='btn-navigate-login'>ログインページ</button>
+
+            <!-- 右側: 選択した項目の設定内容 -->
+            <div id='settings-detail-area'>
+
+                <!-- 目標FPS (初期表示パネル) -->
+                <div class='detail-panel active' id='detail-fps-group'>
+                    <div class='setting-group'>
+                        <label>目標FPS</label>
+                        <div class='btn-group' id='fps-group'>
+                            <button class='settings-btn' data-fps='0.5'>0.5</button>
+                            <button class='settings-btn' data-fps='1'>1</button>
+                            <button class='settings-btn' data-fps='2'>2</button>
+                            <button class='settings-btn' data-fps='5'>5</button>
+                            <button class='settings-btn' data-fps='10'>10</button>
+                            <button class='settings-btn' data-fps='20'>20</button>
+                            <button class='settings-btn' data-fps='30'>30</button>
+                            <button class='settings-btn active' data-fps='60'>MAX</button>
+                        </div>
+                    </div>
                 </div>
-            </div>
-            <!-- プライバシーフィルター設定 -->
-            <div class='setting-group'>
-                <label>プライバシーフィルター</label>
-                <div class='btn-group' id='filter-group'>
-                    <button class='settings-btn active' data-filter='0'>なし</button>
-                    <button class='settings-btn' data-filter='1'>グレースケール</button>
-                    <button class='settings-btn' data-filter='4'>低コントラスト</button>
+
+                <!-- 配信画質 -->
+                <div class='detail-panel' id='detail-quality-group'>
+                    <div class='setting-group'>
+                        <label>配信画質</label>
+                        <div class='btn-group' id='quality-group'>
+                            <button class='settings-btn' data-quality='20'>省エネ</button>
+                            <button class='settings-btn active' data-quality='40'>標準</button>
+                            <button class='settings-btn' data-quality='70'>高画質</button>
+                            <button class='settings-btn' data-quality='90'>最高</button>
+                            <button class='settings-btn' data-quality='100'>無圧縮</button>
+                        </div>
+                    </div>
                 </div>
-            </div>
-            <!-- 暗視フィルター設定（トグル方式） -->
-            <div class='setting-group'>
-                <label>暗視</label>
-                <div class='btn-group'>
-                    <button class='settings-btn' id='btn-nightvision'>なし</button>
+
+                <!-- 自動FPS制御ON/OFF -->
+                <div class='detail-panel' id='detail-auto-fps-group'>
+                    <div class='setting-group'>
+                        <label>自動FPS制御</label>
+                        <div class='btn-group' id='auto-fps-group'>
+                            <button class='settings-btn active' data-auto-fps='1'>有効</button>
+                            <button class='settings-btn' data-auto-fps='0'>無効</button>
+                        </div>
+                    </div>
                 </div>
+
+                <!-- 操作感度設定 (0.5x 〜 2.0x) -->
+                <div class='detail-panel' id='detail-sensitivity-group'>
+                    <div class='setting-group'>
+                        <label>操作感度</label>
+                        <div class='btn-group' id='sensitivity-group'>
+                            <button class='settings-btn' data-sensitivity='0.5'>0.5x</button>
+                            <button class='settings-btn' data-sensitivity='0.8'>0.8x</button>
+                            <button class='settings-btn active' data-sensitivity='1.0'>標準</button>
+                            <button class='settings-btn' data-sensitivity='1.5'>1.5x</button>
+                            <button class='settings-btn' data-sensitivity='2.0'>2.0x</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 拡大率設定 (2.0x 〜 5.0x) -->
+                <div class='detail-panel' id='detail-zoom-group'>
+                    <div class='setting-group'>
+                        <label>拡大率</label>
+                        <div class='btn-group' id='zoom-group'>
+                            <button class='settings-btn' data-zoom='2.0'>2x</button>
+                            <button class='settings-btn active' data-zoom='3.0'>3x</button>
+                            <button class='settings-btn' data-zoom='4.0'>4x</button>
+                            <button class='settings-btn' data-zoom='5.0'>5x</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ドラッグ距離閾値設定 -->
+                <div class='detail-panel' id='detail-drag-distance-group'>
+                    <div class='setting-group'>
+                        <label>ドラッグ距離</label>
+                        <div class='btn-group' id='drag-distance-group'>
+                            <button class='settings-btn' data-drag-distance='5'>5px</button>
+                            <button class='settings-btn active' data-drag-distance='10'>10px</button>
+                            <button class='settings-btn' data-drag-distance='15'>15px</button>
+                            <button class='settings-btn' data-drag-distance='20'>20px</button>
+                            <button class='settings-btn' data-drag-distance='30'>30px</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- タップ時間閾値設定 -->
+                <div class='detail-panel' id='detail-tap-timeout-group'>
+                    <div class='setting-group'>
+                        <label>タップ時間</label>
+                        <div class='btn-group' id='tap-timeout-group'>
+                            <button class='settings-btn' data-tap-timeout='150'>150ms</button>
+                            <button class='settings-btn' data-tap-timeout='200'>200ms</button>
+                            <button class='settings-btn active' data-tap-timeout='300'>300ms</button>
+                            <button class='settings-btn' data-tap-timeout='500'>500ms</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 通信プロトコル設定 -->
+                <div class='detail-panel' id='detail-protocol-group'>
+                    <div class='setting-group'>
+                        <label>PROTOCOL</label>
+                        <div class='btn-group' id='protocol-group'>
+                            <button class='settings-btn' data-protocol='auto'>AUTO</button>
+                            <button class='settings-btn' data-protocol='websocket'>WS</button>
+                            <button class='settings-btn' data-protocol='http'>HTTP</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ブラウザ操作設定 -->
+                <div class='detail-panel' id='detail-browser-nav-group'>
+                    <div class='setting-group'>
+                        <label>ブラウザ操作</label>
+                        <div class='btn-group' id='browser-nav-group'>
+                            <button class='settings-btn' id='btn-navigate-login'>ログインページ</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- プライバシーフィルター設定 -->
+                <div class='detail-panel' id='detail-filter-group'>
+                    <div class='setting-group'>
+                        <label>プライバシーフィルター</label>
+                        <div class='btn-group' id='filter-group'>
+                            <button class='settings-btn active' data-filter='0'>なし</button>
+                            <button class='settings-btn' data-filter='1'>グレースケール</button>
+                            <button class='settings-btn' data-filter='4'>低コントラスト</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 暗視フィルター設定（トグル方式） -->
+                <div class='detail-panel' id='detail-nightvision-group'>
+                    <div class='setting-group'>
+                        <label>暗視</label>
+                        <div class='btn-group' id='nightvision-group'>
+                            <button class='settings-btn' id='btn-nightvision'>なし</button>
+                        </div>
+                    </div>
+                </div>
+
             </div>
         </div>
 
@@ -3354,6 +3560,71 @@
         toggleBtn.addEventListener('click', toggleSettings);
         toggleBtn.addEventListener('pointerdown', e => {
             e.stopPropagation(); // トラックパッド(pad)のセットキャプチャ処理を阻止します
+        });
+
+        //================================================================================
+        // 設定マスター・ディテール切り替えロジック
+        //================================================================================
+        // Reviewer01指摘: DOMロードタイミングによる初期化失敗対策（DOMContentLoaded使用）
+        document.addEventListener('DOMContentLoaded', () => {
+            const masterList = document.getElementById('settings-master-list');
+            const detailArea = document.getElementById('settings-detail-area');
+
+            // Reviewer02指摘: masterItemsが空の場合のエラー防止
+            if (!masterList || !detailArea) {
+                console.warn('settings-master-list or settings-detail-area not found');
+                return;
+            }
+
+            const masterItems = masterList.querySelectorAll('.master-item');
+
+            // Reviewer02指摘: 空配列チェック — 項目が0件の場合は初期化をスキップ
+            if (masterItems.length === 0) {
+                console.warn('No master-item elements found');
+                return;
+            }
+
+            function selectSettingItem(targetId) {
+                // マスターリストのactive切り替え
+                masterItems.forEach(item => item.classList.remove('active'));
+                const activeItem = masterList.querySelector(`.master-item[data-target="${targetId}"]`);
+                if (activeItem) activeItem.classList.add('active');
+
+                // ディテールパネルの切り替え
+                const panels = detailArea.querySelectorAll('.detail-panel');
+                panels.forEach(panel => panel.classList.remove('active'));
+                const targetPanel = detailArea.querySelector(`#detail-${targetId}`);
+                if (targetPanel) targetPanel.classList.add('active');
+            }
+
+            // Review_01指摘: pointerdownはタッチスクロールを阻害するためclickのみ使用
+            masterItems.forEach(item => {
+                item.addEventListener('click', () => {
+                    selectSettingItem(item.dataset.target);
+                });
+            });
+
+            // 初期表示: 最初の項目を選択
+            selectSettingItem(masterItems[0].dataset.target);
+
+            // ─── スクロール制御ボタンのロジック ───
+            // Reviewer02指摘: モバイル幅ではボタンが非表示(display:none)になるため、存在判定を必須
+            const scrollUpBtn = document.getElementById('settings-scroll-up');
+            const scrollDownBtn = document.getElementById('settings-scroll-down');
+
+            if (scrollUpBtn && scrollDownBtn && masterItems.length > 0) {
+                // Reviewer01指摘: 固定値ではなく項目高さに基づいた計算
+                // Reviewer02指摘修正: DOMContentLoaded時は#settings-panelが閉じている(getBoundingClientRect().height=0)ため固定値使用
+                // CSS: .master-item { padding: 4px 8px; font-size: 8px; border: 1px solid; } + gap 2px = 22px
+                const scrollAmount = 22; // 項目高さ（固定値）
+
+                scrollUpBtn.addEventListener('click', () => {
+                    masterList.scrollBy({ top: -scrollAmount, behavior: 'smooth' });
+                });
+                scrollDownBtn.addEventListener('click', () => {
+                    masterList.scrollBy({ top: scrollAmount, behavior: 'smooth' });
+                });
+            }
         });
 
         // ボタンの初期状態の動的適用と切り替えイベントの登録ユーティリティ
