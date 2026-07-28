@@ -2210,11 +2210,16 @@ namespace Browser
 			var swTotal = new System.Diagnostics.Stopwatch();
 			var swCap = new System.Diagnostics.Stopwatch();
 			var swSend = new System.Diagnostics.Stopwatch();
-
+	
 			int frameCounter = 0;
 			long totalCapTime = 0;
 			long totalSendTime = 0;
 			DateTime lastLogTime = DateTime.UtcNow;
+	
+			// ドリフト補正タイマー: 絶対時刻ベースの目標管理
+			long nextTargetTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+			long ticksPerMs = System.Diagnostics.Stopwatch.Frequency / 1000;
+			int lastTargetInterval = session.TargetIntervalMs;
 
 			try
 			{
@@ -2261,36 +2266,50 @@ namespace Browser
 					long totalMs = swTotal.ElapsedMilliseconds;
 
 					// 3秒ごとに直列送信プロファイリング結果を出力
-					if ((DateTime.UtcNow - lastLogTime).TotalSeconds >= 3.0)
-					{
-						double sec = (DateTime.UtcNow - lastLogTime).TotalSeconds;
-						double fps = frameCounter / sec;
-						double avgCap = frameCounter > 0 ? (double)totalCapTime / frameCounter : 0;
-						double avgSend = frameCounter > 0 ? (double)totalSendTime / frameCounter : 0;
+					// if ((DateTime.UtcNow - lastLogTime).TotalSeconds >= 3.0)
+					// {
+					// 	double sec = (DateTime.UtcNow - lastLogTime).TotalSeconds;
+					// 	double fps = frameCounter / sec;
+					// 	double avgCap = frameCounter > 0 ? (double)totalCapTime / frameCounter : 0;
+					// 	double avgSend = frameCounter > 0 ? (double)totalSendTime / frameCounter : 0;
 
-						Log(2, $"[RemoteProfiler] Direct WS FPS: {fps:F1}, AvgCap: {avgCap:F1}ms, AvgSend: {avgSend:F1}ms, TargetInterval: {session.TargetIntervalMs}ms");
+					// 	Log(2, $"[RemoteProfiler] Direct WS FPS: {fps:F1}, AvgCap: {avgCap:F1}ms, AvgSend: {avgSend:F1}ms, TargetInterval: {session.TargetIntervalMs}ms");
 
-						frameCounter = 0;
-						totalCapTime = 0;
-						totalSendTime = 0;
-						lastLogTime = DateTime.UtcNow;
-					}
+					// 	frameCounter = 0;
+					// 	totalCapTime = 0;
+					// 	totalSendTime = 0;
+					// 	lastLogTime = DateTime.UtcNow;
+					// }
 
 					int targetInterval = session.TargetIntervalMs;
-
+	
+					// MAX設定時は60FPS制限を適用（約16.67ms → 16ms）
 					if (targetInterval <= 0)
 					{
-						// 無制限 (MAX): 最速で次のキャプチャへ (1ms ディレイで全走)
-						await Task.Delay(1, token);
+						targetInterval = 16;
+					}
+	
+					// FPS設定変更時のリセット: 次回目標時刻を現在時刻にリセット
+					if (targetInterval != lastTargetInterval)
+					{
+						nextTargetTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+						lastTargetInterval = targetInterval;
+					}
+	
+					// ドリフト補正タイマー: 絶対時刻ベースの目標管理
+					nextTargetTicks += targetInterval * ticksPerMs;
+					long currentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+					long remainingTicks = nextTargetTicks - currentTicks;
+					int remainingMs = (int)(remainingTicks / ticksPerMs);
+	
+					if (remainingMs > 0)
+					{
+						await Task.Delay(remainingMs, token);
 					}
 					else
 					{
-						// 目標 FPS / 間隔に応じたディレイ計算
-						int remainingDelay = targetInterval - (int)totalMs;
-						if (remainingDelay > 0)
-						{
-							await Task.Delay(remainingDelay, token);
-						}
+						// 処理遅延: 次回目標を現在時刻にリセット（スパイラル防止）
+						nextTargetTicks = currentTicks;
 					}
 				}
 			}

@@ -3257,6 +3257,12 @@
             }, 100); // 100msごと（10FPS）にループ（SLEEP状態では秒数監視を行い1秒に1回のみ実更新）
         }
 
+        // FPSからディレイ（ミリ秒）への変換共通関数
+        function calculateDelayByFps(fps) {
+            if (fps >= 60 || fps <= 0) return 0;
+            return Math.round(1000 / fps);
+        }
+
         // 動的待機時間算出関数
         // 最終操作からの経過時間に基づいて適切な待機時間を返す
         let lastSyncedDelay = -1;
@@ -3264,18 +3270,18 @@
             let delay;
             // 自動FPS制御が無効な場合は、常にアクティブ状態（設定された目標FPS）の待機時間を返します
             if (!autoFpsEnabled) {
-                delay = (targetFps >= 60 || targetFps <= 0) ? 0 : (targetFps >= 30 ? 16 : Math.round(1000 / targetFps));
+                delay = calculateDelayByFps(targetFps);
             } else {
                 const elapsed = Date.now() - lastOperationTime;
                 if (elapsed < ACTIVE_TIMEOUT) {
                     // アクティブ状態：設定された目標FPSを維持
-                    delay = (targetFps >= 60 || targetFps <= 0) ? 0 : (targetFps >= 30 ? 16 : Math.round(1000 / targetFps));
+                    delay = calculateDelayByFps(targetFps);
                 } else if (elapsed < IDLE_TIMEOUT) {
                     // アイドル状態：2秒に1回の低速配信に切り替え
-                    delay = Math.round(1000 / IDLE_FPS);  // 2000ms
+                    delay = calculateDelayByFps(IDLE_FPS);  // 2000ms
                 } else {
                     // スリープ状態：1分に1回の極低速配信に切り替え
-                    delay = Math.round(1000 / SLEEP_FPS); // 60000ms
+                    delay = calculateDelayByFps(SLEEP_FPS); // 60000ms
                 }
             }
 
@@ -3406,7 +3412,7 @@
         initSettingsButtons('fps-group', targetFps, value => {
             targetFps = value;
             localStorage.setItem('targetFps', value); // 前回選択値をlocalStorageに記憶
-            const delay = (targetFps >= 60 || targetFps <= 0) ? 16 : Math.round(1000 / targetFps);
+            const delay = calculateDelayByFps(targetFps);
             ProtocolManager.syncFps(delay);
         });
 
