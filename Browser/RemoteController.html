@@ -1433,13 +1433,20 @@
             padding: 0 16px;
             box-shadow: 0 0 10px rgba(0, 255, 102, 0.3);
             text-shadow: 0 0 5px var(--accent-glow);
-            transition: transform 0.1s, box-shadow 0.1s, background 0.1s;
+            transition: transform 0.2s ease-out, box-shadow 0.2s ease-out, background 0.2s ease-out;
+        }
+
+        /* [FIX] JSクラス操作によるアニメーション（:activeのフォールバックとして維持） */
+        #click-btn.clicked {
+            transform: scale(0.94);
+            background: rgba(0, 255, 102, 0.15);
+            box-shadow: 0 0 3px rgba(0, 255, 102, 0.15);
         }
 
         #click-btn:active {
-            transform: scale(0.97);
-            background: rgba(0, 255, 102, 0.1);
-            box-shadow: 0 0 5px rgba(0, 255, 102, 0.1);
+            transform: scale(0.94);
+            background: rgba(0, 255, 102, 0.15);
+            box-shadow: 0 0 3px rgba(0, 255, 102, 0.15);
         }
 
         /* 決定ボタンラベルテキスト */
@@ -1479,11 +1486,11 @@
             border-radius: 10%; 
             background: rgba(3, 8, 5, 0.8); /* HUDパネルの上に被るため、後ろの文字が透けないよう背景不透明度を高めます */
             overflow: hidden;
-            /* 
-             * HUDコンテナ(z-index:5)やシステムインジケータ(z-index:6)よりも手前に出現させるため、
-             * z-index を 8 に指定して完全に前面へオーバーラップ（重ね合わせ）させます
+            /*
+             * HUDコンテナ(z-index:100)やシステムインジケータ(z-index:6)よりも手前に出現させるため、
+             * z-index を 101 に指定して完全に前面へオーバーラップ（重ね合わせ）させます
              */
-            z-index: 8;
+            z-index: 101;
             pointer-events: none;
             box-shadow: 0 0 25px rgba(0, 255, 102, 0.45), inset 0 0 15px rgba(0, 255, 102, 0.25);
             
@@ -2358,9 +2365,10 @@
                     <button class='settings-btn' data-fps='1'>1</button>
                     <button class='settings-btn' data-fps='2'>2</button>
                     <button class='settings-btn' data-fps='5'>5</button>
-                    <button class='settings-btn active' data-fps='10'>10</button>
+                    <button class='settings-btn' data-fps='10'>10</button>
                     <button class='settings-btn' data-fps='20'>20</button>
-                    <button class='settings-btn' data-fps='30'>MAX</button>
+                    <button class='settings-btn' data-fps='30'>30</button>
+                    <button class='settings-btn active' data-fps='60'>MAX</button>
                 </div>
             </div>
             <div class='setting-group'>
@@ -2705,13 +2713,20 @@
                     // キーフレーム要求（初期画面の取得）
                     console.log('[ProtocolManager] init キーフレーム要求を送信します');
                     this.sendWsControl({ action: 'init' });
+                    // 目標 FPS / 待機ミリ秒の初回同期
+                    if (typeof getDynamicDelay === 'function') {
+                        this.syncFps(getDynamicDelay());
+                    }
                     // Heartbeat タイマー起動
                     this.startHeartbeat();
                 };
 
                 this.wsConnection.onmessage = (event) => {
                     if (typeof event.data === 'string') {
-                        // テキストメッセージ（Heartbeat / 制御コマンド）
+                        // テキストメッセージ（Heartbeat / 制御コマンド）の通信量加算
+                        if (typeof updateDataUsage === 'function') {
+                            updateDataUsage(event.data.length + WS_FRAME_OVERHEAD);
+                        }
                         if (event.data === 'heartbeat') {
                             // Heartbeat受信 → 無視（接続維持確認のみ）
                             return;
@@ -2780,7 +2795,10 @@
                 this.stopHeartbeat();
                 this.wsHeartbeatTimer = setInterval(() => {
                     if (this.wsConnection && this.wsConnection.readyState === WebSocket.OPEN) {
-                        // サーバーへの Heartbeat 送信
+                        // サーバーへの Heartbeat 送信 (メッセージ長9 + WSフレームヘッダー)
+                        if (typeof updateDataUsage === 'function') {
+                            updateDataUsage(9 + WS_FRAME_OVERHEAD);
+                        }
                         this.wsConnection.send('heartbeat');
                     }
                 }, this.wsHeartbeatIntervalMs);
@@ -2796,7 +2814,18 @@
             // WebSocket 操作メッセージを送信
             sendWsControl(data) {
                 if (this.wsConnection && this.wsConnection.readyState === WebSocket.OPEN) {
-                    this.wsConnection.send(JSON.stringify(data));
+                    const jsonStr = JSON.stringify(data);
+                    if (typeof updateDataUsage === 'function') {
+                        updateDataUsage(jsonStr.length + WS_FRAME_OVERHEAD);
+                    }
+                    this.wsConnection.send(jsonStr);
+                }
+            },
+
+            // 目標 FPS / 待機ミリ秒を C# サーバーへ通知
+            syncFps(intervalMs) {
+                if (this.effectiveMode === 'ws') {
+                    this.sendWsControl({ action: 'set_fps', intervalMs: intervalMs });
                 }
             },
 
@@ -2829,48 +2858,33 @@
             },
 
             // バイナリ画面更新（WebSocket 経由）
-            // [FIX] 2026/07/27 メモリリーク対策：タイムアウト＋確実な revokeObjectURL 解放
-            handleScreenUpdateBinary(arrayBuffer) {
-                const blob = new Blob([arrayBuffer], { type: 'image/webp' });
-                const objectUrl = URL.createObjectURL(blob);
-                const img = new Image();
+            // [FIX] 2026/07/28 createImageBitmap 高速並列デコード採用（new Image DOMイベントスロットリング排除）
+            async handleScreenUpdateBinary(arrayBuffer) {
+                if (!arrayBuffer || arrayBuffer.byteLength === 0) return;
 
-                // タイムアウト用タイマー（500ms で未解決の場合は revokeObjectURL を強制解放）
-                let timedOut = false;
-                const timeoutId = setTimeout(() => {
-                    timedOut = true;
-                    URL.revokeObjectURL(objectUrl);
-                    console.warn('[ProtocolManager] Image load timeout, URL revoked');
-                }, 500);
+                // 通信量（データサイズ + WSフレームヘッダー）の加算・HUD累積表示更新
+                if (typeof updateDataUsage === 'function') {
+                    updateDataUsage(arrayBuffer.byteLength + WS_FRAME_OVERHEAD);
+                }
 
-                img.onload = () => {
-                    if (timedOut) return; // タイムアウト済みの場合は処理をスキップ
-                    clearTimeout(timeoutId);
+                try {
+                    const blob = new Blob([arrayBuffer], { type: 'image/webp' });
+                    const bitmap = await createImageBitmap(blob);
 
                     gameCtx.clearRect(0, 0, screen.width, screen.height);
-                    gameCtx.drawImage(img, 0, 0);
-                    drawMagnifier();
+                    gameCtx.drawImage(bitmap, 0, 0);
+                    bitmap.close(); // GPU/デコーダーリソースの即時開放
 
-                    // Blob URL を確実かつ即時に解放
-                    URL.revokeObjectURL(img.src);
+                    drawMagnifier();
 
                     status.textContent = 'SYNCHRONIZED';
                     status.classList.add('ok');
 
                     frameCount++;
                     updateFpsDisplay();
-                };
-
-                img.onerror = () => {
-                    if (timedOut) return; // タイムアウト済みの場合は処理をスキップ
-                    clearTimeout(timeoutId);
-
-                    // Blob URL を確実かつ即時に解放
-                    URL.revokeObjectURL(img.src);
-                    console.warn('[ProtocolManager] Image decode failed');
-                };
-
-                img.src = objectUrl;
+                } catch (e) {
+                    console.warn('[ProtocolManager] createImageBitmap decode error:', e.message);
+                }
             },
 
             // 接続ステータスUIの更新
@@ -3245,28 +3259,59 @@
 
         // 動的待機時間算出関数
         // 最終操作からの経過時間に基づいて適切な待機時間を返す
+        let lastSyncedDelay = -1;
         function getDynamicDelay() {
+            let delay;
             // 自動FPS制御が無効な場合は、常にアクティブ状態（設定された目標FPS）の待機時間を返します
             if (!autoFpsEnabled) {
-                return targetFps >= 30 ? 16 : Math.round(1000 / targetFps);
+                delay = (targetFps >= 60 || targetFps <= 0) ? 0 : (targetFps >= 30 ? 16 : Math.round(1000 / targetFps));
+            } else {
+                const elapsed = Date.now() - lastOperationTime;
+                if (elapsed < ACTIVE_TIMEOUT) {
+                    // アクティブ状態：設定された目標FPSを維持
+                    delay = (targetFps >= 60 || targetFps <= 0) ? 0 : (targetFps >= 30 ? 16 : Math.round(1000 / targetFps));
+                } else if (elapsed < IDLE_TIMEOUT) {
+                    // アイドル状態：2秒に1回の低速配信に切り替え
+                    delay = Math.round(1000 / IDLE_FPS);  // 2000ms
+                } else {
+                    // スリープ状態：1分に1回の極低速配信に切り替え
+                    delay = Math.round(1000 / SLEEP_FPS); // 60000ms
+                }
             }
 
-            const elapsed = Date.now() - lastOperationTime;
-            
-            if (elapsed < ACTIVE_TIMEOUT) {
-                // アクティブ状態：設定された目標FPSを維持
-                return targetFps >= 30 ? 16 : Math.round(1000 / targetFps);
-            } else if (elapsed < IDLE_TIMEOUT) {
-                // アイドル状態：2秒に1回の低速配信に切り替え
-                return Math.round(1000 / IDLE_FPS);  // 2000ms
-            } else {
-                // スリープ状態：1分に1回の極低速配信に切り替え
-                return Math.round(1000 / SLEEP_FPS); // 60000ms
+            // WebSocket モード時、待機時間が変更されたら C# サーバーへ通知
+            if (delay !== lastSyncedDelay && typeof ProtocolManager !== 'undefined' && ProtocolManager.syncFps) {
+                lastSyncedDelay = delay;
+                ProtocolManager.syncFps(delay);
             }
+
+            return delay;
         }
 
         // リアルタイムタイマー更新ループを起動
         startTimerUpdate();
+
+        // ─── 通信量計測モード設定 ───
+        // true : response.headers から実受信用ヘッダー長を動的計算 (リアルタイム実測モード)
+        // false: 従来の固定値概算モード (即座に固定値に戻したい場合はここを false に変更)
+        const USE_DYNAMIC_HEADER_CALC = true;
+
+        const HTTP_HEADER_OVERHEAD_FIXED = 600; // 固定値モード時のHTTPヘッダー概算サイズ (Byte)
+        const WS_FRAME_OVERHEAD = 4;            // WebSocketフレームヘッダーの概算サイズ (Byte)
+
+        // レスポンスヘッダーのバイトサイズを動的に計算するヘルパー関数
+        function getResponseHeaderBytes(response) {
+            if (!USE_DYNAMIC_HEADER_CALC || !response || !response.headers) {
+                return HTTP_HEADER_OVERHEAD_FIXED;
+            }
+            let size = 17; // "HTTP/1.1 200 OK\r\n" ステータスライン概算
+            response.headers.forEach((val, key) => {
+                size += key.length + val.length + 4; // "key: value\r\n"
+            });
+            // リクエストヘッダー（Host, User-Agent, Cookie等）の動的概算
+            const requestHeaderEst = 350 + (location.hostname ? location.hostname.length : 10);
+            return size + requestHeaderEst;
+        }
 
         // 受信バイト数を人間が読みやすい最適な単位（B, KB, MB, GB）にフォーマットしてバッジを更新するヘルパー関数
         function updateDataUsage(bytes) {
@@ -3361,6 +3406,8 @@
         initSettingsButtons('fps-group', targetFps, value => {
             targetFps = value;
             localStorage.setItem('targetFps', value); // 前回選択値をlocalStorageに記憶
+            const delay = (targetFps >= 60 || targetFps <= 0) ? 16 : Math.round(1000 / targetFps);
+            ProtocolManager.syncFps(delay);
         });
 
         // 画質設定変更の監視および保存
@@ -3649,11 +3696,12 @@
                     return;
                 }
 
-                // ─── 204 No Content の場合は差分なし → 描画をスキップしてタイマーへ
+                // ─── 204 No Content の場合は差分なし → HTTPヘッダー分のみ加算してタイマーへ
                 if (response.status === 204) {
+                    if (typeof updateDataUsage === 'function') {
+                        updateDataUsage(getResponseHeaderBytes(response));
+                    }
                     isFirstWebpRequest = false; // 204応答であっても初期通信は成立したためフラグを下げる
-                    frameCount++;
-                    updateFpsDisplay();
                     isUpdating = false; // タイマー設定前に排他ロックを解放
 
                     // 実処理にかかった時間を差し引いて次の更新ディレイを補正します（下限5ms）
@@ -3670,8 +3718,8 @@
                 const diffType = response.headers.get('X-Diff-Type');
                 const blob     = await response.blob();
 
-                // 実際に受信したバイトサイズを通信量メーターに加算
-                updateDataUsage(blob.size);
+                // 実際に受信したバイトサイズ ＋ HTTPヘッダーサイズ（動的計測または固定値）を通信量メーターに加算
+                updateDataUsage(blob.size + getResponseHeaderBytes(response));
 
                 // ─── Blob から Image を生成し、ロード完了後に canvas へ直接描画する
                 const img = new Image();
@@ -4173,13 +4221,20 @@
                     return;
                 }
 
-                // データ未同期（204）の場合はHUDを更新せず、次回のポーリングで再試行
+                // データ未同期（204）の場合もHTTPヘッダー分の通信量を加算
                 if (response.status === 204) {
+                    if (typeof updateDataUsage === 'function') {
+                        updateDataUsage(getResponseHeaderBytes(response));
+                    }
                     return;
                 }
 
                 if (!response.ok) throw new Error("HUD fetch failed");
-                const data = await response.json();
+                const text = await response.text();
+                if (typeof updateDataUsage === 'function') {
+                    updateDataUsage(text.length + getResponseHeaderBytes(response));
+                }
+                const data = JSON.parse(text);
 
                 // ----------------------------------------------------------------------------
                 // 1. 資源・資材データの連動更新 (データ変更時のみ実行)
@@ -4681,7 +4736,12 @@
                 return;
             }
             isMoveSending = true;
-            fetch(`/control?action=move&x=${x}&y=${y}`)
+            const moveUrl = `/control?action=move&x=${x}&y=${y}`;
+            const reqHeaderOverhead = USE_DYNAMIC_HEADER_CALC ? 350 : HTTP_HEADER_OVERHEAD_FIXED;
+            if (typeof updateDataUsage === 'function') {
+                updateDataUsage(moveUrl.length + reqHeaderOverhead);
+            }
+            fetch(moveUrl)
                 .catch(() => {})
                 .finally(() => {
                     isMoveSending = false;
@@ -4706,6 +4766,10 @@
                 let url = `/control?action=${action}`;
                 if (x !== undefined) url += `&x=${x}`;
                 if (y !== undefined) url += `&y=${y}`;
+                const reqHeaderOverhead = USE_DYNAMIC_HEADER_CALC ? 350 : HTTP_HEADER_OVERHEAD_FIXED;
+                if (typeof updateDataUsage === 'function') {
+                    updateDataUsage(url.length + reqHeaderOverhead);
+                }
                 fetch(url).catch(() => {});
             }
         }
@@ -4822,9 +4886,11 @@
         });
 
         // クリックボタン操作
+        // [FIX] pointerdown/pointerup/pointercancelで.clickedクラスを操作し、CSSアニメーションを制御
         const clickBtnElement = document.getElementById('click-btn');
         clickBtnElement.addEventListener('pointerdown', e => {
             e.preventDefault();
+            clickBtnElement.classList.add('clicked');
             // 動的FPS制御：操作検出でタイムスタンプを更新（アクティブ状態に復帰）
             const isSlowFpsMode = (Date.now() - lastOperationTime) >= ACTIVE_TIMEOUT;
             lastOperationTime = Date.now();
@@ -4841,15 +4907,28 @@
             sendControlAction('click');
         });
 
+        clickBtnElement.addEventListener('pointerup', e => {
+            clickBtnElement.classList.remove('clicked');
+        });
+
+        clickBtnElement.addEventListener('pointercancel', e => {
+            clickBtnElement.classList.remove('clicked');
+        });
+
         //============================================================================================
         // 艦隊ステータスHUDのシングルクリック/シングルタップで艦隊詳細HUDを切り替え
         //============================================================================================
         (function() {
-            const fleetHud = document.getElementById('fleet-hud');
-            if (!fleetHud) return;
-
-            // シングルクリックイベント（マウス/トラックパッド用）
-            fleetHud.addEventListener('click', (e) => {
+                    const fleetHud = document.getElementById('fleet-hud');
+                    if (!fleetHud) return;
+        
+                    // [FIX] pointerdownでstopPropagation。親#trackpadのsetPointerCaptureを阻止しclick発火を確保
+                    fleetHud.addEventListener('pointerdown', e => {
+                        e.stopPropagation();
+                    });
+        
+                    // シングルクリックイベント（マウス/トラックパッド用）
+                    fleetHud.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 switchFleetDetail();
@@ -4872,11 +4951,16 @@
         //============================================================================================
         window._showFleetEquipment = false;  // 装備表示モードのグローバルフラグ（初期値：HP/FEL/AMO表示）
         (function() {
-            const detailPanel = document.getElementById('fleet-detail-panel');
-            if (!detailPanel) return;
-
-            // クリックイベント（マウス/トラックパッド用）
-            detailPanel.addEventListener('click', (e) => {
+                    const detailPanel = document.getElementById('fleet-detail-panel');
+                    if (!detailPanel) return;
+        
+                    // [FIX] pointerdownでstopPropagation。親#trackpadのsetPointerCaptureを阻止しclick発火を確保
+                    detailPanel.addEventListener('pointerdown', e => {
+                        e.stopPropagation();
+                    });
+        
+                    // クリックイベント（マウス/トラックパッド用）
+                    detailPanel.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 window._showFleetEquipment = !window._showFleetEquipment;

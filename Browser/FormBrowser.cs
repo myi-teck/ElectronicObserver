@@ -269,128 +269,76 @@ namespace Browser
 		/// </summary>
 		internal string CaptureEngineScript => @"
 			(function() {
-				// 二重登録 of 防止
+				// 二重登録の防止
 				if (window._kancolleCaptureEngine) return;
 
 				window._kancolleCaptureEngine = {
-					webpQuality: 0.6,      // WebP圧縮品質（初期値60%、スライダーとリアルタイム連動）
-					lastWebp: null,        // 最新のエンコード済みWebP画像キャッシュ
-					lastThumbData: null,    // 前フレームの極小サムネイルImageData（差分判定用）
-					hasNewFrame: false,    // 未取得 of 新しいフレームがあるかを示すフラグ
-					lastCaptureTime: 0,
-					intervalMs: 100,       // 10 FPS (100msに1回キャプチャと差分判定を行う)
-					isEncoding: false,     // バックグラウンドでのエンコード実行中排他ロックフラグ
+					webpQuality: 0.6,      // WebP圧縮品質
+					lastWebp: null,        // バックグラウンド生成済みWebPキャッシュ
+					isEncoding: false,     // 排他フラグ
 
 					start: function() {
 						const canvas = document.querySelector('canvas');
 						if (!canvas) {
-							// canvas が未生成の場合は150ms待って再試行
 							setTimeout(() => this.start(), 150);
 							return;
 						}
 
-						// 差分判定および縮小処理用の極小インメモリ canvas を初期化
-						const thumbCanvas = document.createElement('canvas');
-						thumbCanvas.width = 160;
-						thumbCanvas.height = 96;
-						const thumbCtx = thumbCanvas.getContext('2d');
+						const offCanvas = document.createElement('canvas');
+						const offCtx = offCanvas.getContext('2d');
 
-						// WebGLのpreserveDrawingBuffer=falseによるバッファ即時クリアを克服するため、
-						// requestAnimationFrame 同期ループを用いて、描画完了直後のバッファがある瞬間をフックする
+						// WebGL バッファ保存 ＋ バックグラウンド WebP キャッシュ生成
 						const loop = () => {
-							const now = Date.now();
-							// 100ms周期に達し、かつ現在エンコード中でない場合のみ処理を実行
-							if (now - this.lastCaptureTime >= this.intervalMs && !this.isEncoding) {
-								try {
-									if (thumbCtx) {
-										// 現在のゲーム画面の縮小コピーを描画
-										thumbCtx.drawImage(canvas, 0, 0, 160, 96);
-										const currThumbData = thumbCtx.getImageData(0, 0, 160, 96);
-
-										let hasDiff = false;
-										if (!this.lastThumbData) {
-											// 初回起動時は必ず差分ありと判定
-											hasDiff = true;
-										} else {
-											const d1 = this.lastThumbData.data;
-											const d2 = currThumbData.data;
-											// RGBのピクセル差分をループ比較（しきい値8でアンチエイリアスの微小ノイズを許容）
-											for (let i = 0; i < d1.length; i += 4) {
-												if (Math.abs(d1[i] - d2[i]) > 8 ||
-													Math.abs(d1[i+1] - d2[i+1]) > 8 ||
-													Math.abs(d1[i+2] - d2[i+2]) > 8) {
-													hasDiff = true;
-													break;
-												}
-											}
-										}
-
-										// 差分が検出された場合のみ、WebGLバッファが生きているこの描画フレーム内で非同期エンコードを開始
-										if (hasDiff) {
-											this.isEncoding = true; // 排他ロックを確保
-											this.lastThumbData = currThumbData;
-
-											// 非同期で WebP Blob へエンコード（完全にバックグラウンドスレッドで処理）
-											canvas.toBlob((blob) => {
-												if (!blob) {
-													this.isEncoding = false;
-													return;
-												}
-												// FileReaderを使って非同期に Base64 DataURL へ変換し、完了後にキャッシュを更新
-												const reader = new FileReader();
-												reader.onloadend = () => {
-													this.lastWebp = reader.result;
-													this.hasNewFrame = true;
-													this.isEncoding = false; // 排他ロックを解放
-												};
-												reader.onerror = () => {
-													this.isEncoding = false;
-												};
-												reader.readAsDataURL(blob);
-											}, 'image/webp', this.webpQuality);
-										}
+							try {
+								if (canvas.width > 0 && !this.isEncoding) {
+									if (offCanvas.width !== canvas.width || offCanvas.height !== canvas.height) {
+										offCanvas.width = canvas.width;
+										offCanvas.height = canvas.height;
 									}
-									this.lastCaptureTime = now;
-								} catch (e) {
-									console.error('Capture loop error:', e);
-									this.isEncoding = false;
+									offCtx.drawImage(canvas, 0, 0);
+
+									this.isEncoding = true;
+									offCanvas.toBlob((blob) => {
+										if (!blob) {
+											this.isEncoding = false;
+											return;
+										}
+										const reader = new FileReader();
+										reader.onloadend = () => {
+											if (reader.result) {
+												this.lastWebp = reader.result;
+											}
+											this.isEncoding = false;
+										};
+										reader.onerror = () => {
+											this.isEncoding = false;
+										};
+										reader.readAsDataURL(blob);
+									}, 'image/webp', this.webpQuality);
 								}
+							} catch (e) {
+								this.isEncoding = false;
 							}
 							requestAnimationFrame(loop);
 						};
 						requestAnimationFrame(loop);
 					},
 
-					// C# から EvaluateScriptAsync で呼び出され、キャッシュデータを引き抜くメソッド
+					// C# から EvaluateScriptAsync で呼び出され、事前に完成している WebP キャッシュを即座(0.5ms)に渡す
 					pull: function(force) {
-						// 初回ロード時等で lastWebp キャッシュがまだ無い場合は、その場で一度強制的にエンコードを試みる（フォールバック）
-						if (!this.lastWebp) {
-							const canvas = document.querySelector('canvas');
-							if (canvas) {
-								try {
-									this.lastWebp = canvas.toDataURL('image/webp', this.webpQuality);
-									this.hasNewFrame = true;
-								} catch (e) {
-									return ['error', e.toString()];
-								}
-							}
-						}
-
-						// クライアントの初期化要求（force = true）時は、未取得フラグにかかわらず現在のキャッシュを強制返却
-						if (force && this.lastWebp) {
+						if (this.lastWebp) {
 							return ['full', this.lastWebp];
 						}
-
-						// 新しい差分フレームがキャッシュされている場合はそれを返却し、取得済みフラグを下げる
-						if (this.hasNewFrame && this.lastWebp) {
-							this.hasNewFrame = false;
-							return ['full', this.lastWebp];
+						const canvas = document.querySelector('canvas');
+						if (canvas) {
+							try {
+								return ['full', canvas.toDataURL('image/webp', this.webpQuality)];
+							} catch (e) { }
 						}
-
-						// 変化がない場合は、余分なデータ転送を避けるため none を返却
 						return ['none', ''];
 					}
 				};
+
 				window._kancolleCaptureEngine.start();
 			})();
 			";

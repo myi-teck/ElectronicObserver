@@ -218,7 +218,13 @@ namespace Browser
 			public string SessionId { get; }
 			public CancellationTokenSource CancellationToken { get; }
 			public DateTime LastHeartbeat { get; set; }
-	
+
+			/// <summary>
+			/// クライアントが要求するキャプチャ目標間隔（ミリ秒）。
+			/// 0 = 無制限 (MAX)、100 = 10FPS、60000 = スリープ (1分に1回)
+			/// </summary>
+			public volatile int TargetIntervalMs = 100;
+
 			/// <summary>
 			/// バッファ操作の排他制御用ロック（SetLatestFrame / GetLatestFrame / ReturnFrame）
 			/// </summary>
@@ -253,9 +259,9 @@ namespace Browser
 			private bool _frameUpdated;
 	
 			/// <summary>
-			/// フレーム到着イベント（キャプチャタスク → 送信タスク間の通知）
+			/// フレーム到着シグナル（非同期 await 対応、OSタイマー解像度制限排除）
 			/// </summary>
-			private readonly ManualResetEventSlim _frameEvent = new ManualResetEventSlim(false);
+			private readonly SemaphoreSlim _frameSignal = new SemaphoreSlim(0, 1);
 
 			public WebSocketSession(System.Net.WebSockets.WebSocket ws, string sessionId)
 			{
@@ -268,12 +274,19 @@ namespace Browser
 			}
 
 			/// <summary>
-			/// 最新フレームの到着を待機します（送信タスクから呼び出し）。
-			/// タイムアウト後またはフレーム到着時に true、キャンセル時は false を返す。
+			/// 最新フレームの到着を非同期待機します（送信タスクから呼び出し）。
+			/// 0ms非同期で即座に再開し、OSタイマー制度による10FPS制限を排除する。
 			/// </summary>
-			public bool WaitForFrame(int timeoutMs, CancellationToken token)
+			public async Task<bool> WaitForFrameAsync(int timeoutMs, CancellationToken token)
 			{
-				return _frameEvent.Wait(timeoutMs, token);
+				try
+				{
+					return await _frameSignal.WaitAsync(timeoutMs, token);
+				}
+				catch (OperationCanceledException)
+				{
+					return false;
+				}
 			}
 
 			/// <summary>
@@ -298,7 +311,12 @@ namespace Browser
 					_latestFrameLength = data.Length;
 					_frameUpdated = true;
 				}
-				_frameEvent.Set();
+
+				// セマフォが0（待機中）の場合のみReleaseして送信タスクを0ms即時再開
+				if (_frameSignal.CurrentCount == 0)
+				{
+					try { _frameSignal.Release(); } catch (SemaphoreFullException) { }
+				}
 			}
 
 			/// <summary>
@@ -314,7 +332,6 @@ namespace Browser
 				{
 					if (!_frameUpdated) return default(ArraySegment<byte>);
 					_frameUpdated = false;
-					_frameEvent.Reset();
 
 					byte[] frame = _latestFrameBuffer;
 					int length = _latestFrameLength;
@@ -342,7 +359,7 @@ namespace Browser
 			public void Dispose()
 			{
 				CancellationToken.Cancel();
-				_frameEvent.Set(); // 待機中の送信タスクを解放
+				try { _frameSignal.Release(); } catch { } // 待機中の送信タスクを解放
 
 				// 残っているフレームバッファを返却
 				lock (_bufferLock)
@@ -356,7 +373,7 @@ namespace Browser
 
 				CancellationToken.Dispose();
 				SendSemaphore.Dispose();
-				_frameEvent.Dispose();
+				_frameSignal.Dispose();
 			}
 		}
 
@@ -1733,6 +1750,7 @@ namespace Browser
 </body>
 </html>";
 		}
+
 		// 処理ブロック名 : SendHudData
 		// 概要           : メインプロセスから受信した最新のゲームデータをJSON形式で返却します。
 		//                  クライアントからの要求バージョンと一致する場合は極小JSONで「変更なし」を応答し、
@@ -2187,14 +2205,28 @@ namespace Browser
 		//------------------------------------------------------------------------------------
 		private async Task WebSocketCaptureLoopAsync(WebSocketSession session)
 		{
+			var ws = session.WebSocket;
 			var token = session.CancellationToken.Token;
+			var swTotal = new System.Diagnostics.Stopwatch();
+			var swCap = new System.Diagnostics.Stopwatch();
+			var swSend = new System.Diagnostics.Stopwatch();
+
+			int frameCounter = 0;
+			long totalCapTime = 0;
+			long totalSendTime = 0;
+			DateTime lastLogTime = DateTime.UtcNow;
 
 			try
 			{
-				while (!token.IsCancellationRequested)
+				while (!token.IsCancellationRequested && ws.State == WebSocketState.Open)
 				{
+					swTotal.Restart();
+					swCap.Restart();
+
 					// 画面キャプチャ
 					var capture = await CaptureCanvasAsync(false);
+					swCap.Stop();
+
 					string type = capture.Item1;
 					string dataUrl = capture.Item2;
 
@@ -2203,36 +2235,75 @@ namespace Browser
 						byte[] webpData = ConvertToBytes(dataUrl, "data:image/webp");
 						if (webpData != null && webpData.Length > 0)
 						{
-							// SetLatestFrame は既存フレームを自動的に破棄（ArrayPool 返却）し、
-							// 最新1枚のみを保持する。これにより Drop Frame が実現される。
-							session.SetLatestFrame(webpData);
+							swSend.Restart();
+							await session.SendSemaphore.WaitAsync(token);
+							try
+							{
+								if (ws.State == WebSocketState.Open)
+								{
+									var segment = new ArraySegment<byte>(webpData);
+									await ws.SendAsync(segment, WebSocketMessageType.Binary, true, token);
+								}
+							}
+							finally
+							{
+								session.SendSemaphore.Release();
+							}
+							swSend.Stop();
+
+							frameCounter++;
+							totalCapTime += swCap.ElapsedMilliseconds;
+							totalSendTime += swSend.ElapsedMilliseconds;
 						}
 					}
-					// type == "none" の場合は差分なしなので何もしない
 
-					// 動的 FPS 制御（画面変化時は 16ms ≒ 最大60FPS、静止時は 50ms 待機でCPU・通信負荷を最小化）
-					int delayMs = (type == "full") ? 16 : 50;
-					await Task.Delay(delayMs, token);
+					swTotal.Stop();
+					long totalMs = swTotal.ElapsedMilliseconds;
+
+					// 3秒ごとに直列送信プロファイリング結果を出力
+					if ((DateTime.UtcNow - lastLogTime).TotalSeconds >= 3.0)
+					{
+						double sec = (DateTime.UtcNow - lastLogTime).TotalSeconds;
+						double fps = frameCounter / sec;
+						double avgCap = frameCounter > 0 ? (double)totalCapTime / frameCounter : 0;
+						double avgSend = frameCounter > 0 ? (double)totalSendTime / frameCounter : 0;
+
+						Log(2, $"[RemoteProfiler] Direct WS FPS: {fps:F1}, AvgCap: {avgCap:F1}ms, AvgSend: {avgSend:F1}ms, TargetInterval: {session.TargetIntervalMs}ms");
+
+						frameCounter = 0;
+						totalCapTime = 0;
+						totalSendTime = 0;
+						lastLogTime = DateTime.UtcNow;
+					}
+
+					int targetInterval = session.TargetIntervalMs;
+
+					if (targetInterval <= 0)
+					{
+						// 無制限 (MAX): 最速で次のキャプチャへ (1ms ディレイで全走)
+						await Task.Delay(1, token);
+					}
+					else
+					{
+						// 目標 FPS / 間隔に応じたディレイ計算
+						int remainingDelay = targetInterval - (int)totalMs;
+						if (remainingDelay > 0)
+						{
+							await Task.Delay(remainingDelay, token);
+						}
+					}
 				}
 			}
 			catch (OperationCanceledException) { /* 正常終了 */ }
 			catch (Exception ex)
 			{
-				Log(3, $"[RemoteController] WebSocket キャプチャループエラー (Session: {session.SessionId}): {ex.Message}");
+				Log(3, $"[RemoteController] WebSocket キャプチャ/送信ループエラー (Session: {session.SessionId}): {ex.Message}");
 			}
 		}
 
 		//====================================================================================
 		// 処理ブロック名 : WebSocketSendLoopAsync
-		// 概要           : 送信専用のループタスク。SemaphoreSlim で await 可能な排他制御を行い、
-		//                  WebSocket.State チェックと SendAsync を同一ロックブロック内で実行して
-		//                  TOCTOU (Time-of-Check to Time-of-Use) 競合を防ぐ。
-		//                  ArrayPool バッファを ArraySegment としてそのまま送信し、
-		//                  送信完了後に ReturnFrame で返却（不要なコピーを排除）。
-		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/27
-		// version        : 2.00 (TOCTOU 対策, ArraySegment 直接送信, SemaphoreSlim 導入)
+		// 概要           : Heartbeat 送信専用のループタスク。
 		//------------------------------------------------------------------------------------
 		private async Task WebSocketSendLoopAsync(WebSocketSession session)
 		{
@@ -2241,38 +2312,11 @@ namespace Browser
 
 			try
 			{
-				while (!token.IsCancellationRequested)
+				while (!token.IsCancellationRequested && ws.State == WebSocketState.Open)
 				{
-					// フレーム到着を待機（1秒タイムアウト）
-					bool signaled = session.WaitForFrame(1000, token);
+					await Task.Delay(WebSocketHeartbeatIntervalMs, token);
 
-					if (token.IsCancellationRequested) break;
-
-					// 最新フレームを取得（ArraySegment として直接取得、コピー不要）
-					ArraySegment<byte> frame = session.GetLatestFrame();
-					if (frame.Count > 0)
-					{
-						// SemaphoreSlim で排他制御：State チェックと SendAsync を同一ブロック内で実行
-						// これにより TOCTOU 競合を防ぎ、接続切断時の例外発生を抑制する
-						await session.SendSemaphore.WaitAsync(token);
-						try
-						{
-							if (ws.State != WebSocketState.Open)
-							{
-								// 接続が既に閉じている場合は終了（finallyでフレーム返却）
-								break;
-							}
-
-							// 送信（State チェックと同一ロック内で実行）
-							await ws.SendAsync(frame, WebSocketMessageType.Binary, true, token);
-						}
-						finally
-						{
-							// 送信完了（または例外発生）後、ArrayPool バッファを返却
-							session.ReturnFrame(frame);
-							session.SendSemaphore.Release();
-						}
-					}
+					if (ws.State != WebSocketState.Open) break;
 
 					// Heartbeat 処理
 					if ((DateTime.UtcNow - session.LastHeartbeat).TotalMilliseconds > WebSocketHeartbeatIntervalMs)
@@ -2280,27 +2324,24 @@ namespace Browser
 						await session.SendSemaphore.WaitAsync(token);
 						try
 						{
-							if (ws.State != WebSocketState.Open) break;
-							await SendHeartbeatAsync(ws, token);
+							if (ws.State == WebSocketState.Open)
+							{
+								var segment = new ArraySegment<byte>(HeartbeatBytes);
+								await ws.SendAsync(segment, WebSocketMessageType.Text, true, token);
+								session.LastHeartbeat = DateTime.UtcNow;
+							}
 						}
 						finally
 						{
 							session.SendSemaphore.Release();
 						}
-						session.LastHeartbeat = DateTime.UtcNow;
 					}
 				}
 			}
 			catch (OperationCanceledException) { /* 正常終了 */ }
 			catch (Exception ex)
 			{
-				Log(3, $"[RemoteController] WebSocket 送信ループエラー (Session: {session.SessionId}): {ex.Message}");
-			}
-			finally
-			{
-				Log(2, $"[RemoteController] WebSocket 送信ループ終了: SessionID={session.SessionId}");
-				_webSocketSessions.TryRemove(session.SessionId, out _);
-				session.Dispose();
+				Log(3, $"[RemoteController] WebSocket Heartbeat ループエラー (Session: {session.SessionId}): {ex.Message}");
 			}
 		}
 
@@ -2399,6 +2440,24 @@ namespace Browser
 							Log(3, $"[RemoteController] WebSocket init キャプチャエラー: {ex.Message}");
 						}
 					});
+				}
+				else if (action == "set_fps")
+				{
+					string intervalStr = ExtractJsonString(message, "intervalMs");
+					if (int.TryParse(intervalStr, out int intervalMs))
+					{
+						session.TargetIntervalMs = Math.Max(0, Math.Min(300000, intervalMs));
+						int jsInterval = (session.TargetIntervalMs <= 0) ? 16 : Math.Max(16, session.TargetIntervalMs);
+						Log(2, $"[RemoteController] WebSocket 目標間隔変更受領: {session.TargetIntervalMs}ms (Session: {session.SessionId})");
+
+						// ブラウザJS側の常駐キャプチャタイマーも動的更新
+						try
+						{
+							var kancolleFrame = _parent.GetKanColleFrame();
+							kancolleFrame?.ExecuteJavaScriptAsync($"if(window._kancolleCaptureEngine)window._kancolleCaptureEngine.intervalMs={jsInterval};");
+						}
+						catch { }
+					}
 				}
 				else if (action == "move" && double.TryParse(xStr, out double x) && double.TryParse(yStr, out double y))
 				{
