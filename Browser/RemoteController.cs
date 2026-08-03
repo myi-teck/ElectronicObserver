@@ -167,11 +167,23 @@ namespace Browser
 		private int _sendFrameCounter;
 
 		// 2026/07/29 新規作成（フェーズ5：中央キャプチャループのキャンセルトークン）
-		private CancellationTokenSource _centralCaptureCts;
+		// [Task05-対策1-volatile] volatile 宣言により、スレッド間の変数可視性を保証
+		// ダブルチェックロックパターンが正しく機能するために必須
+		private volatile CancellationTokenSource _centralCaptureCts;
 	
-
+	
 		// 2026/07/29 新規作成（フェーズ5：中央キャプチャループのタスク参照）
-		private Task _centralCaptureTask;
+		// [Task05-対策1-volatile] volatile 宣言により、スレッド間の変数可視性を保証
+		private volatile Task _centralCaptureTask;
+
+		// [Task05-対策1-排他制御] 複数クライアントの同時接続時に _centralCaptureCts / _centralCaptureTask の
+		// 再初期化が競合するのを防ぐためのロックオブジェクト
+		private static readonly object _captureStartLock = new object();
+
+		// [Task05-外部レビュー 指摘1] 再起動時 / 新規接続時にフルキーフレームを強制取得するフラグ
+		// ※ CefSharp JS側が「画面変化なし」として type == "none" を返す場合、
+		//   _sharedFrameBuffer が更新されず、新規接続クライアントの画面がブラックアウトするのを防ぐ
+		private volatile bool _forceNextKeyFrame = false;
 
 		// 2026/07/29 新規作成（ゾンビクリーンアップ間隔：5秒）
 		private DateTime _lastZombieCleanupTime = DateTime.MinValue;
@@ -3027,10 +3039,45 @@ namespace Browser
 			_refreshTokens.Clear();
 
 			// 中央キャプチャループのキャンセル（フェーズ5）
+			// [外部レビュー 指摘4] UIスレッドでの .Wait() による同期ブロックは厳禁
+			// CancellationTokenSource.Cancel() による非同期キャンセルのみに変更
 			if (_centralCaptureCts != null && !_centralCaptureCts.IsCancellationRequested)
 			{
 				_centralCaptureCts.Cancel();
 				_centralCaptureCts.Dispose();
+			}
+
+			// [二次レビュー Minor 指摘3] タスクの終了確認とログ出力
+			// ※ 同期的な .Wait() はデッドロック回避のため行わないが、
+			//   タスクの終了状態を確認し、異常終了時はログに残す
+			if (_centralCaptureTask != null)
+			{
+				// 5秒以内にタスクが完了するのを非同期で確認（UIスレッドをブロックしない）
+				var completionCheck = Task.Run(async () =>
+				{
+					try
+					{
+						if (await Task.WhenAny(_centralCaptureTask, Task.Delay(5000)) == _centralCaptureTask)
+						{
+							if (_centralCaptureTask.IsFaulted && _centralCaptureTask.Exception != null)
+							{
+								Log(3, $"[RemoteController] 中央キャプチャループが異常終了しました: {_centralCaptureTask.Exception.InnerException?.Message}");
+							}
+							else
+							{
+								Log(2, "[RemoteController] 中央キャプチャループが正常に終了しました");
+							}
+						}
+						else
+						{
+							Log(2, "[RemoteController] 中央キャプチャループの終了がタイムアウトしました（プロセス終了により解放される）");
+						}
+					}
+					catch (Exception ex)
+					{
+						Log(3, $"[RemoteController] タスク終了確認中の例外: {ex.Message}");
+					}
+				});
 			}
 
 			// WebSocket セッションのクリーンアップ
@@ -3170,11 +3217,25 @@ namespace Browser
 				Log(2, $"[RemoteController] WebSocket 接続確立: SessionID={sessionId}, IP={req.RemoteEndPoint}, 接続数={count}/{MaxConcurrentClients}");
 
 				// 中央キャプチャループが起動していない場合は起動（フェーズ5）
-				if (_centralCaptureCts == null || _centralCaptureCts.IsCancellationRequested)
+				// [Task05-対策1] タスク完了状態も判定条件に追加（自動停止後の再起動を確実に検知）
+				// [外部レビュー 指摘2] _centralCaptureTask == null を含める（TOCTOU 競合対策）
+				if (_centralCaptureCts == null || _centralCaptureCts.IsCancellationRequested ||
+					_centralCaptureTask == null || _centralCaptureTask.IsCompleted)
 				{
-					_centralCaptureCts = new CancellationTokenSource();
-					_centralCaptureTask = Task.Run(() => CentralCaptureLoopAsync(_centralCaptureCts.Token));
-					Log(2, "[RemoteController] 中央キャプチャループを起動しました (フェーズ5)");
+					lock (_captureStartLock)
+					{
+						// 再チェック（ダブルチェックロックパターン）
+						if (_centralCaptureCts == null || _centralCaptureCts.IsCancellationRequested ||
+							_centralCaptureTask == null || _centralCaptureTask.IsCompleted)
+						{
+							_centralCaptureCts?.Dispose();
+							_centralCaptureCts = new CancellationTokenSource();
+							// [外部レビュー 指摘1] 再起動時は必ずフルキーフレームを要求
+							_forceNextKeyFrame = true;
+							_centralCaptureTask = Task.Run(() => CentralCaptureLoopAsync(_centralCaptureCts.Token));
+							Log(2, "[RemoteController] 中央キャプチャループを起動しました (フェーズ5)");
+						}
+					}
 				}
 
 				// セッション固有のタスクを開始（ファンアウト / 送信 / 受信）
@@ -3210,61 +3271,82 @@ namespace Browser
 		//------------------------------------------------------------------------------------
 		private async Task CentralCaptureLoopAsync(CancellationToken token)
 		{
+			Log(2, "[RemoteController] 中央キャプチャループを開始しました");
+			bool isFirstFrameAfterStart = true;
+
 			var sw = new System.Diagnostics.Stopwatch();
 			long nextTargetTicks = System.Diagnostics.Stopwatch.GetTimestamp();
 			long ticksPerMs = System.Diagnostics.Stopwatch.Frequency / 1000;
 			int lastTargetInterval = GetMaxFpsIntervalMs();
 
-			while (!token.IsCancellationRequested)
+			try
 			{
-				try
+				while (!token.IsCancellationRequested)
 				{
+					// [Task05-対策1] 省電力化: 接続数が0台になったら即座にループを抜ける
+					// ※ Interlocked.CompareExchange は値の読み取りのみを行い（第2・第3引数が等しいため交換は発生しない）、
+					//   アトミックな読み取りおよびメモリバリアを保証する
+					if (Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0) <= 0)
+					{
+						Log(2, "[RemoteController] 接続クライアントが0台になったため、中央キャプチャループを停止します");
+						break;
+					}
+
+					// [外部レビュー 指摘1] 再起動後初回、または強制フラグが立っている場合は isInit = true でフルフレームを取得
+					// ※ CefSharp JS側が差分キャッシュを保持しており、接続直後に type == "none" を返すケースを防ぐ
+					bool isInit = isFirstFrameAfterStart || _forceNextKeyFrame;
+					if (isInit)
+					{
+						_forceNextKeyFrame = false;
+						isFirstFrameAfterStart = false;
+					}
+
 					sw.Restart();
 	
 					// 画面キャプチャ（CefSharpへの要求: 1回/フレーム）
 					// [案G-1] CaptureCanvasAsync の実行時間を Stopwatch で計測
 					var swCapture = System.Diagnostics.Stopwatch.StartNew();
-					var capture = await CaptureCanvasAsync(false);
+					var capture = await CaptureCanvasAsync(isInit);
 					swCapture.Stop();
 					long captureElapsedMs = swCapture.ElapsedMilliseconds;
 					RecordCaptureLatency(captureElapsedMs);
 					string type = capture.Item1;
 					string dataUrl = capture.Item2;
 
-						if (type == "full" && !string.IsNullOrEmpty(dataUrl))
+					if (type == "full" && !string.IsNullOrEmpty(dataUrl))
+					{
+						// ArrayPool を使用して GC 負荷を低減
+						// ConvertToBytesOptimized は (Buffer, ActualLength) のタプルを返し、
+						// ActualLength は WebP データの正確なバイト数（ArrayPoolのバッファサイズとは異なる）
+						var (webpData, actualDataLength) = ConvertToBytesOptimized(dataUrl, "data:image/webp");
+						if (webpData != null && actualDataLength > 0)
 						{
-							// ArrayPool を使用して GC 負荷を低減
-							// ConvertToBytesOptimized は (Buffer, ActualLength) のタプルを返し、
-							// ActualLength は WebP データの正確なバイト数（ArrayPoolのバッファサイズとは異なる）
-							var (webpData, actualDataLength) = ConvertToBytesOptimized(dataUrl, "data:image/webp");
-							if (webpData != null && actualDataLength > 0)
+							// グローバルシーケンス番号インクリメント（int型、Interlocked.Increment対応）
+							int seq = Interlocked.Increment(ref _globalSequenceNumber);
+	
+							// 共有バッファにセット（参照カウントは GetFrame/ReleaseFrame で管理）
+							// SetFrameは内部でBuffer.BlockCopyするため、独立した内部バッファを持つ
+							_sharedFrameBuffer.SetFrame(webpData, actualDataLength, seq);
+	
+							// [厳格な寿命管理] SetFrameは内部でBuffer.BlockCopyするため、
+							// 直ちにArrayPoolへ返却可能（ファンアウトとのバッファ競合を防止）
+							_bufferPool.Return(webpData);
+	
+							// 全WebSocketセッションにシグナルをキック
+							// .ToList() によりスレッドセーフなコピーを作成してから列挙
+							// 列挙中にセッションが Dispose されて _webSocketSessions から削除されても安全
+							// [二次レビュー修正] ToArray による毎フレームのアロケーションを排除し、直接 .Values を列挙
+							foreach (var session in _webSocketSessions.Values)
 							{
-								// グローバルシーケンス番号インクリメント（int型、Interlocked.Increment対応）
-								int seq = Interlocked.Increment(ref _globalSequenceNumber);
-	
-								// 共有バッファにセット（参照カウントは GetFrame/ReleaseFrame で管理）
-								// SetFrameは内部でBuffer.BlockCopyするため、独立した内部バッファを持つ
-								_sharedFrameBuffer.SetFrame(webpData, actualDataLength, seq);
-	
-								// [厳格な寿命管理] SetFrameは内部でBuffer.BlockCopyするため、
-								// 直ちにArrayPoolへ返却可能（ファンアウトとのバッファ競合を防止）
-								_bufferPool.Return(webpData);
-	
-								// 全WebSocketセッションにシグナルをキック
-								// .ToList() によりスレッドセーフなコピーを作成してから列挙
-								// 列挙中にセッションが Dispose されて _webSocketSessions から削除されても安全
-								// [二次レビュー修正] ToList → ToArray（GC負荷軽減、リスト構築オーバーヘッド排除）
-								foreach (var session in _webSocketSessions.Values.ToArray())
+								if (session.WebSocket.State == WebSocketState.Open)
 								{
-									if (session.WebSocket.State == WebSocketState.Open)
-									{
-										// フレーム到着シグナル（Channelを使用し、例外発生を防止）
-										// TryWrite はチャンネルが一杯でも例外を投げず、false を返す
-										session._frameSignal.Writer.TryWrite(seq);
-									}
+									// フレーム到着シグナル（Channelを使用し、例外発生を防止）
+									// TryWrite はチャンネルが一杯でも例外を投げず、false を返す
+									session._frameSignal.Writer.TryWrite(seq);
 								}
 							}
 						}
+					}
 
 					sw.Stop();
 
@@ -3297,30 +3379,29 @@ namespace Browser
 					// ゾンビセッションクリーンアップ（中央ループで集約実行）
 					CleanupZombieSessions();
 				}
-				catch (OperationCanceledException)
-				{
-					// キャンセル要求による正常終了
-					break;
-				}
-				catch (Exception ex)
-				{
-					// CefSharpの一時的な応答不可等の一時的なエラーでもループを継続
-					Log(3, $"[RemoteController] 中央キャプチャループで例外発生（ループ継続）: {ex.Message}");
-					// エラー発生後は短めのウェイトを挟んで次フレームへ移行
-					try
-					{
-						await Task.Delay(200, token);
-					}
-					catch (OperationCanceledException)
-					{
-						break;
-					}
-				}
 			}
+			catch (OperationCanceledException)
+			{
+				// キャンセル要求による正常終了
 			}
-	
-			//====================================================================================
-			// 処理ブロック名 : RecordCaptureLatency
+			catch (Exception ex)
+			{
+				// CefSharpの一時的な応答不可等の一時的なエラーでもループを継続
+				Log(3, $"[RemoteController] 中央キャプチャループで例外発生（ループ継続）: {ex.Message}");
+			}
+			finally
+			{
+				// [外部レビュー 指摘2] タスク終了時に参照をクリアし、TOCTOU レース条件を排除
+				lock (_captureStartLock)
+				{
+					_centralCaptureTask = null;
+				}
+				Log(2, "[RemoteController] 中央キャプチャループが完全に終了しました");
+			}
+		}
+		
+				//====================================================================================
+				// 処理ブロック名 : RecordCaptureLatency
 			// 概要           : [案G-2] CaptureCanvasAsync の実行遅延統計を記録し、
 			//                  移動平均が500msを超過した場合に警告ログを出力する。
 			//------------------------------------------------------------------------------------
@@ -3374,6 +3455,11 @@ namespace Browser
 
 			// 前回送信したシーケンス番号（初期値: 0）
 			int lastSentSequenceNumber = 0;
+			
+			// [Task05-対策2] 送信スロットリング用変数（ループ外で一度だけ算出）
+			long lastSentTicks = 0;
+			// [Task05-対策2] `ticksPerMs` はループ外で一度だけ算出（Stopwatch.Frequency は不変値）
+			long ticksPerMs = System.Diagnostics.Stopwatch.Frequency / 1000;
 
 			try
 			{
@@ -3399,8 +3485,28 @@ namespace Browser
 							_sharedFrameBuffer.ReleaseFrame(data);
 							continue;
 						}
-		
-						try
+			
+							// [Task05-対策2] 送信スロットリング判定: 前回送信から TargetIntervalMs 未満の場合はスキップ
+							// [外部レビュー 指摘3] session.TargetIntervalMs は実行中に変更されるため、ループ内で毎回取得
+							// [二次レビュー Minor 指摘2] `session.TargetIntervalMs` が 0 以下の場合はデフォルト16ms (60FPS相当) を使用する
+							int targetInterval = session.TargetIntervalMs <= 0 ? 16 : session.TargetIntervalMs;
+							
+							// targetInterval <= 16（60FPS以上）の場合はスロットリングを適用しない
+							// 理由: 60FPSは中央キャプチャの上限FPSであり、追加のスロットリングは意味をなさない
+							if (lastSentTicks != 0 && targetInterval > 16)
+							{
+								long currentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+								long elapsedMs = (currentTicks - lastSentTicks) / ticksPerMs;
+								// 要求インターバルが経過していない場合は送信をスキップ（Drop Frame）
+								// 2msのジッター余裕を持たせることで、わずかなタイマー誤差を許容する
+								if (elapsedMs < targetInterval - 2)
+								{
+									_sharedFrameBuffer.ReleaseFrame(data);
+									continue;
+								}
+							}
+			
+							try
 						{
 							if (data != null && dataLength > 0)
 								{
@@ -3440,14 +3546,16 @@ namespace Browser
 											long sendMs = swSend.ElapsedMilliseconds;
 											
 											// [FPS Fix] 可観測性: 送信所要時間・セマフォ待機時間をログ出力（100フレームに1回）
-											if (++_sendFrameCounter >= 100)
+											if (Interlocked.Add(ref _sendFrameCounter, 1) >= 100)
 											{
-												_sendFrameCounter = 0;
+												Interlocked.Exchange(ref _sendFrameCounter, 0);
 												Log(3, $"[RemoteController] SendProfile Fanout: send={sendMs}ms, semaphore_wait={semaphoreWaitMs}ms, data={dataLength}B (Session: {session.SessionId})");
 											}
 											
 											// 送信済みシーケンス番号を更新
 											lastSentSequenceNumber = seq;
+											// [Task05-対策2] 送信時刻を更新（スロットリング用）
+											lastSentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
 										}
 										finally
 										{
@@ -3579,9 +3687,9 @@ namespace Browser
 										long sendMs = swSendLocal.ElapsedMilliseconds;
 										
 										// [FPS Fix] 可観測性: 送信所要時間・セマフォ待機時間をログ出力（100フレームに1回）
-										if (++_sendFrameCounter >= 100)
+										if (Interlocked.Add(ref _sendFrameCounter, 1) >= 100)
 										{
-											_sendFrameCounter = 0;
+											Interlocked.Exchange(ref _sendFrameCounter, 0);
 											Log(3, $"[RemoteController] SendProfile CaptureLoop: send={sendMs}ms, semaphore_wait={semaphoreWaitMs}ms, data={actualDataLength}B (Session: {session.SessionId})");
 										}
 									}
@@ -3906,6 +4014,13 @@ namespace Browser
 					if (int.TryParse(intervalStr, out int intervalMs))
 					{
 						session.TargetIntervalMs = Math.Max(0, Math.Min(300000, intervalMs));
+
+						// [外部レビュー 指摘5] FPS変更を受信したら中央キャプチャのFPSキャッシュをクリア
+						// ※ GetMaxFpsIntervalMs() は _cachedSessionCount が一致している場合、
+						//   キャッシュされた _cachedMaxFpsInterval を返すため、
+						//   接続数が変わらない場合でも再計算されるよう強制する
+						_cachedSessionCount = -1;
+
 						int jsInterval = (session.TargetIntervalMs <= 0) ? 16 : Math.Max(16, session.TargetIntervalMs);
 						Log(2, $"[RemoteController] WebSocket 目標間隔変更受領: {session.TargetIntervalMs}ms → JS側: {jsInterval}ms (Session: {session.SessionId})");
 
