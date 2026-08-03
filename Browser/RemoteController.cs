@@ -148,7 +148,7 @@ namespace Browser
 
 		// 2026/07/29 新規作成（フェーズ5：動的FPS制御用キャッシュ）
 		private int _cachedMaxFpsInterval = 100;
-		private int _cachedSessionCount = 0;
+		private volatile int _cachedSessionCount = 0;
 
 		// 2026/07/29 新規作成（IPCプロファイリング：案G-1/2/3）
 		/// <summary>
@@ -3047,21 +3047,20 @@ namespace Browser
 				_centralCaptureCts.Dispose();
 			}
 
-			// [二次レビュー Minor 指摘3] タスクの終了確認とログ出力
-			// ※ 同期的な .Wait() はデッドロック回避のため行わないが、
-			//   タスクの終了状態を確認し、異常終了時はログに残す
-			if (_centralCaptureTask != null)
+			// [二次レビュー Minor 指摘3 / CriticalReview 指摘3] タスク参照をローカル変数にキャプチャしてから監視
+			var task = _centralCaptureTask;
+			if (task != null)
 			{
 				// 5秒以内にタスクが完了するのを非同期で確認（UIスレッドをブロックしない）
 				var completionCheck = Task.Run(async () =>
 				{
 					try
 					{
-						if (await Task.WhenAny(_centralCaptureTask, Task.Delay(5000)) == _centralCaptureTask)
+						if (await Task.WhenAny(task, Task.Delay(5000)) == task)
 						{
-							if (_centralCaptureTask.IsFaulted && _centralCaptureTask.Exception != null)
+							if (task.IsFaulted && task.Exception != null)
 							{
-								Log(3, $"[RemoteController] 中央キャプチャループが異常終了しました: {_centralCaptureTask.Exception.InnerException?.Message}");
+								Log(3, $"[RemoteController] 中央キャプチャループが異常終了しました: {task.Exception.InnerException?.Message}");
 							}
 							else
 							{
@@ -3283,13 +3282,19 @@ namespace Browser
 			{
 				while (!token.IsCancellationRequested)
 				{
-					// [Task05-対策1] 省電力化: 接続数が0台になったら即座にループを抜ける
-					// ※ Interlocked.CompareExchange は値の読み取りのみを行い（第2・第3引数が等しいため交換は発生しない）、
-					//   アトミックな読み取りおよびメモリバリアを保証する
+					// [Task05-対策1 / CriticalReview 指摘1 対策] 省電力化: 接続数が0台になったら即座にループを抜ける
+					// ※ 接続数チェックと _centralCaptureTask のクリアを lock 内でアトミックに実行し TOCTOU 競合を完全防止
 					if (Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0) <= 0)
 					{
-						Log(2, "[RemoteController] 接続クライアントが0台になったため、中央キャプチャループを停止します");
-						break;
+						lock (_captureStartLock)
+						{
+							if (Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0) <= 0)
+							{
+								Log(2, "[RemoteController] 接続クライアントが0台になったため、中央キャプチャループを停止します");
+								_centralCaptureTask = null;
+								break;
+							}
+						}
 					}
 
 					// [外部レビュー 指摘1] 再起動後初回、または強制フラグが立っている場合は isInit = true でフルフレームを取得
@@ -3472,6 +3477,23 @@ namespace Browser
 
 					if (frameReady)
 					{
+						int targetInterval = session.TargetIntervalMs <= 0 ? 16 : session.TargetIntervalMs;
+
+						// [Task05-対策2 / CriticalReview 指摘2&5 対策] GetFrame() 前に送信間隔をチェック
+						// 間隔が不足している場合は Task.Delay で休眠し、60Hzでの不要な Wakeup と GetFrame ロック競合を防止
+						if (lastSentTicks != 0 && targetInterval > 16)
+						{
+							long currentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+							long elapsedMs = (currentTicks - lastSentTicks) / ticksPerMs;
+							int remainingMs = targetInterval - (int)elapsedMs;
+
+							if (remainingMs > 2)
+							{
+								await Task.Delay(remainingMs - 2, token);
+								continue;
+							}
+						}
+
 						// 共有バッファから最新のフレームを取得（参照カウント +1）
 						// dataLength は実際の WebP データ長（ArrayPoolのバッファサイズとは異なる）
 						var (data, dataLength, seq) = _sharedFrameBuffer.GetFrame();
@@ -3485,26 +3507,6 @@ namespace Browser
 							_sharedFrameBuffer.ReleaseFrame(data);
 							continue;
 						}
-			
-							// [Task05-対策2] 送信スロットリング判定: 前回送信から TargetIntervalMs 未満の場合はスキップ
-							// [外部レビュー 指摘3] session.TargetIntervalMs は実行中に変更されるため、ループ内で毎回取得
-							// [二次レビュー Minor 指摘2] `session.TargetIntervalMs` が 0 以下の場合はデフォルト16ms (60FPS相当) を使用する
-							int targetInterval = session.TargetIntervalMs <= 0 ? 16 : session.TargetIntervalMs;
-							
-							// targetInterval <= 16（60FPS以上）の場合はスロットリングを適用しない
-							// 理由: 60FPSは中央キャプチャの上限FPSであり、追加のスロットリングは意味をなさない
-							if (lastSentTicks != 0 && targetInterval > 16)
-							{
-								long currentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
-								long elapsedMs = (currentTicks - lastSentTicks) / ticksPerMs;
-								// 要求インターバルが経過していない場合は送信をスキップ（Drop Frame）
-								// 2msのジッター余裕を持たせることで、わずかなタイマー誤差を許容する
-								if (elapsedMs < targetInterval - 2)
-								{
-									_sharedFrameBuffer.ReleaseFrame(data);
-									continue;
-								}
-							}
 			
 							try
 						{
