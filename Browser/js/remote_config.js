@@ -6,6 +6,7 @@
 
 // 動的FPS制御用定数
 const ACTIVE_TIMEOUT = 15000;         // アクティブ→アイドル遷移までの時間（15秒）
+const FPS60_INTERVAL_MS = 16;         // 60FPS時のフレーム間隔（ms）
 const IDLE_TIMEOUT = 45000;           // アクティブ→スリープ遷移までの合計時間（45秒）
 const IDLE_FPS = 0.5;                 // アイドル時のFPS（2秒に1回）
 const SLEEP_FPS = (1.0 / 60);         // スリープ時のFPS（1分に1回）

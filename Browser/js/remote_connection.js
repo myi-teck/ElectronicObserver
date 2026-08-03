@@ -723,7 +723,7 @@ function getDynamicDelay() {
 // FPSからディレイへの変換共通関数
 //============================================================================================
 function calculateDelayByFps(fps) {
-    if (fps >= 60 || fps <= 0) return 0;
+    if (fps >= 60 || fps <= 0) return FPS60_INTERVAL_MS; // 60FPSのインターバル（16ms）を返す
     return Math.round(1000 / fps);
 }
 

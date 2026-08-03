@@ -1014,6 +1014,14 @@ namespace Browser
 		}
 
 		/// <summary>
+		/// アクティブなWebSocketセッションの数を返す
+		/// </summary>
+		private int GetActiveSessionCount()
+		{
+			return _webSocketSessions.Count;
+		}
+
+		/// <summary>
 		/// Heartbeatタイムアウト（30秒）およびWebSocket切断状態のゾンビセッションをクリーンアップする。
 		/// CentralCaptureLoopAsync で集約実行（各セッションループからの呼び出しは不要）。
 		/// 2026/07/29 myi 修正: WebSocketState をチェックして即時切断を検知し、
@@ -3275,7 +3283,10 @@ namespace Browser
 
 			var sw = new System.Diagnostics.Stopwatch();
 			long nextTargetTicks = System.Diagnostics.Stopwatch.GetTimestamp();
-			long ticksPerMs = System.Diagnostics.Stopwatch.Frequency / 1000;
+			// [FPS Fix] ミリ秒→ティック変換の丸め誤差を排除
+			// Frequency は通常 10,000,000 Hz 程度
+			// double で計算することで、整数除算の切り捨て誤差を排除
+			double ticksPerMs = (double)System.Diagnostics.Stopwatch.Frequency / 1000.0;
 			int lastTargetInterval = GetMaxFpsIntervalMs();
 
 			try
@@ -3366,20 +3377,27 @@ namespace Browser
 					}
 
 					// ドリフト補正タイマー
-					nextTargetTicks += targetInterval * ticksPerMs;
+					// [FPS Fix] double → long キャストで高精度に計算（整数除算の切り捨て誤差を排除）
+					nextTargetTicks += (long)(targetInterval * ticksPerMs);
 					long currentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
 					long remainingTicks = nextTargetTicks - currentTicks;
 					int remainingMs = (int)(remainingTicks / ticksPerMs);
 
-					if (remainingMs > 0)
+					// [FPS Fix] targetIntervalTicks を計算（リセット条件に使用）
+					long targetIntervalTicks = (long)(targetInterval * ticksPerMs);
+
+					if (remainingMs > 2)
 					{
+						// 残り時間が 2ms 超の場合のみ Task.Delay を呼び出す（Windowsタイマー粒度対策）
 						await Task.Delay(remainingMs, token);
 					}
-					else
+					else if (remainingTicks < -targetIntervalTicks * 2)
 					{
-						// 処理遅延: 次回目標を現在時刻にリセット（スパイラル防止）
+						// 2フレーム分以上の極端な処理遅延が発生した場合のみ目標時刻をリセット（スパイラル防止）
+						// 微小な遅延（1~2ms）ではリセットせず、次フレームで自動補正させる
 						nextTargetTicks = currentTicks;
 					}
+					// else: remainingMs <= 2 かつ、遅延が2フレーム分未満 → 次フレームで自動補正させる（何もしない）
 
 					// ゾンビセッションクリーンアップ（中央ループで集約実行）
 					CleanupZombieSessions();
@@ -3443,157 +3461,140 @@ namespace Browser
 			}
 	
 			//====================================================================================
-			// 処理ブロック名 : WebSocketFanoutLoopAsync
-		// 概要           : 中央キャプチャからのフレームをセッションごとに配信するループ。
-		//                  Drop Frame: 最新1枚以外は破棄して送信しない。
-		//                  lastSentSequenceNumber を保持し、共有バッファのシーケンス番号が
-		//                  前回送信分より大きい場合のみ送信する。
-		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/29
-		// version        : 1.00 (フェーズ5：中央キャプチャ・ファンアウト方式)
-		//------------------------------------------------------------------------------------
-		private async Task WebSocketFanoutLoopAsync(WebSocketSession session)
-		{
-			var ws = session.WebSocket;
-			var token = session.CancellationToken.Token;
-
-			// 前回送信したシーケンス番号（初期値: 0）
-			int lastSentSequenceNumber = 0;
-			
-			// [Task05-対策2] 送信スロットリング用変数（ループ外で一度だけ算出）
-			long lastSentTicks = 0;
-			// [Task05-対策2] `ticksPerMs` はループ外で一度だけ算出（Stopwatch.Frequency は不変値）
-			long ticksPerMs = System.Diagnostics.Stopwatch.Frequency / 1000;
-
-			try
-			{
-				// [二次レビュー修正] WebSocketState チェックを IsWebSocketOpen() で保護
-				while (!token.IsCancellationRequested && IsWebSocketOpen(ws))
+				// 処理ブロック名 : WebSocketFanoutLoopAsync (最終修正版)
+				// 概要           : 中央キャプチャからのフレームをセッションごとに配信するループ。
+				//                  ・セッションの要求周期が中央キャプチャ周期と同等以下の場合は
+				//                    中央キャプチャ側のペース制御を信頼し、ファンアウト側での制限をスキップ（バイパス）。
+				//                  ・他セッションの高FPS要求により中央キャプチャが高周期（16ms等）で動いている場合のみ
+				//                    本セッションの目標FPSに合わせてフレームを間引き（ドロップ）する。
+				//------------------------------------------------------------------------------------
+				// author         : myi
+				// creation date  : 2026/07/29
+				// version        : 2.00 (v3.0設計書によるバイパス条件・マージン・統計変数修正)
+				//------------------------------------------------------------------------------------
+				private async Task WebSocketFanoutLoopAsync(WebSocketSession session)
 				{
-					// 中央キャプチャのフレーム到着を待機（セッション固有のタイムアウト）
-					int timeoutMs = session.TargetIntervalMs <= 0 ? 16 : session.TargetIntervalMs;
-					bool frameReady = await session.WaitForFrameAsync(timeoutMs, token);
-
-					if (frameReady)
-					{
-						int targetInterval = session.TargetIntervalMs <= 0 ? 16 : session.TargetIntervalMs;
-
-						// [Task05-対策2 / CriticalReview 指摘2&5 対策] GetFrame() 前に送信間隔をチェック
-						// 間隔が不足している場合は Task.Delay で休眠し、60Hzでの不要な Wakeup と GetFrame ロック競合を防止
-						if (lastSentTicks != 0 && targetInterval > 16)
-						{
-							long currentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
-							long elapsedMs = (currentTicks - lastSentTicks) / ticksPerMs;
-							int remainingMs = targetInterval - (int)elapsedMs;
-
-							if (remainingMs > 2)
-							{
-								await Task.Delay(remainingMs - 2, token);
-								continue;
-							}
-						}
-
-						// 共有バッファから最新のフレームを取得（参照カウント +1）
-						// dataLength は実際の WebP データ長（ArrayPoolのバッファサイズとは異なる）
-						var (data, dataLength, seq) = _sharedFrameBuffer.GetFrame();
+					var ws = session.WebSocket;
+					var token = session.CancellationToken.Token;
 		
-						// 前回送信したフレームと同じ場合、スキップ（リソース浪費防止）
-						// [二次レビュー修正] 差分計算によるラップアラウンド対応
-						// int型のseqとlastSentSequenceNumberをuintにキャストし、オーバーフロー時に正しく差を算出
-						uint diff = (uint)seq - (uint)lastSentSequenceNumber;
-						if (diff <= 0 && lastSentSequenceNumber != 0)
+					int lastSentSequenceNumber = 0;
+					long lastSentTicks = 0;
+					double ticksPerMs = (double)System.Diagnostics.Stopwatch.Frequency / 1000.0;
+					long droppedFramesCount = 0;
+					int sessionFrameCounter = 0;
+		
+					try
+					{
+						while (!token.IsCancellationRequested && IsWebSocketOpen(ws))
 						{
-							_sharedFrameBuffer.ReleaseFrame(data);
-							continue;
-						}
+							int targetInterval = session.TargetIntervalMs <= 0 ? 16 : session.TargetIntervalMs;
+							bool frameReady = await session.WaitForFrameAsync(targetInterval, token);
 			
-							try
-						{
-							if (data != null && dataLength > 0)
+							if (frameReady)
+							{
+								int centralInterval = GetMaxFpsIntervalMs();
+		
+								// [バイパス判定]
+								// 1. targetInterval <= 16 (60FPS) は無条件バイパス
+								// 2. targetInterval <= centralInterval の場合、中央キャプチャループが既に
+								//    このセッションと同等以上の周期で制御しているため、ファンアウト側でのスロットリングは不要（バイパス）
+								if (targetInterval > 16 && targetInterval > centralInterval)
 								{
-								// [FPS Fix] セマフォ待機時間を測定
-								var swWait = System.Diagnostics.Stopwatch.StartNew();
-								await session.SendSemaphore.WaitAsync(token);
-								long semaphoreWaitMs = swWait.ElapsedMilliseconds;
-								swWait.Stop();
+									long currentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+									if (lastSentTicks != 0)
+									{
+										double elapsedMs = (currentTicks - lastSentTicks) / ticksPerMs;
+										// クロックのゆらぎ（1~4ms）を考慮したマージン（-4ms）で間引き判定
+										if (elapsedMs < (targetInterval - 4))
+										{
+											droppedFramesCount++;
+											continue; // このフレームはドロップして送信スキップ
+										}
+									}
+									lastSentTicks = currentTicks;
+								}
+								else
+								{
+									// バイパス時: 送信基準時刻のみ更新し、即座に送信へ進む
+									lastSentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+								}
+		
+								// 共有バッファから最新のフレームを取得（参照カウント +1）
+								var (data, dataLength, seq) = _sharedFrameBuffer.GetFrame();
+		
+								// 前回送信フレームとの重複チェック（符号付き整数差分で過去フレーム検出）
+								int diff = seq - lastSentSequenceNumber;
+								if (diff <= 0 && lastSentSequenceNumber != 0)
+								{
+									_sharedFrameBuffer.ReleaseFrame(data);
+									continue;
+								}
+		
 								try
 								{
-									if (IsWebSocketOpen(ws))
+									if (data != null && dataLength > 0)
 									{
-										// [FPS Fix] WebSocketフラグメント化を排除: ヘッダーとデータを単一メッセージとして送信
-										// ArrayPoolから新バッファをレンタルしてヘッダー+データを結合
-										byte[] combined = _bufferPool.Rent(6 + dataLength);
+										await session.SendSemaphore.WaitAsync(token);
 										try
 										{
-											// セッション固有のヘッダーバッファからヘッダーをコピー
-											var header = session._headerBuffer;
-											header[0] = (byte)WebSocketProtocolVersion;
-											header[1] = 0; // Flags = 0
-											// Big-Endian シーケンス番号を直接書き込み
-											header[2] = (byte)(seq >> 24);
-											header[3] = (byte)(seq >> 16);
-											header[4] = (byte)(seq >> 8);
-											header[5] = (byte)seq;
-											
-											// ヘッダーとデータを結合バッファにコピー
-											header.CopyTo(combined, 0);
-											Buffer.BlockCopy(data, 0, combined, 6, dataLength);
-											
-											// [FPS Fix] 単一メッセージとして送信 (endOfMessage = true)
-											var swSend = System.Diagnostics.Stopwatch.StartNew();
-											await ws.SendAsync(
-												new ArraySegment<byte>(combined, 0, 6 + dataLength),
-												WebSocketMessageType.Binary, true, token);
-											long sendMs = swSend.ElapsedMilliseconds;
-											
-											// [FPS Fix] 可観測性: 送信所要時間・セマフォ待機時間をログ出力（100フレームに1回）
-											if (Interlocked.Add(ref _sendFrameCounter, 1) >= 100)
+											if (IsWebSocketOpen(ws))
 											{
-												Interlocked.Exchange(ref _sendFrameCounter, 0);
-												Log(3, $"[RemoteController] SendProfile Fanout: send={sendMs}ms, semaphore_wait={semaphoreWaitMs}ms, data={dataLength}B (Session: {session.SessionId})");
+												byte[] combined = _bufferPool.Rent(6 + dataLength);
+												try
+												{
+													var header = session._headerBuffer;
+													header[0] = (byte)WebSocketProtocolVersion;
+													header[1] = 0;
+													header[2] = (byte)(seq >> 24);
+													header[3] = (byte)(seq >> 16);
+													header[4] = (byte)(seq >> 8);
+													header[5] = (byte)seq;
+		
+													header.CopyTo(combined, 0);
+													Buffer.BlockCopy(data, 0, combined, 6, dataLength);
+		
+													await ws.SendAsync(
+														new ArraySegment<byte>(combined, 0, 6 + dataLength),
+														WebSocketMessageType.Binary, true, token);
+		
+													lastSentSequenceNumber = seq;
+		
+													// 可観測性: 100フレームごとの動作統計ログ
+													if (++sessionFrameCounter % 100 == 0)
+													{
+														Log(3, $"[Profile] Fanout sent seq={seq}, targetInterval={targetInterval}ms, centralInterval={centralInterval}ms, dropped={droppedFramesCount}, sessions={GetActiveSessionCount()}");
+														droppedFramesCount = 0;
+													}
+												}
+												finally
+												{
+													_bufferPool.Return(combined);
+												}
 											}
-											
-											// 送信済みシーケンス番号を更新
-											lastSentSequenceNumber = seq;
-											// [Task05-対策2] 送信時刻を更新（スロットリング用）
-											lastSentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
 										}
 										finally
 										{
-											// ArrayPool への返却
-											_bufferPool.Return(combined);
+											session.SendSemaphore.Release();
 										}
 									}
 								}
 								finally
 								{
-									session.SendSemaphore.Release();
+									_sharedFrameBuffer.ReleaseFrame(data);
 								}
 							}
 						}
-						finally
-						{
-							// GetFrame() で参照カウント +1 したので、必ず ReleaseFrame() を呼ぶ
-							// 送信成否・data null・例外発生に関わらず確実な解放を保証
-							// data参照を渡すことで、正しいフレームの参照カウントがデクリメントされる
-							_sharedFrameBuffer.ReleaseFrame(data);
-						}
+					}
+					catch (OperationCanceledException) { }
+					catch (Exception ex)
+					{
+						Log(3, $"[RemoteController] Fanout loop exception: {ex.Message}");
+					}
+					finally
+					{
+						RemoveWebSocketSession(session.SessionId);
 					}
 				}
-			}
-			catch (OperationCanceledException) { /* 正常終了 */ }
-			catch (Exception ex)
-			{
-				Log(3, $"[RemoteController] WebSocket ファンアウトループエラー (Session: {session.SessionId}): {ex.Message}");
-			}
-			finally
-			{
-				// ファンアウトループが終了したらセッションを即時削除（ゾンビ防止）
-				// 複数ループが同時に終了した場合も TryRemove はアトミックなので安全
-				RemoveWebSocketSession(session.SessionId);
-			}
-		}
 
 		//====================================================================================
 		// 処理ブロック名 : WebSocketCaptureLoopAsync
