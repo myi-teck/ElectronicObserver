@@ -1,0 +1,143 @@
+/* ========================================================================================
+ * 1. カラーパレット & デザインシステム定義
+ * ======================================================================================== */
+:root {
+    /* 漆黒に近い極限まで深いダークグリーン(NERVモニタベースのベース背景) */
+    --bg-color: #030805; 
+    /* 鮮烈なエヴァネオングリーン (メインアクセントカラー) */
+    --accent-color: #00ff66; 
+    /* グロー(発光)効果用のネオングリーン透過カラー */
+    --accent-glow: rgba(0, 255, 102, 0.4); 
+    /* トラックパッド等に適用する薄いグリーン半透明ガラス背景 */
+    --glass-bg: rgba(0, 255, 102, 0.04); 
+    /* NERVタクティカルフレーム境界線用の半透明グリーン */
+    --glass-border: rgba(0, 255, 102, 0.25); 
+    /* モニタ上の文字読み取り用、明るくクリアなミントグリーンテキスト */
+    --text-color: #a3f7bf; 
+    /* 警告・大破アラートサイン用の暗い赤 (エマージェンシー用) */
+    --nerv-dark-red: #3e050c; 
+}
+
+/* 全要素の初期化とタップハイライト防止 */
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+/* 
+ * 全体ボディスタイル：
+ * フォントにはメカニカルな等幅・ゴシック系を採用。
+ * モバイルブラウザでのアドレスバー干渉を防ぐため dvh を指定。
+ */
+body {
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    font-family: 'Play', 'Consolas', 'Courier New', monospace; 
+    overflow: hidden;
+    height: 100vh; /* 古いブラウザ向けのフォールバック */
+    height: 100dvh; /* dvh(Dynamic Viewport Height)を使用し、モバイルブラウザの伸縮アドレスバーの干渉を防止 */
+    display: flex;
+    flex-direction: column;
+}
+
+/* 
+ * 2. ゲーム画面表示領域 (ビューポート)
+ * 上部にゲーム画面をアスペクト比を維持して表示。
+ */
+#viewport {
+    flex: 0 0 auto; /* 必要な分のみ占有 */
+    position: relative;
+    background: #000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+    border-bottom: 2px solid var(--accent-color); /* ゲーム画面との明確な境界仕切り線 */
+    touch-action: none; /* ブラウザのデフォルトタッチ挙動を防止（ドラッグ操作対応） */
+}
+
+#game-screen {
+    max-width: 100%;
+    max-height: 100%;
+    display: block;            /* canvas はインライン要素なので block に変更 */
+    box-shadow: 0 0 15px rgba(0, 255, 102, 0.3); /* グリーン調のグローシャドウ */
+    transition: filter 0.2s ease; /* フィルター切り替え時のアニメーション */
+}
+
+/* [FIX] 2026/07/27 オーバーレイ方式をフィルター方式へ変更
+ * パネル展開時にビューポートにbrightnessフィルターを適用して暗くする */
+#viewport.overlay-active {
+    filter: brightness(0.3);
+}
+
+/*
+ * ゲーム画面用クライアントサイドフィルター
+ * 2026/06/01 myi 新規作成（差分WebP方式に伴うフィルタークライアント化対応）
+ */
+#game-screen.filter-grayscale {
+    filter: grayscale(100%);
+}
+#game-screen.filter-lowcontrast {
+    filter: grayscale(80%) brightness(30%) contrast(50%);
+}
+
+/*
+ * 暗視カメラ風フィルター（グリーンスケール）
+ * 2026/06/01 myi 新規作成（暗視ボックス用）
+ */
+#game-screen.filter-greenscale-night {
+    /* 暗視カメラ風：明るい緑 */
+    filter: grayscale(100%) sepia(100%) hue-rotate(90deg) saturate(300%) brightness(1.2);
+}
+#game-screen.filter-greenscale-military {
+    /* 軍用モニター風：濃い緑 */
+    filter: grayscale(100%) sepia(100%) hue-rotate(80deg) saturate(500%);
+}
+#game-screen.filter-greenscale-phosphor {
+    /* フォスファイト風：暗めの黄緑 */
+    filter: grayscale(100%) sepia(100%) hue-rotate(95deg) saturate(200%) brightness(0.8);
+}
+
+/* 
+ * 3. 仮想カーソル
+ * 操作先を示す円形ターゲット。中央にドットを配置。
+ */
+#virtual-cursor {
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    background: transparent;
+    border: 2px solid var(--accent-color);
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    box-shadow: 0 0 8px var(--accent-glow);
+    z-index: 10;
+}
+
+/* 照準器のドットを中央に表現 */
+#virtual-cursor::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 2px;
+    height: 2px;
+    background: var(--accent-color);
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+}
+
+/* トラックパッド上の情報表示用クラス
+   文字列の範囲選択やポインタインタラクションを無効化し、
+   ドラッグ操作が正常に機能するようにする */
+.trackpad-info {
+    pointer-events: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+}
+
+/* 
+ * 4. トラックパッド本体のスタイル
+ * 背景に磨りガラス効果(backdrop-filter)を適用し、ネオングリーンの極細ボーダーで囲む。
+ */

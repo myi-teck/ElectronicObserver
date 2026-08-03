@@ -329,11 +329,23 @@ namespace Browser
 						if (this.lastWebp) {
 							return ['full', this.lastWebp];
 						}
+						// [🔍 plan02 1-4] toDataURL フォールバック検証
+						// toBlobでデコード失敗した際にtoDataURLを試行し、プレフィックスを検証
 						const canvas = document.querySelector('canvas');
 						if (canvas) {
 							try {
-								return ['full', canvas.toDataURL('image/webp', this.webpQuality)];
-							} catch (e) { }
+								const dataUrl = canvas.toDataURL('image/webp', this.webpQuality);
+								// [検証] プレフィックスが 'data:image/webp;base64,' であることを確認
+								var expectedPrefix = 'data:image/webp;base64,';
+								if (dataUrl.startsWith(expectedPrefix)) {
+									console.log('[plan02-1-4] toDataURLフォールバック成功: プレフィックスOK (data:image/webp;base64,)');
+								} else {
+									console.warn('[plan02-1-4] toDataURLフォールバック: 予期しないプレフィックス ' + dataUrl.substring(0, 40) + '...');
+								}
+								return ['full', dataUrl];
+							} catch (e) {
+								console.error('[plan02-1-4] toDataURLフォールバック失敗:', e.message);
+							}
 						}
 						return ['none', ''];
 					}

@@ -1,0 +1,944 @@
+#hud-container {
+    position: absolute;
+    left: 2px;
+    top: 26px; /* システムモニターバー(20px)の高さぶん、HUDの開始位置を押し下げて被りを防ぎます */
+    right: 2px;
+    bottom: 6px;
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    justify-content: flex-start;
+    gap: 2px;
+    z-index: 100; /* [FIX] 2026/07/27 5→100に引き上げ。オーバーレイ(z-index:99)より前面にHUDを配置し、暗いフィルター遮蔽を防ぐ */
+    pointer-events: none; /* ドラッグ操作を妨げないようにする */
+}
+
+/* 以前の各HUD的絶対配置を解除し、通常のflexアイテム化 */
+#fleet-hud, #resource-hud, #battle-hud, #quest-hud {
+    position: static;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+/* 艦隊ステータスHUDにダブルクリック/ダブルタップイベントを有効化 */
+/* 艦隊ステータスHUDエリアをネオンカラーの枠で囲む */
+#fleet-hud {
+    pointer-events: auto;
+    cursor: pointer;
+    border: 1px solid rgba(0, 255, 102, 0.45);
+    border-radius: 4px;
+    padding: 2px;
+    background: rgba(3, 8, 5, 0.3);
+    box-shadow: 0 0 8px rgba(0, 255, 102, 0.1);
+}
+
+/* 艦隊ステータスHUD最下段の操作説明テキスト */
+.fleet-hud-label {
+    text-align: center;
+    font-size: 7.5px;
+    color: rgba(0, 255, 102, 0.5);
+    font-weight: bold;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    padding-top: 2px;
+    border-top: 1px solid rgba(0, 255, 102, 0.15);
+    margin-top: 2px;
+    pointer-events: none;
+}
+
+/*
+ * 艦隊情報行コンテナ (#fleet-info-row)
+ * 艦隊ステータスHUD (#fleet-hud) と艦隊詳細パネル (#fleet-detail-panel) を
+ * 常に同じ行(右隣)に固定配置するためのコンテナ。
+ * flex-wrap: nowrap により折り返しを防止し、左右並列を強制。
+ */
+#fleet-info-row {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: flex-start;
+    gap: 6px;
+    flex-shrink: 0; /* 親コンテナの折り返し時にも縮小しない */
+}
+
+/*
+ * 任務HUDとTACTICAL SYSTEMを横並びに配置する行コンテナ
+ * #fleet-info-rowと同様のflex: nowrapで横並びを強制
+ */
+#tactical-quest-row {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: flex-start;
+    gap: 2px;
+    flex-shrink: 0; /* 親コンテナの折り返し時にも縮小しない */
+}
+
+/* 各艦隊行のボックス定義 */
+.fleet-hud-item {
+    position: relative; /* 詳細表示時の右三角マーク(▶)を絶対配置するための基準点 */
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: rgba(3, 8, 5, 0.85); 
+    border: 1px solid rgba(0, 255, 102, 0.25);
+    padding: 2px 14px 2px 5px; /* 右側に三角マーク用のスペースを常に確保（横幅ガタつき防止） */
+    border-radius: 3px;
+    font-size: 9px;
+    font-family: 'Consolas', 'Courier New', monospace;
+    backdrop-filter: blur(4px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+    min-width: 105px;
+    border-left: 3px solid var(--accent-color); /* NERV警告板を想起させる左端の強調アクセント線 */
+}
+
+/* 艦隊詳細タブで現在表示中の艦隊を目立たせるアクティブ状態（親クラス定義） */
+.fleet-hud-item.active {
+    /* 状態ごとに個別の発光色を指定するため、ここでは基本枠線定義のみ */
+    border-style: solid;
+}
+
+/* アクティブ状態の右端に右三角マーク（▶）を表示（絶対配置によりレイアウト幅へ影響しない構造） */
+.fleet-hud-item.active::after {
+    content: '▶';
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 8px;
+    pointer-events: none; /* タップイベント等を阻害しないように設定 */
+}
+
+/* [状態別：出撃可能 (READY/ACTIVE) 状態でのアクティブ枠強調] */
+.fleet-hud-item.fleet-state-ready.active {
+    background: rgba(34, 197, 94, 0.12);
+    border-color: #22c55e;
+    box-shadow: 0 0 12px rgba(34, 197, 94, 0.4), inset 0 0 8px rgba(34, 197, 94, 0.15);
+}
+.fleet-hud-item.fleet-state-ready.active .fleet-num {
+    background: rgba(34, 197, 94, 0.3);
+    border: 1px solid #22c55e;
+    color: #86efac;
+    text-shadow: 0 0 6px rgba(34, 197, 94, 0.8);
+}
+.fleet-hud-item.fleet-state-ready.active::after {
+    color: #22c55e;
+    text-shadow: 0 0 4px rgba(34, 197, 94, 0.8);
+}
+
+/* [状態別：遠征中 (MISSION) 状態でのアクティブ枠強調] */
+.fleet-hud-item.fleet-state-expedition.active {
+    background: rgba(0, 255, 102, 0.12);
+    border-color: var(--accent-color);
+    box-shadow: 0 0 12px rgba(0, 255, 102, 0.4), inset 0 0 8px rgba(0, 255, 102, 0.15);
+}
+.fleet-hud-item.fleet-state-expedition.active .fleet-num {
+    background: rgba(0, 255, 102, 0.3);
+    border: 1px solid var(--accent-color);
+    color: var(--accent-color);
+    text-shadow: 0 0 6px var(--accent-glow);
+}
+.fleet-hud-item.fleet-state-expedition.active::after {
+    color: var(--accent-color);
+    text-shadow: 0 0 4px var(--accent-glow);
+}
+
+/* [状態別：入渠中 (DOCKING) 状態でのアクティブ枠強調] */
+.fleet-hud-item.fleet-state-docking.active {
+    background: rgba(0, 255, 102, 0.12);
+    border-color: var(--accent-color);
+    box-shadow: 0 0 12px rgba(0, 255, 102, 0.4), inset 0 0 8px rgba(0, 255, 102, 0.15);
+}
+.fleet-hud-item.fleet-state-docking.active .fleet-num {
+    background: rgba(0, 255, 102, 0.3);
+    border: 1px solid var(--accent-color);
+    color: var(--accent-color);
+    text-shadow: 0 0 6px var(--accent-glow);
+}
+.fleet-hud-item.fleet-state-docking.active::after {
+    color: var(--accent-color);
+    text-shadow: 0 0 4px var(--accent-glow);
+}
+
+/* [状態別：警告 (STANDBY) 状態でのアクティブ枠強調] */
+.fleet-hud-item.fleet-state-warning.active {
+    background: rgba(234, 179, 8, 0.12);
+    border-color: #eab308;
+    box-shadow: 0 0 12px rgba(234, 179, 8, 0.4), inset 0 0 8px rgba(234, 179, 8, 0.15);
+}
+.fleet-hud-item.fleet-state-warning.active .fleet-num {
+    background: rgba(234, 179, 8, 0.3);
+    border: 1px solid #eab308;
+    color: #facc15;
+    text-shadow: 0 0 6px rgba(234, 179, 8, 0.8);
+}
+.fleet-hud-item.fleet-state-warning.active::after {
+    color: #eab308;
+    text-shadow: 0 0 4px rgba(234, 179, 8, 0.8);
+}
+
+/* [状態別：大破警告・危険 (CRITICAL) 状態でのアクティブ枠強調] */
+.fleet-hud-item.fleet-state-critical.active {
+    background: rgba(239, 68, 68, 0.15);
+    border-color: #ef4444;
+    box-shadow: 0 0 12px rgba(239, 68, 68, 0.5), inset 0 0 8px rgba(239, 68, 68, 0.2);
+}
+.fleet-hud-item.fleet-state-critical.active .fleet-num {
+    background: rgba(239, 68, 68, 0.3);
+    border: 1px solid #ef4444;
+    color: #fca5a5;
+    text-shadow: 0 0 6px rgba(239, 68, 68, 0.9);
+}
+.fleet-hud-item.fleet-state-critical.active::after {
+    color: #ef4444;
+    text-shadow: 0 0 4px rgba(239, 68, 68, 0.9);
+}
+
+/* 艦隊番号バッジの共通デザイン */
+.fleet-num {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 13px;
+    height: 13px;
+    border-radius: 2px;
+    font-size: 8.5px;
+    font-weight: 900;
+    color: #a3f7bf;
+    background: rgba(0, 255, 102, 0.15);
+    border: 1px solid rgba(0, 255, 102, 0.3);
+}
+
+/* [状態：出撃可能 / ACTIVE] (正常稼働セーフティグリーン) */
+.fleet-state-ready {
+    border-left: 3px solid #22c55e;
+}
+.fleet-state-ready .fleet-num {
+    background: rgba(34, 197, 94, 0.15);
+    border: 1px solid rgba(34, 197, 94, 0.4);
+    color: #86efac;
+    text-shadow: 0 0 3px rgba(34, 197, 94, 0.5);
+}
+.fleet-state-ready .fleet-status {
+    color: #86efac;
+}
+
+/* [状態：遠征中 / MISSION] (ネオングリーンのインジケータ) */
+.fleet-state-expedition {
+    border-left: 3px solid var(--accent-color);
+}
+.fleet-state-expedition .fleet-num {
+    background: rgba(0, 255, 102, 0.15);
+    border: 1px solid rgba(0, 255, 102, 0.4);
+    color: var(--accent-color);
+    text-shadow: 0 0 3px var(--accent-glow);
+}
+.fleet-state-expedition .fleet-status {
+    color: #a3f7bf;
+}
+
+/* [状態：入渠中 / DOCKING] (ネオングリーンのインジケータ) */
+.fleet-state-docking {
+    border-left: 3px solid var(--accent-color);
+}
+.fleet-state-docking .fleet-num {
+    background: rgba(0, 255, 102, 0.15);
+    border: 1px solid rgba(0, 255, 102, 0.4);
+    color: var(--accent-color);
+    text-shadow: 0 0 3px var(--accent-glow);
+}
+.fleet-state-docking .fleet-status {
+    color: #a3f7bf;
+}
+
+/* [状態：警告 / STANDBY] (アンバーイエローで注意を促す) */
+.fleet-state-warning {
+    border-left: 3px solid #eab308;
+}
+.fleet-state-warning .fleet-num {
+    background: rgba(234, 179, 8, 0.15);
+    border: 1px solid rgba(234, 179, 8, 0.4);
+    color: #facc15;
+    text-shadow: 0 0 3px rgba(234, 179, 8, 0.5);
+}
+.fleet-state-warning .fleet-status {
+    color: #fef08a;
+}
+
+/* [状態：危険 / EMERGENCY大破] (赤色パルスで警告) */
+.fleet-state-critical {
+    border-left: 3px solid #ef4444;
+    background: rgba(62, 5, 12, 0.85); /* 警告用の赤黒背景 */
+}
+.fleet-state-critical .fleet-num {
+    background: rgba(239, 68, 68, 0.2);
+    border: 1px solid rgba(239, 68, 68, 0.6);
+    color: #fca5a5;
+    text-shadow: 0 0 3px rgba(239, 68, 68, 0.8);
+    animation: pulse-danger 0.4s infinite; /* フラッシュ状の高速点滅アニメーション */
+}
+.fleet-state-critical .fleet-status {
+    color: #fca5a5;
+    font-weight: 900;
+    text-shadow: 0 0 2px rgba(239, 68, 68, 0.5);
+}
+
+/* 警告フラッシュアニメーション（瞬くような高速点滅効果） */
+@keyframes pulse-danger {
+    0% { box-shadow: 0 0 1px rgba(239, 68, 68, 0.1); opacity: 0.3; }
+    50% { box-shadow: 0 0 12px rgba(239, 68, 68, 1); opacity: 1; }
+    100% { box-shadow: 0 0 1px rgba(239, 68, 68, 0.1); opacity: 0.3; }
+}
+
+/*
+ * renderFleetHud() で使用される艦隊情報クラス（2026/07/31 追加）
+ * renderFleetHud の fleet-state-{状態} クラスは上記で定義済み。
+ */
+.fleet-name {
+    font-size: 9px;
+    color: var(--accent-color);
+    font-weight: bold;
+}
+
+.fleet-state {
+    font-size: 8px;
+    color: rgba(163, 247, 191, 0.6);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/*
+ * 資源HUDコンテナ (#resource-hud)
+ * HUDコンテナ最上段に横長1行で資源を表示。
+ * flex-wrap: nowrap で1行強制、gap で各項目をコンパクトに配置。
+ */
+#resource-hud {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+/* 各資源のリストアイテム（横長1行用コンパクトデザイン） */
+.res-hud-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 3px;
+    background: rgba(3, 8, 5, 0.85);
+    border: 1px solid rgba(0, 255, 102, 0.25);
+    padding: 1px 4px;
+    border-radius: 2px;
+    font-size: 8px;
+    font-family: 'Consolas', 'Courier New', monospace;
+    backdrop-filter: blur(4px);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+    white-space: nowrap;
+    border-right: 2px solid var(--accent-color); /* 右側にグリーンのアクセント線 */
+    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+/*
+ * ========================================================================================
+ * 資源値の増減判定型ネオン発光点滅アニメーション（1秒間、0.2秒周期）
+ * 増加時（遠征帰還・任務クリア等）はエヴァネオングリーン、
+ * 減少時（補給・開発・建造・入渠等）はエヴァ警告レッドで、
+ * 値が変化した資源ブロックを強調点滅させるSF調計器エフェクトです。
+ * ========================================================================================
+ */
+
+/* A. 資源増加時：グリーン点滅 */
+.res-flash-up {
+    animation: resource-flash-up 1s linear;
+}
+@keyframes resource-flash-up {
+    0%, 20%, 40%, 60%, 80%, 100% {
+        background: rgba(3, 8, 5, 0.85);
+        border-color: rgba(0, 255, 102, 0.25);
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+    }
+    10%, 30%, 50%, 70%, 90% {
+        background: rgba(0, 255, 102, 0.18);
+        border-color: var(--accent-color);
+        box-shadow: 0 0 10px var(--accent-glow), inset 0 0 5px var(--accent-glow);
+    }
+}
+
+/* B. 資源減少時：レッド点滅 */
+.res-flash-down {
+    animation: resource-flash-down 1s linear;
+}
+@keyframes resource-flash-down {
+    0%, 20%, 40%, 60%, 80%, 100% {
+        background: rgba(3, 8, 5, 0.85);
+        border-color: rgba(0, 255, 102, 0.25);
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+    }
+    10%, 30%, 50%, 70%, 90% {
+        background: rgba(239, 68, 68, 0.18); /* 発光時は赤い警告色半透明 */
+        border-color: #ef4444; /* 枠線も警告赤に強調 */
+        box-shadow: 0 0 10px rgba(239, 68, 68, 0.5), inset 0 0 5px rgba(239, 68, 68, 0.5); /* 赤いグロー効果 */
+    }
+}
+
+/* 資源タグ用のアイコンラベル */
+.res-icon {
+    font-weight: bold;
+    font-size: 8px;
+    padding: 1px 3px;
+    border-radius: 1px;
+    color: #030805;
+    background: #a3f7bf;
+    text-shadow: none;
+}
+
+/* 資源ごとのタクティカルカラー割り当て */
+.res-fuel { background: #15803d; color: #fff; }
+.res-ammo { background: #166534; color: #fff; }
+.res-steel { background: #3f6212; color: #fff; }
+.res-baux { background: #14532d; color: #fff; }
+.res-bucket { background: #ca8a04; color: #030805; }
+
+.res-val {
+    color: #a3f7bf;
+    font-weight: bold;
+    text-shadow: 0 0 2px rgba(163, 247, 191, 0.3);
+}
+
+/*
+  * 11. 戦術予測HUD (TACTICAL SYSTEM)
+  * 現在の海域やドロップ予測（ダミー）をMAGI調グラフィックで表示。
+  * COMBAT INFO(陣形・交戦形態・触接)を統合し、艦隊詳細HUD風の高密度テーブルで自/敵艦隊を表示。
+  */
+
+/* 戦闘予測ボックス */
+.battle-hud-item {
+    display: flex;
+    flex-direction: column;
+    background: rgba(3, 8, 5, 0.85);
+    border: 1px solid rgba(0, 255, 102, 0.25);
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-size: 8px;
+    font-family: 'Consolas', 'Courier New', monospace;
+    backdrop-filter: blur(4px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+    min-width: 125px;
+    border-right: 3px solid var(--accent-color);
+}
+
+/* 任務HUD専用: 幅をTACTICAL SYSTEMと同じ行に収めるよう縮小 */
+#quest-hud-panel {
+    min-width: 75px;
+}
+
+/* 任務HUD縮小時のフォント調整 */
+#quest-hud-panel .quest-slot-row {
+    font-size: 7px;
+    height: 18px;
+}
+
+#quest-hud-panel .quest-id {
+    font-size: 7px;
+}
+
+#quest-hud-panel .quest-text-scroll {
+    font-size: 7px;
+}
+
+#quest-hud-panel .quest-progress-text {
+    font-size: 6.5px;
+}
+
+#quest-hud-panel .quest-progress-segment-gauge {
+    width: 38px;
+    height: 4px;
+}
+
+.battle-title {
+    color: var(--accent-color);
+    font-size: 7.5px;
+    text-transform: uppercase;
+    border-bottom: 1px solid rgba(0, 255, 102, 0.2);
+    padding-bottom: 1px;
+    margin-bottom: 2px;
+    font-weight: bold;
+    letter-spacing: 0.1em;
+}
+
+.battle-enemy {
+    color: #a3f7bf;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 110px;
+}
+
+.battle-predict {
+    color: #ef4444; /* ALERT用の危険赤 */
+    font-weight: 900;
+    text-shadow: 0 0 3px rgba(239, 68, 68, 0.6);
+}
+
+/* ----------------------------------------------------------------------------
+  * 11-1. 統合戦闘情報ヘッダ (TACTICAL SYSTEM + COMBAT INFO 統合行)
+  * 海域情報と陣形・交戦形態・触接を1行でコンパクトに表示
+  * ---------------------------------------------------------------------------- */
+#combat-header {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 1px;
+    padding: 1px 0;
+    border-bottom: 1px solid rgba(0, 255, 102, 0.15);
+    margin-bottom: 2px;
+}
+
+#combat-header .battle-area-tag {
+    font-size: 8px;
+    font-weight: bold;
+    color: var(--accent-color);
+    text-shadow: 0 0 3px var(--accent-glow);
+}
+
+#combat-header .combat-tag {
+    font-size: 7px;
+    padding: 0px 0px;
+    border-radius: 2px;
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    color: #fca5a5;
+    font-weight: bold;
+    letter-spacing: 0.05em;
+}
+
+#combat-header .predict-tag {
+    font-size: 7px;
+    color: #ef4444;
+    font-weight: 900;
+    text-shadow: 0 0 3px rgba(239, 68, 68, 0.6);
+    margin-left: auto;
+}
+
+/* ----------------------------------------------------------------------------
+  * 11-1. 統合戦闘情報ヘッダ 2行目 (損害率・勝利区分・航空戦・予測)
+  * ---------------------------------------------------------------------------- */
+#combat-header-2 {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 1px;
+    padding: 1px 0;
+    border-bottom: 1px solid rgba(0, 255, 102, 0.1);
+    margin-bottom: 2px;
+}
+
+/* 損害率タグ */
+.damage-tag {
+    font-size: 7px;
+    padding: 0px 0px;
+    border-radius: 2px;
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: #fca5a5;
+    font-weight: bold;
+    letter-spacing: 0.05em;
+}
+
+/* 勝利区分タグ */
+.victory-tag {
+    font-size: 7px;
+    padding: 0px 3px;
+    border-radius: 2px;
+    background: rgba(34, 197, 94, 0.12);
+    border: 1px solid rgba(34, 197, 94, 0.35);
+    color: #86efac;
+    font-weight: bold;
+    letter-spacing: 0.05em;
+}
+.victory-tag.defeat {
+    background: rgba(239, 68, 68, 0.15);
+    border-color: rgba(239, 68, 68, 0.4);
+    color: #fca5a5;
+}
+
+/* 航空戦結果タグ */
+.air-tag {
+    font-size: 7px;
+    padding: 0px 3px;
+    border-radius: 2px;
+    background: rgba(0, 255, 102, 0.08);
+    border: 1px solid rgba(0, 255, 102, 0.25);
+    color: var(--text-color);
+    font-weight: bold;
+    letter-spacing: 0.05em;
+}
+
+#combat-header-2 .predict-tag {
+    font-size: 7px;
+    color: #ef4444;
+    font-weight: 900;
+    text-shadow: 0 0 3px rgba(239, 68, 68, 0.6);
+    margin-left: auto;
+}
+
+/* ----------------------------------------------------------------------------
+  * 11-2. 戦闘艦隊テーブル (艦隊詳細HUD風の高密度レイアウト)
+  * 自艦隊・敵艦隊をテーブル形式で表示し、情報密度を最大化
+  * ---------------------------------------------------------------------------- */
+.combat-fleet-section {
+    margin-top: 2px;
+}
+
+.combat-fleet-title {
+    font-size: 7.5px;
+    font-weight: bold;
+    color: var(--accent-color);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding-bottom: 1px;
+    margin-bottom: 1px;
+    border-bottom: 1px solid rgba(0, 255, 102, 0.15);
+}
+
+.combat-fleet-title.enemy {
+    color: #ef4444;
+    border-bottom-color: rgba(239, 68, 68, 0.15);
+}
+
+/* 戦闘艦隊テーブル本体 */
+.combat-ship-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 8px;
+    font-family: 'Consolas', 'Courier New', monospace;
+    color: var(--text-color);
+    margin-top: 1px;
+}
+
+.combat-ship-table thead th {
+    text-align: left;
+    padding: 0px 2px;
+    border-bottom: 1px solid rgba(0, 255, 102, 0.25);
+    color: var(--accent-color);
+    font-size: 7px;
+    font-weight: bold;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.combat-ship-table tbody tr {
+    border-bottom: 1px solid rgba(0, 255, 102, 0.1);
+    transition: background 0.15s;
+}
+
+.combat-ship-table tbody td {
+    padding: 0px 2px;
+    vertical-align: middle;
+    font-size: 8px;
+}
+
+/* 艦名セル：固定幅（漢字3文字分 ≈ 3em）*/
+.combat-ship-name-cell {
+    font-weight: bold;
+    color: #a3f7bf;
+    width: 3em;
+    min-width: 3em;
+    max-width: 3em;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+/* 艦名セル内のスクロールラッパーコンテナ */
+.combat-ship-name-container {
+    width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    position: relative;
+    height: 1.2em;
+    display: flex;
+    align-items: center;
+}
+
+/* 艦名セル内のスクロール用内包要素 */
+.combat-ship-name-scroll {
+    display: inline-block;
+    white-space: nowrap;
+    width: max-content;
+}
+
+/* 戦闘艦隊用 艦名電光掲示板スクロールアニメーション（4秒ループ） */
+.combat-ship-name-scroll.scroll::after {
+    content: attr(data-name);
+    margin-left: 1.5em;
+}
+.combat-ship-name-scroll.scroll {
+    position: absolute;
+    left: 0;
+    animation: ship-name-bounce 4s linear infinite;
+}
+
+/* HPセル（セグメントゲージを含む2行構成） */
+.combat-ship-hp-cell {
+    width: 5em;
+    min-width: 5em;
+    max-width: 5em;
+    vertical-align: middle;
+}
+
+/* 戦闘HPセル内コンテナ */
+.combat-cell-container {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    align-items: flex-start;
+    width: 100%;
+}
+
+/* 戦闘HP数値テキスト */
+.combat-hp-text {
+    font-size: 7px;
+    font-weight: bold;
+    color: #a3f7bf;
+}
+
+/* 戦闘用セグメントゲージ（艦隊詳細HUD版より小振り） */
+.combat-segment-gauge {
+    display: flex;
+    gap: 0.5px;
+    justify-content: flex-start;
+    align-items: center;
+    width: 4em;
+    height: 3px;
+    background: rgba(0, 0, 0, 0.4);
+    padding: 0;
+    border: 1px solid rgba(0, 255, 102, 0.15);
+    border-radius: 1px;
+}
+
+.combat-segment-gauge .gauge-segment {
+    flex: 1;
+    height: 100%;
+    background: rgba(0, 255, 102, 0.06);
+    border: 1px solid rgba(0, 255, 102, 0.1);
+    border-radius: 1px;
+}
+
+.combat-segment-gauge .gauge-segment.active {
+    background: #00ff66;
+    border-color: rgba(0, 255, 102, 0.6);
+    box-shadow: 0 0 2px rgba(0, 255, 102, 0.4);
+}
+
+/* 状態別ゲージカラー（戦闘用） */
+.combat-segment-gauge .gauge-segment.active.warning {
+    background: #ffaa00;
+    border-color: rgba(255, 170, 0, 0.6);
+}
+
+.combat-segment-gauge .gauge-segment.active.critical {
+    background: #ef4444;
+    border-color: rgba(239, 68, 68, 0.6);
+}
+
+/* 撃沈時: グレーアウト */
+.combat-segment-gauge .gauge-segment.sunk {
+    background: rgba(100, 116, 139, 0.2);
+    border-color: rgba(100, 116, 139, 0.15);
+}
+
+/* ========================================================================================
+ * 20. ログHUD (LOG SYSTEM) スタイル定義
+ * 本家ブラウザのログ最新10件を表示。青系テーマ。
+ * ======================================================================================== */
+#log-hud-panel {
+    min-width: 180px;
+}
+
+.log-entry {
+    display: flex;
+    align-items: baseline;
+    gap: 3px;
+    font-size: 7px;
+    padding: 1px 3px;
+    border-radius: 2px;
+    background: rgba(3, 8, 5, 0.6);
+    border-left: 2px solid transparent;
+    font-family: 'Consolas', 'Courier New', monospace;
+}
+
+.log-time {
+    color: #64748b;
+    flex-shrink: 0;
+    font-size: 6.5px;
+}
+
+.log-priority {
+    flex-shrink: 0;
+    font-size: 6px;
+    font-weight: bold;
+    padding: 0 2px;
+    border-radius: 1px;
+}
+
+.log-priority.p1 {
+    color: #60a5fa;
+    background: rgba(96, 165, 250, 0.15);
+}
+
+.log-priority.p2 {
+    color: #facc15;
+    background: rgba(250, 204, 21, 0.15);
+}
+
+.log-priority.p3 {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.15);
+}
+
+.log-message {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #a3f7bf;
+}
+
+/* 優先度別左端アクセント */
+.log-entry.priority-1 {
+    border-left-color: #60a5fa;
+}
+
+.log-entry.priority-2 {
+    border-left-color: #facc15;
+}
+
+.log-entry.priority-3 {
+    border-left-color: #ef4444;
+}
+
+/* 状態セル */
+.combat-ship-status {
+    text-align: center;
+    font-weight: bold;
+    font-size: 7px;
+}
+
+/* 状態別カラー */
+.status-ok { color: #86efac; }
+.status-warning { color: #facc15; }
+.status-emergency { color: #fca5a5; animation: pulse-danger 0.4s infinite; }
+.status-sunk { color: #64748b; text-decoration: line-through; opacity: 0.5; }
+
+/* 連合艦隊時の2列レイアウト */
+#combat-fleets-container {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.combat-fleet-block {
+    flex: 1;
+    min-width: 100px;
+}
+
+/* ----------------------------------------------------------------------------
+ * 12. 新規：詳細戦闘情報における個別HP表示スタイル
+ * ---------------------------------------------------------------------------- */
+.ship-hp-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 8px;
+    padding: 1px 3px;
+    border-radius: 2px;
+    background: rgba(3, 8, 5, 0.6);
+    border: 1px solid rgba(0, 255, 102, 0.15);
+    font-family: 'Consolas', 'Courier New', monospace;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* 艦名表示の調整 */
+.ship-name {
+    color: #a3f7bf;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 80px;
+    font-weight: bold;
+}
+
+/* HP数値 (例: 40/40) */
+.ship-hp-val {
+    font-weight: bold;
+    letter-spacing: 0.05em;
+}
+
+/* [状態：OK] - 通常グリーン */
+.ship-status-ok {
+    border-left: 2px solid #22c55e;
+}
+.ship-status-ok .ship-hp-val {
+    color: #86efac;
+}
+
+/* [状態：WARNING] - 中破（アンバーイエローで注意喚起） */
+.ship-status-warning {
+    border-left: 2px solid #eab308;
+    background: rgba(234, 179, 8, 0.06);
+}
+.ship-status-warning .ship-hp-val {
+    color: #facc15;
+    text-shadow: 0 0 2px rgba(234, 179, 8, 0.4);
+}
+
+/* [状態：EMERGENCY] - 大破（赤黒背景、赤黒パルス点滅による危険警告） */
+.ship-status-emergency {
+    border-left: 2px solid #ef4444;
+    background: rgba(62, 5, 12, 0.85);
+    animation: pulse-danger-bg 0.4s infinite; /* フラッシュ状の高速点滅アニメーション */
+}
+.ship-status-emergency .ship-name,
+.ship-status-emergency .ship-hp-val {
+    color: #fca5a5;
+    text-shadow: 0 0 3px rgba(239, 68, 68, 0.9);
+}
+
+/* 大破時の背景危険警告フラッシュアニメーション（瞬くような高速点滅効果） */
+@keyframes pulse-danger-bg {
+    0% { background-color: rgba(62, 5, 12, 0.2); }
+    50% { background-color: rgba(239, 68, 68, 1); }
+    100% { background-color: rgba(62, 5, 12, 0.2); }
+}
+
+/* [状態：SUNK] - 撃沈（グレーアウト、斜線打ち消し線） */
+.ship-status-sunk {
+    border-left: 2px solid #64748b;
+    background: rgba(30, 41, 59, 0.4);
+    opacity: 0.45;
+}
+.ship-status-sunk .ship-name,
+.ship-status-sunk .ship-hp-val {
+    color: #94a3b8;
+    text-decoration: line-through; /* 斜線 (打ち消し線) で撃沈表現 */
+}
+
+/* ========================================================================================
+ * 13. 設定パネル (SYSTEM SETUP) スタイル定義
+ * SYSTEM SETUPボタンのトグルで開閉するシステム設定エリア。
+ * max-height アニメーションで滑らかな展開・収縮を実現する。
+ * ======================================================================================== */
+
+/*
+ * 設定パネル本体：
+ * 初期状態は max-height: 0 + overflow: hidden で折りたたまれている。
+ * .settings-closed クラスが除去されると max-height が展開してアニメーションする。
+ */
+/* 変更: flex-wrapを解除、左右2カラムのflex構成に変更 */

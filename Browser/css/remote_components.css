@@ -1,0 +1,159 @@
+#trackpad {
+    width: 100%; /* コンテナの横幅一杯に広げる */
+    flex: 1; /* 縦方向もコンテナ一杯に広げる */
+    min-height: 0;
+    background: var(--glass-bg); /* ガラス調の半透明背景 */
+    backdrop-filter: blur(10px); /* 背景の磨りガラス効果 */
+    border: 1px solid var(--glass-border);
+    border-radius: 8px; /* 角丸をよりシャープにし、四隅ギリギリの表示スペースを拡大 */
+    touch-action: none; /* タッチイベントのブラウザデフォルト挙動を防止 */
+    position: relative;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+}
+
+#trackpad-label {
+    font-size: 14px;
+    color: var(--accent-color);
+    text-shadow: 0 0 6px var(--accent-glow);
+    opacity: 0.15;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    font-weight: bold;
+}
+
+/*
+ * 6. ステータスバー & 計器バッジ定義の整理
+ */
+.badge, .sys-val-badge {
+    font-size: 8px;
+    padding: 1px 1px;
+    border-radius: 2px;
+    background: rgba(2, 15, 6, 0.95);
+    border: 1px solid rgba(0, 255, 102, 0.25);
+    color: var(--text-color);
+    font-weight: bold;
+    font-family: 'Consolas', monospace;
+    text-transform: uppercase;
+}
+
+/* 接続状態用テキストカラー */
+#conn-status { color: #eab308; text-shadow: 0 0 2px rgba(234, 179, 8, 0.5); }
+#conn-status.ok { color: #86efac; text-shadow: 0 0 3px rgba(134, 239, 172, 0.5); }
+
+/*
+ * 6-1. 動的FPS制御状態バッジ
+ * 現在の省電力状態（アクティブ/アイドル/スリープ）を視覚的に表示
+ * 各状態で文字数が可変(ACT:3文字、IDL:10:000:10文字)になってもレイアウトが揺れないように
+ * 固定の最小幅(min-width)を設定し、テキストを等幅中央揃えにします。
+ */
+#state-badge {
+    min-width: 68px;
+    text-align: center;
+    display: inline-block;
+    color: #22c55e;
+    text-shadow: 0 0 3px rgba(34, 197, 94, 0.6);
+}  /* アクティブ: 緑 */
+#state-badge.idle { color: #eab308; text-shadow: 0 0 3px rgba(234, 179, 8, 0.6); }   /* アイドル: 黄色 */
+#state-badge.sleep { color: #6b7280; text-shadow: 0 0 3px rgba(107, 114, 128, 0.4); } /* スリープ: 灰色 */
+
+/*
+ * SLEEP状態の点滅アニメーション
+ * 灰色のテキストが1秒周期で点滅（消灯→着灯→消灯）
+ */
+@keyframes sleep-blink {
+    0%, 100% { opacity: 0.2; }
+    50% { opacity: 1; }
+}
+#state-badge.sleep-pulse {
+    animation: sleep-blink 1s ease-in-out infinite;
+}
+
+/*
+ * 6-2. 新規：トラックパッド最上部システムモニターバー
+ * NERV戦術インジケータ風に、FPSと通信量を横長の一体プレートに表示します。
+ */
+#system-monitor-bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 20px;
+    background: rgba(0, 255, 102, 0.08); /* 透過ネオングリーン背景 */
+    border-bottom: 1px solid var(--glass-border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 5px;
+    z-index: 6;
+    pointer-events: none; /* ★文字部分を触ってもドラッグ操作を妨げないように透過します */
+}
+.sys-label {
+    font-size: 8.5px;
+    color: rgba(0, 255, 102, 0.65);
+    font-weight: bold;
+    letter-spacing: 0.1em;
+}
+.sys-val {
+    color: var(--accent-color);
+    text-shadow: 0 0 4px var(--accent-glow);
+    font-family: 'Consolas', monospace;
+    font-weight: bold;
+}
+
+/* 
+ * トラックパッド領域レイアウト：
+ * 深緑のグラデーション背景を適用し、サイバーなコクピット計器感を向上。
+ */
+#trackpad-area {
+    flex: 1; /* 残りスペースをすべて占有 */
+    position: relative;
+    background: linear-gradient(180deg, rgba(4, 28, 12, 0.6) 0%, rgba(2, 11, 5, 1) 100%);
+    border-top: 1px solid var(--glass-border);
+    display: flex;
+    flex-direction: column;
+    gap: 0px; /* 要素間のギャップをさらに削減 */
+    padding: 0px 0px; /* 左右と上下の余白を限界まで削って画面サイズを最大活用 */
+    overflow: hidden; /* dvh最適化により領域内に綺麗に収まるためスクロール不要 */
+}
+
+/* トラックパッドを内包するコンテナのレイアウト定義 */
+#trackpad-container {
+    flex: 1; /* 残りスペースをすべて縦方向に占有 */
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: stretch; /* 子要素であるトラックパッドを縦方向一杯に引き伸ばす */
+    min-height: 0;
+    padding: 0;
+}
+
+/* モニターバー専用極小SETUPボタン */
+.sys-btn {
+    height: 14px;
+    padding: 0 5px;
+    background: rgba(0, 255, 102, 0.15);
+    border: 1px solid rgba(0, 255, 102, 0.35);
+    border-radius: 4px;
+    color: var(--accent-color);
+    font-size: 8px;
+    font-weight: bold;
+    cursor: pointer;
+    font-family: 'Play', 'Consolas', monospace;
+    letter-spacing: 0.05em;
+    transition: background 0.15s, border-color 0.15s, transform 0.1s;
+    -webkit-user-select: none;
+    user-select: none;
+    pointer-events: auto; /* ★親要素が透過されていても、ボタンだけは100%クリックが動作するように強制適用します */
+}
+.sys-btn:active {
+    transform: scale(0.95);
+    background: rgba(0, 255, 102, 0.3);
+}
+
+/* 
+ * 9. HUD統合コンテナ & 各種HUD (左上詰めレイアウト)
+ * トラックパッドの左上に配置し、子要素を左上から順に詰め込んで並べる flex コンテナ。
+ */

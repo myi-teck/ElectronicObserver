@@ -6,13 +6,24 @@
 //--------------------------------------------------------------------------------------------
 // author         : myi
 // creation date  : 2026/04/20
-// version        : 1.92
+// version        : 2.00
 //--------------------------------------------------------------------------------------------
 #region "change history"
 // change history : 2026/04/20 myi 新規作成
 //                  2026/05/25 myi HTMLレイアウト調整の利便性向上のため、HTMLコンテンツを外部ファイル(RemoteController.html)に切り出し.
+//                  2026/07/29 myi HTTPヘッダーフォールバック処理の改善、WebSocket/HTTP間シーケンス番号競合対策、
+//                                           SendSemaphore保持時間最小化、init処理のシーケンス番号管理適正化を実施。
 //                                           ビルド不要でリアルタイム反映可能なロード処理を実装。
 //                                           また、余分なハードコードHTML(デフォルト定義)を完全に削除し、動的パス探索を強化。
+//                  2026/07/29 myi フェーズ5：中央キャプチャ・ファンアウト方式を導入。各セッション独立キャプチャを単一中央タスクに統合し、
+//                                           CefSharp負荷を O(N) → O(1) に削減。SharedFrameBuffer, CentralCaptureLoopAsync,
+//                                           WebSocketFanoutLoopAsync, GetMaxFpsIntervalMs, CleanupZombieSessions を実装。
+//                  2026/07/29 myi フェーズ6：接続管理とクリーンアップの実装。
+//                                           1. 最大接続数制限のアトミック管理（Interlocked 使用、レースコンディション排除）
+//                                           2. RemoveWebSocketSession によるセッション即時削除（ゾンビ防止）
+//                                           3. WebSocket切断状態の即時検知（WebSocketState チェック追加）
+//                                           4. SharedFrameBuffer 参照カウント解放の整合性確認・Dispose 時クリーンアップ
+//                                           5. WebSocketSession 二重解放保護（_disposed フラグ）
 //                  2026/05/25 myi モバイル端末へ実際の資源・艦隊・直近の戦闘情報をリアルタイム返却する JSON API (/hud) を実装。
 //                  2026/05/25 myi 連合艦隊および7隻編成(遊撃部隊)に対応した、一隻毎の詳細HP情報を返却するJSON APIへの拡張。
 //                  2026/05/25 myi プロセス間通信(WCF)経由でメインプロセスからHUD情報を受信し、循環参照を防ぐキャッシュ配信方式へ変更。
@@ -47,6 +58,7 @@ using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -55,6 +67,7 @@ using System.Net;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using CefSharp;
@@ -106,6 +119,62 @@ namespace Browser
 		// 2026/07/27 新規作成（WebSocket 定数）
 		private const int WebSocketHeartbeatIntervalMs = 15000; // 15秒
 		private const int WebSocketMaxQueueSize = 1;            // Drop Frame 用キュー上限（最新1枚のみ保持）
+
+		// 2026/07/29 新規作成（WebSocketプロトコルバージョン定数）
+		// バージョン番号は将来の仕様が互換性なく変更される場合にインクリメント
+		private const int WebSocketProtocolVersion = 0;
+
+		// 2026/07/29 新規作成（最大同時接続数制限）
+		private const int MaxConcurrentClients = 5;
+
+		// 2026/07/29 追記（接続数制限のアトミック管理用）
+		private int _activeConnectionCount; // Interlocked で管理
+
+		// 2026/07/29 新規作成（グローバルシーケンス番号：WebSocket/HTTP共通の単調増加int型）
+		/// <summary>
+		/// グローバルシーケンス番号（WebSocket/HTTP共通、単調増加）
+		/// Interlocked.Increment でスレッドセーフなインクリメント
+		/// [二次レビュー修正] int型(32bit)を使用。Interlocked.Incrementはuintを非サポートのため。
+		/// ラップアラウンド対応は差分計算（uintキャスト）で実施し、24日超過時のフレーム配信停止を防止
+		/// </summary>
+		private int _globalSequenceNumber;
+
+		// 2026/07/29 新規作成（フェーズ5：中央キャプチャ・ファンアウト方式）
+		/// <summary>
+		/// 中央キャプチャからの共有フレームバッファ（最新の1フレームのみ保持）
+		/// 参照カウント付きで、全セッションが送信完了後にメモリを解放
+		/// </summary>
+		private readonly SharedFrameBuffer _sharedFrameBuffer;
+
+		// 2026/07/29 新規作成（フェーズ5：動的FPS制御用キャッシュ）
+		private int _cachedMaxFpsInterval = 100;
+		private int _cachedSessionCount = 0;
+
+		// 2026/07/29 新規作成（IPCプロファイリング：案G-1/2/3）
+		/// <summary>
+		/// CaptureCanvasAsync の実行遅延統計を保持するリングバッファ（最大30サンプル）
+		/// 移動平均/最大/最小値を算出し、500ms超過時に警告ログを出力
+		/// 容量30は、10FPS(100ms/フレーム)で約3秒分、1FPS(1000ms/フレーム)で約30秒分の統計を保持。
+		/// 古いサンプルは Enqueue 時に自動的に Dequeue される（RecordCaptureLatency 内で実装）。
+		/// </summary>
+		private readonly Queue<long> _captureLatencyHistory = new Queue<long>(30);
+
+		// 2026/07/31 新規作成（二次レビュー修正：プロファイリングログの頻度抑制用）
+		/// <summary>
+		/// 正常系プロファイリングログの出力頻度を抑制するためのフレームカウンター
+		/// 100フレームに1回のみ出力（ログI/O負荷軽減）
+		/// </summary>
+		private int _sendFrameCounter;
+
+		// 2026/07/29 新規作成（フェーズ5：中央キャプチャループのキャンセルトークン）
+		private CancellationTokenSource _centralCaptureCts;
+	
+
+		// 2026/07/29 新規作成（フェーズ5：中央キャプチャループのタスク参照）
+		private Task _centralCaptureTask;
+
+		// 2026/07/29 新規作成（ゾンビクリーンアップ間隔：5秒）
+		private DateTime _lastZombieCleanupTime = DateTime.MinValue;
 
 		//====================================================================================
 		// IPC 最適化 - スクリプト事前構築
@@ -189,6 +258,302 @@ namespace Browser
 			}
 		}
 
+		//====================================================================================
+		// 処理ブロック名 : SharedFrameBuffer
+		// 概要           : 中央キャプチャからの共有フレームバッファ（最新の1フレームのみ保持）。
+		//                  参照カウント付きで、全セッションが送信完了後にメモリを解放する。
+		//                  ArrayPool<byte> からレンタルされたバッファを管理し、
+		//                  参照カウントが0になった瞬間に ArrayPool へ返却する。
+		//                  旧フレームはペンディングリストに保持し、参照カウントが0になるまで
+		//                  ArrayPool へ返却しない（Use-After-Free 防止）。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/29
+		// version        : 3.00 (Use-After-Free修正, ダブルフリー防止, ペンディングフレーム追跡)
+	//------------------------------------------------------------------------------------
+			/// <summary>
+			/// フレームバッファの情報を保持する内部クラス。
+			/// 各フレームは独立した参照カウントを持ち、SetFrame で旧フレームが置き換えられた後も
+			/// 参照カウントが0になるまでペンディングリストに保持される。
+			/// </summary>
+			private class FrameInfo
+			{
+				public byte[] Data;
+				public int DataLength;  // 実際のデータ長（ArrayPoolのバッファサイズとは異なる）
+				public int Sequence;
+				public volatile int ReferenceCount;
+	
+				public FrameInfo(byte[] data, int dataLength, int sequence)
+				{
+					Data = data;
+					DataLength = dataLength;
+					Sequence = sequence;
+					ReferenceCount = 0;
+				}
+			}
+	
+			/// <summary>
+			/// 中央キャプチャからの共有フレームバッファ（最新の1フレームのみ保持）
+			/// 参照カウント付きで、全セッションが送信完了後にメモリを解放
+			/// ArrayPool<byte> からレンタルされたバッファを管理し、
+			/// 参照カウントが0になった瞬間に ArrayPool へ返却する
+			/// </summary>
+			private class SharedFrameBuffer
+			{
+				private readonly object _lock = new object();
+				private FrameInfo _current;
+				// 旧フレームのリスト（参照カウントが0になるまで保持）
+				private readonly List<FrameInfo> _pending = new List<FrameInfo>();
+				private readonly Action<int> _onReferenceCountNegative;
+				// SharedFrameBuffer 専用 ArrayPool（WebSocket送信用バッファとのメモリ領域を分離）
+				private static readonly ArrayPool<byte> _framePool = ArrayPool<byte>.Create();
+	
+				/// <summary>
+				/// SharedFrameBuffer を初期化します。
+				/// </summary>
+				/// <param name="onReferenceCountNegative">参照カウントが負の値になった際に呼び出されるコールバック（デバッグ用）。</param>
+				public SharedFrameBuffer(Action<int> onReferenceCountNegative)
+				{
+					_onReferenceCountNegative = onReferenceCountNegative;
+				}
+	
+				/// <summary>
+				/// 最新のフレームデータを取得し、参照カウントを +1 します（読み取り専用）。
+				/// </summary>
+				/// <remarks>
+				/// <para><b>役割:</b> 中央キャプチャが <see cref="SetFrame"/> で設定した最新のフレームデータをファンアウトセッションが読み取る。
+				/// 中央キャプチャループは <see cref="SetFrame"/> によりフレームを設定し、本メソッドは各ファンアウトセッションがそのフレームを取得してクライアントへ送信するために使用する。</para>
+				/// <para><b>スレッドセーフ性:</b> <c>lock (_lock)</c> で排他制御されており、中央キャプチャスレッドからの <see cref="SetFrame"/> と複数のファンアウトセッションからの同時呼び出し間で競合は発生しない。</para>
+				/// <para><b>参照カウントの管理責任:</b> 本メソッドが参照カウントを +1 する（インクリメント側）。
+				/// 呼び出し側は取得したフレームの使用完了後、必ず <see cref="ReleaseFrame(byte[])"/> を呼び出して参照カウントを -1 しなければならない（デクリメント側）。
+				/// 未解放のまま <see cref="SetFrame"/> が呼ばれると、旧フレームの参照カウントが0にならずメモリーリークの原因となる。</para>
+				/// <para>フレームが設定されていない場合は (null, 0) を返し、参照カウントはインクリメントしない。</para>
+				/// </remarks>
+				/// <returns>フレームデータ配列とシーケンス番号のタプル。</returns>
+				public (byte[] Data, int DataLength, int Sequence) GetFrame()
+				{
+					lock (_lock)
+					{
+						if (_current != null)
+						{
+							Interlocked.Increment(ref _current.ReferenceCount);
+						}
+						return (_current?.Data, _current?.DataLength ?? 0, _current != null ? _current.Sequence : 0);
+					}
+				}
+	
+				/// <summary>
+					/// 新しいフレームデータを設定し、旧フレームの参照カウントをデクリメントします。
+					/// 旧フレームの参照カウントが0になった場合のみ ArrayPool へ返却する。
+					/// 参照カウントが0より大きい場合は、旧フレームをペンディングリストに保持する。
+					/// </summary>
+					/// <remarks>
+					/// <para><b>役割:</b> 中央キャプチャループが新規キャプチャを取得した際、共有バッファにフレームを設定する。
+					/// 旧フレームがまだファンアウトセッションに使用されている場合は、ペンディングリストに保持して安全に参照カウントが0になるまで待つ。</para>
+					/// <para><b>スレッドセーフ性:</b> <c>lock (_lock)</c> で排他制御されており、<see cref="GetFrame"/> や <see cref="ReleaseFrame(byte[])"/> との競合は発生しない。</para>
+					/// <para><b>Use-After-Free 防止:</b> 旧フレームは即座に ArrayPool へ返却せず、
+					/// 参照カウントが0になるまでペンディングリストに保持する。これにより、<see cref="GetFrame"/> で旧フレームを取得している
+					/// セッションが安全に使用完了するまで待ち、解放済みメモリへのアクセスを防ぐ。</para>
+					/// <para><b>参照カウントの管理責任:</b> 新フレームの参照カウントは 0 に初期化する。
+					/// 参照カウントのインクリメントは <see cref="GetFrame"/> 側が担当する。
+					/// 旧フレームの参照カウントは変更しない（既存セッションがそのまま使用する）。</para>
+					/// <para><b>ArrayPoolバッファの独立性保証:</b> 渡されたdataをBuffer.BlockCopyで内部バッファにコピーし、
+					/// 渡されたバッファを直接参照してはならない。これにより、呼び出し側はSetFrame完了後直ちに
+					/// ArrayPoolへバッファを返却可能となり、ファンアウトセッションとのバッファ競合を防止する。</para>
+					/// </remarks>
+					/// <param name="data">ArrayPoolからレンタルされたフレームデータ</param>
+					/// <param name="dataLength">実際のデータ長（dataの配列サイズより小さい可能性がある）</param>
+					/// <param name="sequence">グローバルシーケンス番号</param>
+					/// <returns>診断情報（SetFrame直後の内部バッファ状態）。呼び出し側が出力頻度を制御する。</returns>
+					/// 返値: (hex, dataLength, bufferLength, sequence, riffOk)
+					public void SetFrame(byte[] data, int dataLength, int sequence)
+					{
+						lock (_lock)
+						{
+							var oldFrame = _current;
+				
+							// 専用 ArrayPool (_framePool) からレンタルし、Buffer.BlockCopy で高速コピー
+							// ArrayPoolから独立したメモリ領域を確保し、直接参照を排除
+							// これにより呼び出し側はSetFrame完了後直ちにArrayPoolへ返却可能
+							byte[] internalBuffer = _framePool.Rent(dataLength);
+							Buffer.BlockCopy(data, 0, internalBuffer, 0, dataLength);
+		
+							// 新フレームを設定（コピーされた独立バッファを使用）
+							_current = new FrameInfo(internalBuffer, dataLength, sequence);
+		
+	#if DEBUG
+							// [整合性チェック] RIFF ヘッダー検証（デバッグ用常設）
+							if (dataLength >= 4 && (internalBuffer[0]!='R' || internalBuffer[1]!='I' || internalBuffer[2]!='F' || internalBuffer[3]!='F'))
+							{
+								Debug.WriteLine($"[SharedFrameBuffer] RIFF header corrupted: {internalBuffer[0]:X2}{internalBuffer[1]:X2}{internalBuffer[2]:X2}{internalBuffer[3]:X2}, seq={sequence}, dataLength={dataLength}");
+							}
+	#endif
+				
+							// 旧フレームの処理
+							if (oldFrame != null)
+							{
+								// 旧フレームの参照カウントが0より大きい = まだ使用中のセッションが存在
+								// ペンディングリストに保持（ReleaseFrame で count==0 になったら返却）
+								if (oldFrame.ReferenceCount > 0)
+								{
+									// 重複追加防止：既に _pending に存在する場合は追加しない
+									if (!_pending.Contains(oldFrame))
+									{
+										_pending.Add(oldFrame);
+									}
+								}
+								else
+								{
+									// 参照カウントが0 = 使用中のセッションが存在しない
+									// 安全に専用 ArrayPool へ返却できる（clearArray: false）
+									_framePool.Return(oldFrame.Data);
+								}
+							}
+						}
+					}
+	
+				/// <summary>
+				/// フレーム使用完了後、指定されたデータ参照のフレームの参照カウントを -1 します（スレッドセーフ）。
+				/// 参照カウントが0になった場合のみ ArrayPool へバッファを返却する。
+				/// </summary>
+				/// <remarks>
+				/// <para><b>役割:</b> <see cref="GetFrame"/> で取得したフレームの使用完了を通知し、参照カウントを減らす。
+				/// 参照カウントが0になった瞬間に ArrayPool へバッファを返却し、メモリーリークを防止する。</para>
+				/// <para><b>スレッドセーフ性:</b> <c>lock (_lock)</c> で排他制御されており、<see cref="SetFrame"/> や <see cref="GetFrame"/> との競合は発生しない。</para>
+				/// <para><b>参照カウントの管理責任:</b> 本メソッドが参照カウントを -1 する（デクリメント側）。
+				/// <see cref="GetFrame"/> が +1 する（インクリメント側）ので、ペアとして使用される。</para>
+				/// <para><b>Use-After-Free 防止:</b> 解放対象のフレームをデータ参照で特定する。これにより、<see cref="GetFrame"/> で取得したフレームが
+				/// <see cref="SetFrame"/> で置き換えられた後も、正しいフレームの参照カウントがデクリメントされる。</para>
+				/// <para><b>ダブルフリー防止:</b> 参照カウントが 0 に正確に等しい場合のみ ArrayPool へ返却する。
+				/// 参照カウントが負の値になった場合は警告ログの出力のみとし、ArrayPool.Return を呼び出さない。</para>
+				/// </remarks>
+				/// <param name="data">GetFrameで取得したフレームデータ。null の場合は何もしない。</param>
+				public void ReleaseFrame(byte[] data)
+				{
+					if (data == null)
+						return;
+	
+					lock (_lock)
+					{
+						FrameInfo frame = null;
+						bool isPending = false;
+	
+						// 現在のフレームと一致するかチェック
+						if (_current != null && _current.Data == data)
+						{
+							frame = _current;
+						}
+						else
+						{
+							// ペンディングリストから検索（旧フレーム）
+							for (int i = 0; i < _pending.Count; i++)
+							{
+								if (_pending[i].Data == data)
+								{
+									frame = _pending[i];
+									isPending = true;
+									break;
+								}
+							}
+						}
+	
+						if (frame != null)
+						{
+							// 参照カウントをデクリメント
+							int count = Interlocked.Decrement(ref frame.ReferenceCount);
+	
+							if (count < 0)
+							{
+								// 参照カウントが負 = 二重解放などの不整合
+								// 警告ログのみ出力し、ArrayPool.Return は呼び出さない（ダブルフリー防止）
+								// コールバックの例外をロック保護下で吸収
+								try { _onReferenceCountNegative?.Invoke(count); } catch { /* ログ出力のみ。ロック解放を妨害しない */ }
+							}
+							else if (count == 0)
+							{
+								// 参照カウントが正確に0 = 安全に ArrayPool へ返却できる
+								_framePool.Return(frame.Data);
+	
+								// ペンディングリストから削除
+								if (isPending)
+								{
+									_pending.Remove(frame);
+								}
+							}
+						}
+	
+						// ペンディングリストのクリーンアップ
+						CleanupPending();
+					}
+				}
+	
+				/// <summary>
+				/// ペンディングリストから参照カウントが0になった（または異常な負値の）フレームを ArrayPool へ返却する。
+				/// </summary>
+				/// <remarks>
+				/// <para><b>役割:</b> ペンディングリストに保持された旧フレームのうち、
+				/// 参照カウントが0になったものを ArrayPool へ返却する。</para>
+				/// <para><b>呼び出し元:</b> <see cref="ReleaseFrame(byte[])"/> の末尾（lock 保護下の内部メソッド）から呼び出される。
+				/// <see cref="SetFrame"/> からは直接呼び出されない。</para>
+				/// <para><b>ReleaseFrame との連携:</b> <see cref="ReleaseFrame(byte[])"/> がペンディングリスト上のフレームの参照カウントを -1 した際、
+				/// count == 0 ならそのフレームを即時 ArrayPool へ返却し _pending から削除する。
+				/// <see cref="CleanupPending"/> は、これとは別に残存する _pending リストのフレームをスキャンし、
+				/// 参照カウントが0または負の値のフレームを ArrayPool へ返却する。</para>
+				/// <para><b>負値の処理:</b> 参照カウントが負の値になった場合は、二重解放などの不整合を示す。
+				/// 警告ログを出力しつつ、ArrayPool へ返却してメモリを回収し、状態を正常化する。</para>
+				/// </remarks>
+				private void CleanupPending()
+				{
+					for (int i = _pending.Count - 1; i >= 0; i--)
+					{
+						var frame = _pending[i];
+						int count = frame.ReferenceCount;
+						if (count <= 0)
+						{
+							if (count < 0)
+							{
+								// 参照カウントが負 = 二重解放などの不整合状態
+								// 警告ログを出力しつつ、ArrayPool へ返却してメモリを回収し状態を正常化する
+								// コールバックの例外をロック保護下で吸収
+								try { _onReferenceCountNegative?.Invoke(count); } catch { /* ログ出力のみ。ロック解放を妨害しない */ }
+							}
+							_framePool.Return(frame.Data);
+							_pending.RemoveAt(i);
+						}
+					}
+				}
+	
+				/// <summary>
+				/// 現在のフレームとペンディングリストの全フレームを ArrayPool へ返却する。
+				/// Dispose 時に呼び出され、メモリリークを確実に防止する。
+				/// </summary>
+				/// <remarks>
+				/// <para><b>役割:</b> RemoteController.Dispose() 時に呼ばれ、
+				/// 参照カウントが0になっていないフレームも含めて強制的に ArrayPool へ返却する。</para>
+				/// <para><b>注意:</b> 本メソッドは最後にのみ呼び出すべきであり、
+				/// 呼び出し後は本 SharedFrameBuffer の使用は不可能となる。</para>
+				/// </remarks>
+				public void Dispose()
+				{
+					lock (_lock)
+					{
+						// 現在のフレームを返却
+						if (_current != null)
+						{
+							_framePool.Return(_current.Data);
+							_current = null;
+						}
+	
+						// ペンディングリストの全フレームを返却
+						foreach (var frame in _pending)
+						{
+							_framePool.Return(frame.Data);
+						}
+						_pending.Clear();
+					}
+				}
+			}
+
 		// インメモリセッションストア（スレッドセーフ）
 		private readonly ConcurrentDictionary<string, SessionInfo> _sessions = new ConcurrentDictionary<string, SessionInfo>();
 
@@ -234,6 +599,12 @@ namespace Browser
 			/// 送信用の SemaphoreSlim（await 可能な排他制御用。TOCTOU 対策）
 			/// </summary>
 			public readonly SemaphoreSlim SendSemaphore = new SemaphoreSlim(1, 1);
+
+			/// <summary>
+			/// init処理専用のセマフォ（init要求の排他制御用）
+			/// 1つのセッションに対して同時1つのinit処理のみ許可
+			/// </summary>
+			public readonly SemaphoreSlim InitSemaphore = new SemaphoreSlim(1, 1);
 	
 			/// <summary>
 			/// 各ループタスクの参照（Dispose 時のクリーンアップ用）
@@ -259,9 +630,62 @@ namespace Browser
 			private bool _frameUpdated;
 	
 			/// <summary>
-			/// フレーム到着シグナル（非同期 await 対応、OSタイマー解像度制限排除）
+			/// フレーム到着シグナル（Channel使用、例外ベースフロー制御排除）
+			/// バウンド容量1のChannelを使用し、最新1フレームのみ保持
 			/// </summary>
-			private readonly SemaphoreSlim _frameSignal = new SemaphoreSlim(0, 1);
+			public readonly Channel<int> _frameSignal = Channel.CreateBounded<int>(new BoundedChannelOptions(1)
+			{
+				FullMode = BoundedChannelFullMode.DropOldest, // 最新のみ保持
+				SingleReader = true,
+			});
+	
+			/// <summary>
+			/// WebSocket送信用の6バイトヘッダーバッファ（事前割り当て、再利用）
+			/// Version 1byte + Flags 1byte + Seq 4bytes
+			/// ループ内で new byte[6] による毎フレームアロケーションを排除
+			/// </summary>
+			internal readonly byte[] _headerBuffer = new byte[6];
+	
+			//================================================================================
+			// セッション固有のカーソル座標（スレッドセーフ）
+			//--------------------------------------------------------------------------------
+			/// <summary>
+			/// このセッション固有のカーソルX座標（0.0〜1.0の相対座標）
+			/// double 型はC#で volatile 非対応かつ Interlocked.CompareExchange では競合条件が存在するため、
+			/// BitConverter.DoubleToInt64Bits / Int64BitsToDouble を用いた Interlocked.Exchange でアトミックに更新
+			/// </summary>
+			private long _cursorXBits;
+	
+			/// <summary>
+			/// このセッション固有のカーソルY座標（0.0〜1.0の相対座標）
+			/// </summary>
+			private long _cursorYBits;
+	
+			/// <summary>
+			/// カーソルX座標（読み取り専用）
+			/// </summary>
+			public double CursorX => BitConverter.Int64BitsToDouble(Volatile.Read(ref _cursorXBits));
+	
+			/// <summary>
+			/// カーソルY座標（読み取り専用）
+			/// </summary>
+			public double CursorY => BitConverter.Int64BitsToDouble(Volatile.Read(ref _cursorYBits));
+	
+			/// <summary>
+			/// カーソルX座標を設定する（スレッドセーフ）
+			/// </summary>
+			public void SetCursorX(double value)
+			{
+				Interlocked.Exchange(ref _cursorXBits, BitConverter.DoubleToInt64Bits(value));
+			}
+	
+			/// <summary>
+			/// カーソルY座標を設定する（スレッドセーフ）
+			/// </summary>
+			public void SetCursorY(double value)
+			{
+				Interlocked.Exchange(ref _cursorYBits, BitConverter.DoubleToInt64Bits(value));
+			}
 
 			public WebSocketSession(System.Net.WebSockets.WebSocket ws, string sessionId)
 			{
@@ -275,17 +699,28 @@ namespace Browser
 
 			/// <summary>
 			/// 最新フレームの到着を非同期待機します（送信タスクから呼び出し）。
-			/// 0ms非同期で即座に再開し、OSタイマー制度による10FPS制限を排除する。
+			/// Channelを使用し、例外ベースのフロー制御を排除する。
+			/// [Phase 5: Central Capture] 将来の中央キャプチャ機能で使用予定
 			/// </summary>
 			public async Task<bool> WaitForFrameAsync(int timeoutMs, CancellationToken token)
 			{
+				CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(token);
 				try
 				{
-					return await _frameSignal.WaitAsync(timeoutMs, token);
+					cts.CancelAfter(timeoutMs);
+					try
+					{
+						await _frameSignal.Reader.ReadAsync(cts.Token);
+						return true;
+					}
+					catch (OperationCanceledException)
+					{
+						return false; // タイムアウト
+					}
 				}
-				catch (OperationCanceledException)
+				finally
 				{
-					return false;
+					cts.Dispose();
 				}
 			}
 
@@ -293,18 +728,20 @@ namespace Browser
 			/// 最新フレームをセットします（キャプチャタスクから呼び出し）。
 			/// 既存のフレームがある場合は破棄（ArrayPool へ返却）し、新しいフレームで上書き。
 			/// 操作全体は _bufferLock で排他制御されておりアトミック。
+			/// ChannelのTryWriteを使用し、例外ベースのフロー制御を排除する。
+			/// [Phase 5: Central Capture] 将来の中央キャプチャ機能で使用予定
 			/// </summary>
 			public void SetLatestFrame(byte[] data)
 			{
 				byte[] pooledBuffer = _bufferPool.Rent(data.Length);
-				Array.Copy(data, pooledBuffer, data.Length);
+				Buffer.BlockCopy(data, 0, pooledBuffer, 0, data.Length);
 
 				lock (_bufferLock)
 				{
 					// 既存フレームがあれば返却（ArrayPool へ）
 					if (_latestFrameBuffer != null)
 					{
-						_bufferPool.Return(_latestFrameBuffer, clearArray: true);
+						_bufferPool.Return(_latestFrameBuffer);
 					}
 
 					_latestFrameBuffer = pooledBuffer;
@@ -312,11 +749,8 @@ namespace Browser
 					_frameUpdated = true;
 				}
 
-				// セマフォが0（待機中）の場合のみReleaseして送信タスクを0ms即時再開
-				if (_frameSignal.CurrentCount == 0)
-				{
-					try { _frameSignal.Release(); } catch (SemaphoreFullException) { }
-				}
+				// ChannelのTryWriteでシグナルを送信（チャンネルが一杯でも例外を投げず、最新のみ保持）
+				_frameSignal.Writer.TryWrite(1);
 			}
 
 			/// <summary>
@@ -325,6 +759,7 @@ namespace Browser
 			/// 送信完了後には ReturnFrame で返却することを期待する。
 			/// フレームがない場合は default(ArraySegment<byte>) (Count == 0) を返す。
 			/// 操作全体は _bufferLock で排他制御されておりアトミック。
+			/// [Phase 5: Central Capture] 将来の中央キャプチャ機能で使用予定
 			/// </summary>
 			public ArraySegment<byte> GetLatestFrame()
 			{
@@ -347,33 +782,41 @@ namespace Browser
 
 			/// <summary>
 			/// 送信完了後、ArrayPool から借りたフレームバッファを返却します。
+			/// [Phase 5: Central Capture] 将来の中央キャプチャ機能で使用予定
 			/// </summary>
 			public void ReturnFrame(ArraySegment<byte> segment)
 			{
 				if (segment.Array != null && segment.Count > 0)
 				{
-					_bufferPool.Return(segment.Array, clearArray: true);
+					_bufferPool.Return(segment.Array);
 				}
 			}
 
+			private volatile bool _disposed = false;
+	
 			public void Dispose()
 			{
+				// 二重解放保護（複数ループが同時に終了した場合の安全確保）
+				if (_disposed) return;
+				_disposed = true;
+	
 				CancellationToken.Cancel();
-				try { _frameSignal.Release(); } catch { } // 待機中の送信タスクを解放
-
+				// ChannelのWriterを完了状態にして待機中の読み取りタスクを解放
+				try { _frameSignal.Writer.Complete(); } catch { }
+	
 				// 残っているフレームバッファを返却
 				lock (_bufferLock)
 				{
 					if (_latestFrameBuffer != null)
 					{
-						_bufferPool.Return(_latestFrameBuffer, clearArray: true);
+						_bufferPool.Return(_latestFrameBuffer);
 						_latestFrameBuffer = null;
 					}
 				}
-
+	
 				CancellationToken.Dispose();
 				SendSemaphore.Dispose();
-				_frameSignal.Dispose();
+				InitSemaphore.Dispose();
 			}
 		}
 
@@ -420,9 +863,83 @@ namespace Browser
 			public Rectangle? Rect { get; set; }  // 差分領域（Partial時のみ）
 		}
 
-		// 仮想マウス座標 (0.0 ～ 1.0 の相対座標で管理)
-		private double _cursorX = 0.5;
-		private double _cursorY = 0.5;
+		// 2026/07/29 myi 修正（セッション分離対応）
+		// 共有のカーソル座標フィールドを廃止し、各セッション固有のカーソル管理へ移行
+		// HTTPモード用のカーソル状態（セッションIDベース）
+		private readonly ConcurrentDictionary<string, HttpCursorState> _httpCursorStates = new ConcurrentDictionary<string, HttpCursorState>();
+		private DateTime _lastHttpCursorCleanupTime = DateTime.UtcNow;
+
+		/// <summary>
+		/// HTTPセッションのカーソル状態を保持するクラス
+		/// WebSocketセッションとは独立して管理
+		/// </summary>
+		private class HttpCursorState
+		{
+			private long _xBits;
+			private long _yBits;
+
+			public double X => BitConverter.Int64BitsToDouble(Volatile.Read(ref _xBits));
+			public double Y => BitConverter.Int64BitsToDouble(Volatile.Read(ref _yBits));
+
+			/// <summary>
+			/// 最終アクセス時刻（エバクションポリシーで使用）
+			/// </summary>
+			public DateTime LastAccessTime { get; private set; } = DateTime.UtcNow;
+
+			public void SetX(double value)
+			{
+				Interlocked.Exchange(ref _xBits, BitConverter.DoubleToInt64Bits(value));
+				LastAccessTime = DateTime.UtcNow;
+			}
+
+			public void SetY(double value)
+			{
+				Interlocked.Exchange(ref _yBits, BitConverter.DoubleToInt64Bits(value));
+				LastAccessTime = DateTime.UtcNow;
+			}
+
+			public void Touch()
+			{
+				LastAccessTime = DateTime.UtcNow;
+			}
+		}
+
+		/// <summary>
+		/// 期限切れのHTTPカーソルセッションを削除します。
+		/// 最終アクセスから5分経過したセッションを淘汰します。
+		/// </summary>
+		private void CleanupExpiredHttpCursorSessions()
+		{
+			var cutoffTime = DateTime.UtcNow.AddMinutes(-5);
+			foreach (var kvp in _httpCursorStates)
+			{
+				if (kvp.Value.LastAccessTime < cutoffTime)
+				{
+					_httpCursorStates.TryRemove(kvp.Key, out _);
+				}
+			}
+		}
+
+		/// <summary>
+		/// 必要に応じてHTTPカーソルセッションのクリーンアップを実行します。
+		/// 前回のクリーンアップから1分以上経過している場合に実行。
+		/// </summary>
+		private void CleanupExpiredHttpCursorSessionsIfNeeded()
+		{
+			if ((DateTime.UtcNow - _lastHttpCursorCleanupTime).TotalMinutes >= 1)
+			{
+				CleanupExpiredHttpCursorSessions();
+				_lastHttpCursorCleanupTime = DateTime.UtcNow;
+			}
+		}
+
+		/// <summary>
+		/// HTTPリクエストのセッションIDからカーソル状態を取得または作成します。
+		/// </summary>
+		private HttpCursorState GetOrCreateHttpCursorState(string sessionId)
+		{
+			return _httpCursorStates.GetOrAdd(sessionId, _ => new HttpCursorState());
+		}
 
 		// メインプロセスから WCF 経由で定期送信されるゲーム内HUDデータのJSONキャッシュ
 		private string _cachedHudJson = null;
@@ -445,6 +962,89 @@ namespace Browser
 
 		private string _lastLogsJson = null;
 		private long _logsVersion = 0;
+
+		//====================================================================================
+		// フェーズ5: 中央キャプチャ・ファンアウト方式
+		//------------------------------------------------------------------------------------
+		/// <summary>
+		/// 接続中のセッションの最高FPS（最小TargetIntervalMs）を取得する
+		/// 結果をキャッシュし、接続数変更時のみ再計算する
+		/// 0 = 無制限（60FPS制限を適用）
+		/// </summary>
+		private int GetMaxFpsIntervalMs()
+		{
+			// キャッシュヒット: 接続数が変更されていない場合はキャッシュ値を使用
+			int currentCount = Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0);
+			if (currentCount == _cachedSessionCount)
+				return _cachedMaxFpsInterval;
+
+			// 接続数が変更された: 再計算
+			int minInterval = int.MaxValue;
+
+			// .ToArray() によりスレッドセーフなスナップショットを作成してから列挙
+			// 列挙中にセッションが Dispose されて ConcurrentDictionary から削除されても安全
+			foreach (var session in _webSocketSessions.Values.ToArray())
+			{
+				int interval = session.TargetIntervalMs;
+				if (interval <= 0) interval = 16; // 60FPS制限
+				if (interval < minInterval)
+					minInterval = interval;
+			}
+
+			// セッションなしの場合はデフォルト100ms (10FPS)
+			int result = minInterval == int.MaxValue ? 100 : minInterval;
+
+			// キャッシュを更新
+			_cachedMaxFpsInterval = result;
+			_cachedSessionCount = currentCount;
+
+			return result;
+		}
+
+		/// <summary>
+		/// Heartbeatタイムアウト（30秒）およびWebSocket切断状態のゾンビセッションをクリーンアップする。
+		/// CentralCaptureLoopAsync で集約実行（各セッションループからの呼び出しは不要）。
+		/// 2026/07/29 myi 修正: WebSocketState をチェックして即時切断を検知し、
+		/// RemoveWebSocketSession を使用してリソースを確実に解放する。
+		/// </summary>
+		private void CleanupZombieSessions()
+		{
+			// 5秒に1回の実行で十分
+			if ((DateTime.UtcNow - _lastZombieCleanupTime).TotalSeconds < 5)
+				return;
+
+			_lastZombieCleanupTime = DateTime.UtcNow;
+
+			var cutoffTime = DateTime.UtcNow.AddSeconds(-30);
+
+			// .ToList() によりスレッドセーフなコピーを作成してから列挙・削除
+			// 列挙中にセッションが Dispose されて ConcurrentDictionary から削除されても安全
+			foreach (var kvp in _webSocketSessions.ToList())
+			{
+				var session = kvp.Value;
+				bool shouldRemove = false;
+
+				// 1. Heartbeat タイムアウト（30秒経過）
+				if (session.LastHeartbeat < cutoffTime)
+				{
+					Log(2, $"[RemoteController] ゾンビセッション切断 (Heartbeatタイムアウト): SessionID={session.SessionId}");
+					shouldRemove = true;
+				}
+
+				// 2. WebSocketの即時切断検知（StateがOpen以外）
+				// 既にファンアウト/受信ループが終了しているはずだが、念のため
+				if (session.WebSocket.State != WebSocketState.Open && session.WebSocket.State != WebSocketState.Connecting)
+				{
+					Log(2, $"[RemoteController] ゾンビセッション切断 (WebSocket非Open): SessionID={session.SessionId}, State={session.WebSocket.State}");
+					shouldRemove = true;
+				}
+
+				if (shouldRemove)
+				{
+					RemoveWebSocketSession(session.SessionId);
+				}
+			}
+		}
 
 		//====================================================================================
 		// 差分WebP方式用フィールド・定数
@@ -556,6 +1156,8 @@ namespace Browser
 			_port = port;
 			_address = address;
 			_password = password;
+			_sharedFrameBuffer = new SharedFrameBuffer(
+				negativeCount => Log(3, $"[RemoteController] 参照カウント不整合: _referenceCount = {negativeCount} (二重解放の可能性があります)"));
 		}
 
 		/// <summary>
@@ -872,7 +1474,7 @@ namespace Browser
 				}
 				else if (path == "/control")
 				{
-					HandleControl(req, res);
+					await HandleControlAsync(req, res);
 				}
 				else if (path == "/hud")
 				{
@@ -883,6 +1485,37 @@ namespace Browser
 				{
 					// WebSocket アップグレード要求
 					await HandleWebSocketAsync(context);
+				}
+				// 静的ファイルサーブ（CSS/JS）
+				else if (path.StartsWith("/css/") || path.StartsWith("/js/"))
+				{
+					// パスから相対パスを抽出（../ によるディレクトリトラバーサル防止）
+					// 【Bug Fix】先頭のパス区切り文字を除去して Path.Combine のパス脱走バグを防止
+					string relativePath = path.TrimStart('/', '\\');
+	
+					// 許可されたディレクトリ配下のファイルのみサーブ
+					string basePath = GetStaticFileBasePath();
+					// 【Bug Fix】GetStaticFileBasePath の戻り値が null だった場合のガード
+					if (string.IsNullOrEmpty(basePath))
+					{
+						res.StatusCode = 500; // Internal Server Error
+						res.Close();
+						return;
+					}
+					string fullPath = Path.GetFullPath(Path.Combine(basePath, relativePath));
+	
+					// セキュリティチェック：basePath 配下か確認
+					string basePathFull = Path.GetFullPath(basePath);
+					if (fullPath.StartsWith(basePathFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+						fullPath.Equals(basePathFull, StringComparison.OrdinalIgnoreCase))
+					{
+						SendStaticFile(req, res, fullPath);
+					}
+					else
+					{
+						res.StatusCode = 403; // Forbidden
+						res.Close();
+					}
 				}
 				else
 				{
@@ -1358,7 +1991,7 @@ namespace Browser
 		{
 			res.Headers["X-Frame-Options"] = "DENY";
 			res.Headers["X-Content-Type-Options"] = "nosniff";
-			res.Headers["Content-Security-Policy"] = "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' blob: data:;";
+			res.Headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' blob: data:;";
 		}
 
 		/// <summary>
@@ -1372,6 +2005,8 @@ namespace Browser
 			// レスポンスのContent-TypeヘッダにUTF-8文字コードを明示的に付与
 			res.ContentType = "text/html; charset=utf-8";
 			ApplySecurityHeaders(res);
+			// HTMLファイルは常に最新のCSS/JSの ?v= パラメータを参照する必要があるため、ブラウザキャッシュを無効化する
+			res.Headers["Cache-Control"] = "no-cache, must-revalidate";
 			res.ContentLength64 = buffer.Length;
 			res.OutputStream.Write(buffer, 0, buffer.Length);
 			res.Close();
@@ -1461,8 +2096,20 @@ namespace Browser
 		/// <summary>
 		/// マウス操作を受け取ってエミュレートします。
 		/// </summary>
-		private void HandleControl(HttpListenerRequest req, HttpListenerResponse res)
+		private async Task HandleControlAsync(HttpListenerRequest req, HttpListenerResponse res)
 		{
+			// 2026/07/29 myi 修正（セッション分離対応）
+			// HTTPモードでもセッションIDベースのカーソル状態を使用
+			CleanupExpiredHttpCursorSessionsIfNeeded();
+
+			// セッションIDを取得（Cookieから）
+			string sessionId = GetCookieValue(req, "session_id");
+			if (string.IsNullOrEmpty(sessionId))
+			{
+				sessionId = Guid.NewGuid().ToString("N");
+			}
+
+			var cursorState = GetOrCreateHttpCursorState(sessionId);
 			var action = req.QueryString["action"];
 			var xStr = req.QueryString["x"];
 			var yStr = req.QueryString["y"];
@@ -1470,23 +2117,23 @@ namespace Browser
 			// 絶対割合座標 (0.0〜1.0) を受け取り、現在のポインタ座標に適用します。
 			if (action == "move" && double.TryParse(xStr, out double x) && double.TryParse(yStr, out double y))
 			{
-				_cursorX = Math.Max(0, Math.Min(1.0, x));
-				_cursorY = Math.Max(0, Math.Min(1.0, y));
+				cursorState.SetX(Math.Max(0, Math.Min(1.0, x)));
+				cursorState.SetY(Math.Max(0, Math.Min(1.0, y)));
 
-				TriggerMouseMove();
+				await TriggerMouseMoveAsync(cursorState);
 			}
 			else if (action == "click")
-				{
-					TriggerMouseClick();
-				}
+			{
+				await TriggerMouseClickAsync(cursorState);
+			}
 			// 2026/06/11 myi 新規作成（ゲーム画面タッチクリック）
 			// ゲーム画面（viewport）をタップした位置の絶対座標を直接クリックする
 			else if (action == "touch_click" && double.TryParse(xStr, out double tx) && double.TryParse(yStr, out double ty))
-				{
-					_cursorX = Math.Max(0, Math.Min(1.0, tx));
-					_cursorY = Math.Max(0, Math.Min(1.0, ty));
-					TriggerMouseClick();
-				}
+			{
+				cursorState.SetX(Math.Max(0, Math.Min(1.0, tx)));
+				cursorState.SetY(Math.Max(0, Math.Min(1.0, ty)));
+				await TriggerMouseClickAsync(cursorState);
+			}
 				#region "追加アクション処理"
 				// ブラウザをログインページへ移動（確認はHUD側で行うため、ここでは即座に実行）
 				else if (action == "navigate_login")
@@ -1514,15 +2161,16 @@ namespace Browser
 				}
 					#endregion
 					// 2026/07/14 myi 新規作成（ドラッグ操作対応）
+					// 2026/07/29 myi 修正（セッション分離対応：async Task化）
 					// マウスダウン（ドラッグ開始）
 					else if (action == "mousedown")
 					{
-						TriggerMouseDown();
+						await TriggerMouseDownAsync(cursorState);
 					}
 					// マウスアップ（ドラッグ終了）
 					else if (action == "mouseup")
 					{
-						TriggerMouseUp();
+						await TriggerMouseUpAsync(cursorState);
 					}
 		
 					res.StatusCode = 200;
@@ -1534,8 +2182,9 @@ namespace Browser
 		// 概要           : モバイル端末から受信した 0.0〜1.0 のゲーム画面上の相対座標を、
 		//                  ブラウザコントロールの現在のサイズと艦これアスペクト比(5:3)から生じる
 		//                  黒い余白（レターボックス）を動的に考慮し、実際のCefブラウザ論理ピクセル座標へ変換します。
+		//                  2026/07/29 myi 修正：セッション固有のカーソル座標を使用するオーバーロードを追加
 		//------------------------------------------------------------------------------------
-		private Point GetBrowserCoords()
+		private Point GetBrowserCoords(double cursorX, double cursorY)
 		{
 			// CefSharpブラウザコントロール全体の現在の論理サイズを取得
 			double browserWidth = _parent.Browser.Width;
@@ -1565,41 +2214,45 @@ namespace Browser
 			}
 
 			// 余白の内側の実際のゲーム領域に対して、スマホ側ポインタ割合（0.0〜1.0）をピクセルマッピング
-			int x = (int)(offsetX + (_cursorX * gameWidth));
-			int y = (int)(offsetY + (_cursorY * gameHeight));
+			int x = (int)(offsetX + (cursorX * gameWidth));
+			int y = (int)(offsetY + (cursorY * gameHeight));
 
 			return new Point(x, y);
 		}
 
 		//====================================================================================
-		// 処理ブロック名 : TriggerMouseMove
-		// 概要           : スマホ側の仮想マウスの現在相対座標からアスペクト比補正された
+		// 処理ブロック名 : TriggerMouseMoveAsync
+		// 概要           : セッション固有のカーソル座標からアスペクト比補正された
 		//                  CefSharp論理ピクセル座標を求め、ブラウザへ移動イベントを送信します。
+		//                  2026/07/29 myi 修正：async Task化、セッション固有カーソル対応
 		//------------------------------------------------------------------------------------
-		private void TriggerMouseMove()
+		private Task TriggerMouseMoveAsync(HttpCursorState cursorState)
 		{
-			if (_parent.Browser == null) return;
+			if (_parent.Browser == null) return Task.CompletedTask;
 			
 			// ChromiumWebBrowser から内部の IBrowser インスタンスを取得
 			var browser = _parent.Browser.GetBrowser();
 			// ブラウザのホストオブジェクト (IBrowserHost) を取得
 			var host = browser?.GetHost();
-			if (host == null) return;
+			if (host == null) return Task.CompletedTask;
 
-			// レターボックス余白を動的考慮したアスペクト比補正ピクセル座標を取得
-			var coords = GetBrowserCoords();
+			// セッション固有のカーソル座標を使用
+			var coords = GetBrowserCoords(cursorState.X, cursorState.Y);
 
 			// マウス移動イベントオブジェクトを生成して送信します
 			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
 			host.SendMouseMoveEvent(mouseEvent, false);
+
+			return Task.CompletedTask;
 		}
 
 		//====================================================================================
-		// 処理ブロック名 : TriggerMouseClick
-		// 概要           : スマホ側の決定操作イベントに対し、アスペクト比補正ピクセル座標へ
-		//                  マウスの左クリック（ダウン・アップの一連のイベント）を送信します。
+		// 処理ブロック名 : TriggerMouseClickAsync
+		// 概要           : セッション固有のカーソル座標で左クリックを送信します。
+		//                  Thread.Sleep を Task.Delay に変更し、スレッドブロッキングを排除。
+		//                  2026/07/29 myi 修正：async Task化、セッション固有カーソル対応
 		//------------------------------------------------------------------------------------
-		private void TriggerMouseClick()
+		private async Task TriggerMouseClickAsync(HttpCursorState cursorState)
 		{
 			if (_parent.Browser == null) return;
 
@@ -1607,8 +2260,8 @@ namespace Browser
 			var host = browser?.GetHost();
 			if (host == null) return;
 
-			// レターボックス余白を動的考慮したアスペクト比補正ピクセル座標を取得
-			var coords = GetBrowserCoords();
+			// セッション固有のカーソル座標を使用
+			var coords = GetBrowserCoords(cursorState.X, cursorState.Y);
 
 			// 左クリックのためのマウス座標イベントを生成
 			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
@@ -1617,39 +2270,81 @@ namespace Browser
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, false, 1);
 			
 			// 艦これブラウザ側のクリック判定遅延を確実にカバーするため、わずかにウェイトを入れます
-			System.Threading.Thread.Sleep(50);
+			// Thread.Sleep(50) → Task.Delay(50) に変更（スレッドブロッキング排除）
+			await Task.Delay(50, CancellationToken.None);
 			
 			// 2. マウスアップイベント (左ボタン) の送信
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, true, 1);
 		}
 
 		//====================================================================================
-		// 処理ブロック名 : TriggerMouseDown
-		// 概要           : ドラッグ開始時、現在のカーソル位置で左ボタンダウンを送信
-		//                  CefEventFlags.None を使用（公式推奨パターン）
+		// 処理ブロック名 : TriggerMouseDownAsync
+		// 概要           : セッション固有のカーソル座標で左ボタンダウンを送信
+		//                  2026/07/29 myi 修正：async Task化、セッション固有カーソル対応
 		//------------------------------------------------------------------------------------
-		private void TriggerMouseDown()
+		private Task TriggerMouseDownAsync(HttpCursorState cursorState)
 		{
-			if (_parent.Browser == null) return;
+			if (_parent.Browser == null) return Task.CompletedTask;
 
 			var browser = _parent.Browser.GetBrowser();
 			var host = browser?.GetHost();
-			if (host == null) return;
+			if (host == null) return Task.CompletedTask;
 
-			var coords = GetBrowserCoords();
+			var coords = GetBrowserCoords(cursorState.X, cursorState.Y);
 			// CefEventFlags.None を使用（公式推奨）
 			// isUp=false でダウンイベントを指定
 			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, false, 1);
 			Console.WriteLine($"RemoteController: TriggerMouseDown @ {coords.X},{coords.Y}");
+			return Task.CompletedTask;
 		}
 
 		//====================================================================================
-		// 処理ブロック名 : TriggerMouseUp
-		// 概要           : ドラッグ終了時、現在のカーソル位置で左ボタンアップを送信
-		//                  CefEventFlags.None を使用（公式推奨パターン）
+		// 処理ブロック名 : TriggerMouseUpAsync
+		// 概要           : セッション固有のカーソル座標で左ボタンアップを送信
+		//                  2026/07/29 myi 修正：async Task化、セッション固有カーソル対応
 		//------------------------------------------------------------------------------------
-		private void TriggerMouseUp()
+		private Task TriggerMouseUpAsync(HttpCursorState cursorState)
+		{
+			if (_parent.Browser == null) return Task.CompletedTask;
+
+			var browser = _parent.Browser.GetBrowser();
+			var host = browser?.GetHost();
+			if (host == null) return Task.CompletedTask;
+
+			var coords = GetBrowserCoords(cursorState.X, cursorState.Y);
+			// CefEventFlags.None を使用（公式推奨）
+			// isUp=true でアップイベントを指定
+			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
+			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, true, 1);
+			Console.WriteLine($"RemoteController: TriggerMouseUp @ {coords.X},{coords.Y}");
+			return Task.CompletedTask;
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : TriggerMouseMoveAsync (WebSocketSession)
+		// 概要           : WebSocketセッション固有のカーソル座標からマウス移動イベントを送信
+		//------------------------------------------------------------------------------------
+		private Task TriggerMouseMoveAsync(WebSocketSession session)
+		{
+			if (_parent.Browser == null) return Task.CompletedTask;
+
+			var browser = _parent.Browser.GetBrowser();
+			var host = browser?.GetHost();
+			if (host == null) return Task.CompletedTask;
+
+			var coords = GetBrowserCoords(session.CursorX, session.CursorY);
+			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
+			host.SendMouseMoveEvent(mouseEvent, false);
+
+			return Task.CompletedTask;
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : TriggerMouseClickAsync (WebSocketSession)
+		// 概要           : WebSocketセッション固有のカーソル座標で左クリックを送信
+		//------------------------------------------------------------------------------------
+		private async Task TriggerMouseClickAsync(WebSocketSession session)
 		{
 			if (_parent.Browser == null) return;
 
@@ -1657,12 +2352,52 @@ namespace Browser
 			var host = browser?.GetHost();
 			if (host == null) return;
 
-			var coords = GetBrowserCoords();
-			// CefEventFlags.None を使用（公式推奨）
-			// isUp=true でアップイベントを指定
+			var coords = GetBrowserCoords(session.CursorX, session.CursorY);
+			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
+
+			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, false, 1);
+			await Task.Delay(50, session.CancellationToken.Token);
+			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, true, 1);
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : TriggerMouseDownAsync (WebSocketSession)
+		// 概要           : WebSocketセッション固有のカーソル座標で左ボタンダウンを送信
+		//------------------------------------------------------------------------------------
+		private Task TriggerMouseDownAsync(WebSocketSession session)
+		{
+			if (_parent.Browser == null) return Task.CompletedTask;
+
+			var browser = _parent.Browser.GetBrowser();
+			var host = browser?.GetHost();
+			if (host == null) return Task.CompletedTask;
+
+			var coords = GetBrowserCoords(session.CursorX, session.CursorY);
+			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
+			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, false, 1);
+			Console.WriteLine($"RemoteController: TriggerMouseDown @ {coords.X},{coords.Y}");
+
+			return Task.CompletedTask;
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : TriggerMouseUpAsync (WebSocketSession)
+		// 概要           : WebSocketセッション固有のカーソル座標で左ボタンアップを送信
+		//------------------------------------------------------------------------------------
+		private Task TriggerMouseUpAsync(WebSocketSession session)
+		{
+			if (_parent.Browser == null) return Task.CompletedTask;
+
+			var browser = _parent.Browser.GetBrowser();
+			var host = browser?.GetHost();
+			if (host == null) return Task.CompletedTask;
+
+			var coords = GetBrowserCoords(session.CursorX, session.CursorY);
 			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, true, 1);
 			Console.WriteLine($"RemoteController: TriggerMouseUp @ {coords.X},{coords.Y}");
+
+			return Task.CompletedTask;
 		}
 
 		/// <summary>
@@ -1720,7 +2455,11 @@ namespace Browser
 					if (File.Exists(path))
 					{
 						// 見つかったHTMLファイルをUTF-8で読み込んで返します。
-						return File.ReadAllText(path, Encoding.UTF8);
+						string html = File.ReadAllText(path, Encoding.UTF8);
+						// キャッシュバスティング: CSS/JSファイルの最終更新時刻を ?v= パラメータとして付与
+						string basePath = GetStaticFileBasePath();
+						html = InjectVersionQuery(html, basePath);
+						return html;
 					}
 				}
 				catch (Exception ex)
@@ -1749,6 +2488,152 @@ namespace Browser
     <pre>{string.Join("\r\n", pathsToSearch)}</pre>
 </body>
 </html>";
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : SendStaticFile
+		// 概要           : 静的ファイル（CSS/JS）を送信します。
+		//                  If-Modified-Since / 304 Not Modified に対応。
+		//------------------------------------------------------------------------------------
+		private void SendStaticFile(HttpListenerRequest req, HttpListenerResponse res, string filePath)
+		{
+			if (!File.Exists(filePath))
+			{
+				res.StatusCode = 404;
+				res.Close();
+				return;
+			}
+
+			// ファイルの最終更新時刻を取得
+			DateTime lastModified = File.GetLastWriteTimeUtc(filePath);
+
+			// If-Modified-Since のチェック
+			string ifModifiedSinceHeader = req.Headers["If-Modified-Since"];
+			if (!string.IsNullOrEmpty(ifModifiedSinceHeader) && DateTime.TryParse(ifModifiedSinceHeader, out var ifModifiedSince))
+			{
+				// 1秒単位で比較（HTTP日時の精度制限）
+				if (lastModified <= ifModifiedSince)
+				{
+					res.StatusCode = 304; // Not Modified
+					res.Close();
+					return;
+				}
+			}
+
+			// MIMEタイプを拡張子から決定
+			string mimeType = GetMimeType(filePath);
+
+			// Cache-Control ヘッダーの設定
+			res.Headers["Cache-Control"] = "public, max-age=31536000, immutable";
+
+			// Last-Modified ヘッダーを設定（RFC 1123 形式）
+			res.Headers["Last-Modified"] = lastModified.ToString("R");
+
+			// セキュリティヘッダー
+			res.Headers["X-Content-Type-Options"] = "nosniff";
+
+			// ファイルをストリームとして送信
+			res.ContentType = mimeType + "; charset=utf-8";
+			try
+			{
+				using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+				{
+					res.ContentLength64 = fs.Length;
+					fs.CopyTo(res.OutputStream);
+				}
+			}
+			catch (IOException ex)
+			{
+				System.Diagnostics.Debug.WriteLine($"IOException when serving static file: {filePath} - {ex.Message}");
+				res.StatusCode = 500;
+				res.Close();
+				return;
+			}
+			res.Close();
+		}
+
+		/// <summary>
+		/// ファイル拡張子からMIMEタイプを返す。
+		/// </summary>
+		private string GetMimeType(string filePath)
+		{
+			string ext = Path.GetExtension(filePath).ToLower();
+			switch (ext)
+			{
+				case ".css": return "text/css";
+				case ".js": return "application/javascript";
+				case ".html": return "text/html";
+				default: return "application/octet-stream";
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : GetStaticFileBasePath
+		// 概要           : 静的ファイル（CSS/JS）のベースディレクトリの絶対パスを返す。
+		//                  開発時はソースコード直下の Browser ディレクトリを優先検索します。
+		//------------------------------------------------------------------------------------
+		private string GetStaticFileBasePath()
+		{
+			var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+
+			// 1. 【最優先】開発用: 親階層を遡って Browser ディレクトリを探索
+			var dir = new DirectoryInfo(baseDir);
+			while (dir != null)
+			{
+				try
+				{
+					var testPath = Path.Combine(dir.FullName, "Browser");
+					// Browser ディレクトリが存在し、css または js サブディレクトリを持つ場合
+					if (Directory.Exists(testPath) && (Directory.Exists(Path.Combine(testPath, "css")) || Directory.Exists(Path.Combine(testPath, "js"))))
+					{
+						return Path.GetFullPath(testPath);
+					}
+				}
+				catch { }
+				dir = dir.Parent;
+			}
+
+			// 2. リリース環境用フォールバック: 実行フォルダ直下
+			return Path.GetFullPath(baseDir);
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : InjectVersionQuery
+		// 概要           : HTML内の<link>と<script>タグに?v=タイムスタンプを注入する。
+		//------------------------------------------------------------------------------------
+		private string InjectVersionQuery(string html, string basePath)
+		{
+			// 正規表現パターン:
+			// 1. グループ1: 属性プレフィックス (src=やhref=を含む、イコール前後の空白を許容)
+			// 2. グループ2: フルパス (/css/remote_base.css など)
+			// 3. グループ3: 閉じクォート（任意）
+			// 属性順序に依存しない堅牢なパターン：
+			// - イコール前後の空白を許容（例: src = "/css/style.css"）
+			// - クォートの有無を許容（例: src="/css/style.css" や src=/css/style.css）
+			string pattern = @"((?:src|href)\s*=\s*['""]?(/[^'""]+\.(?:css|js)))(['""]?)";
+
+			return System.Text.RegularExpressions.Regex.Replace(html, pattern, match =>
+			{
+				string prefix = match.Groups[1].Value;    // e.g., 'href="/'
+				string fullPath = match.Groups[2].Value;   // e.g., '/css/remote_base.css'
+				string suffix = match.Groups[3].Value;     // e.g., '"'
+
+				// フルパスから相対パスを抽出（先頭のパス区切り文字を除去）
+				string relativePath = fullPath.TrimStart('/', '\\');
+
+				// basePath と結合して物理パスを解決
+				string filePath = Path.Combine(basePath, relativePath);
+
+				if (File.Exists(filePath))
+				{
+					DateTime lastWrite = File.GetLastWriteTimeUtc(filePath);
+					long timestamp = new DateTimeOffset(lastWrite).ToUnixTimeSeconds();
+					return $"{prefix}?v={timestamp}{suffix}";
+				}
+
+				// ファイルが見つからない場合は変更しない（開発中やファイル欠落時のフォールバック）
+				return match.Value;
+			});
 		}
 
 		// 処理ブロック名 : SendHudData
@@ -2035,8 +2920,12 @@ namespace Browser
 						return;
 					}
 
+					// グローバルシーケンス番号を付与（単調増加）
+					int seq = Interlocked.Increment(ref _globalSequenceNumber);
+
 					res.ContentType = "image/webp";
 					res.Headers["X-Diff-Type"] = "full";
+					res.Headers["X-Frame-Sequence"] = seq.ToString();
 					res.ContentLength64 = fullWebpData.Length;
 					await res.OutputStream.WriteAsync(fullWebpData, 0, fullWebpData.Length);
 				}
@@ -2060,6 +2949,7 @@ namespace Browser
 		// 処理ブロック名 : ConvertToBytes
 		// 概要           : 受信した Base64 文字列をバイト配列に変換します。
 		//                  2026/06/01 myi 新規作成（CanvasCapturePacket廃止に伴う処理移植）
+		//                  2026/07/29 注意: GC負荷低減のため、新規実装は ConvertToBytesOptimized を使用してください。
 		//------------------------------------------------------------------------------------
 		private byte[] ConvertToBytes(string dataUrl, string prefix)
 		{
@@ -2083,6 +2973,51 @@ namespace Browser
 			}
 		}
 
+		//====================================================================================
+			// 処理ブロック名 : ConvertToBytesOptimized
+			// 概要           : 受信した Base64 文字列をバイト配列に変換します（ArrayPool 最適化版）。
+			//                  Convert.FromBase64String が返す配列を ArrayPool にコピーし、
+			//                  送信後に返却することで GC 負荷を低減します。
+			//                  2026/07/29 myi 新規作成（GC負荷低減）
+			//                  2026/08/01 myi 修正：中間バッファtempの寿命管理厳格化（null代入→GC対象化）
+			//------------------------------------------------------------------------------------
+			private (byte[] Buffer, int ActualLength) ConvertToBytesOptimized(string dataUrl, string prefix)
+			{
+				if (string.IsNullOrEmpty(dataUrl) || !dataUrl.StartsWith(prefix))
+				{
+					return (null, 0);
+				}
+	
+				try
+				{
+					// "data:image/webp;base64," のヘッダ部分（カンマ以前）を除去
+					int commaIdx = dataUrl.IndexOf(',');
+					if (commaIdx == -1) return (null, 0);
+	
+					string base64Str = dataUrl.Substring(commaIdx + 1);
+	
+					// Base64 文字列からバイト配列を取得（一時的なアロケーション）
+					byte[] temp = Convert.FromBase64String(base64Str);
+	
+					// ArrayPool から必要なサイズのバッファをレンタル
+					// Rent は要求サイズ以上のバッファを返す（temp.Length とは限らない）
+					byte[] pooledBuffer = _bufferPool.Rent(temp.Length);
+					Buffer.BlockCopy(temp, 0, pooledBuffer, 0, temp.Length);
+	
+					// [🚨 厳格な寿命管理] 中間バッファの参照切断 → 即時GC対象化
+					// temp.Length を先に取得してからnull代入（長さ取得はnull代入前に実行）
+					int actualLength = temp.Length;
+					temp = null; // 参照切断 → GC対象化。この行がないとtempはメソッド終了まで生存し、メモリリークの原因となる
+	
+					// 呼び出し側は ArraySegment<byte>(pooledBuffer, 0, actualLength) として使用する
+					return (pooledBuffer, actualLength);
+				}
+				catch (Exception)
+				{
+					return (null, 0);
+				}
+			}
+
 		public void Dispose()
 		{
 			_isRunning = false;
@@ -2091,47 +3026,28 @@ namespace Browser
 			_sessions.Clear();
 			_refreshTokens.Clear();
 
+			// 中央キャプチャループのキャンセル（フェーズ5）
+			if (_centralCaptureCts != null && !_centralCaptureCts.IsCancellationRequested)
+			{
+				_centralCaptureCts.Cancel();
+				_centralCaptureCts.Dispose();
+			}
+
 			// WebSocket セッションのクリーンアップ
-			// CancellationToken の Cancel を先に呼び出し、各ループタスクを停止を通知
-			foreach (var kvp in _webSocketSessions)
+			// .ToList() でスレッドセーフなコピーを作成してから処理
+			foreach (var kvp in _webSocketSessions.ToList())
 			{
-				kvp.Value.CancellationToken.Cancel();
+				RemoveWebSocketSession(kvp.Key);
 			}
 
-			// 各ループタスクの完了を待機（最大5秒）
-			var allTasks = new List<Task>();
-			foreach (var kvp in _webSocketSessions)
-			{
-				var session = kvp.Value;
-				if (session.CaptureTask != null) allTasks.Add(session.CaptureTask);
-				if (session.SendTask != null) allTasks.Add(session.SendTask);
-				if (session.ReceiveTask != null) allTasks.Add(session.ReceiveTask);
-			}
+			// _activeConnectionCount をリセット（念のため）
+			Interlocked.Exchange(ref _activeConnectionCount, 0);
 
-			if (allTasks.Count > 0)
-			{
-				try
-				{
-					Task.WaitAll(allTasks.ToArray(), TimeSpan.FromSeconds(5));
-				}
-				catch (AggregateException ex)
-				{
-					// 各タスクの例外をログ出力（OperationCanceledException は正常終了とみなす）
-					foreach (var inner in ex.InnerExceptions)
-					{
-						if (!(inner is OperationCanceledException))
-						{
-							Console.WriteLine($"RemoteController: ループタスク終了時の例外: {inner.Message}");
-						}
-					}
-				}
-			}
+			// SharedFrameBuffer のクリーンアップ（フェーズ6）
+			// 参照カウントが0になっていないフレームも含めて強制的に ArrayPool へ返却
+			_sharedFrameBuffer.Dispose();
 
-			// セッションの Dispose（CancellationTokenSource, SemaphoreSlim, バッファ返却等）
-			foreach (var kvp in _webSocketSessions)
-			{
-				kvp.Value.Dispose();
-			}
+			// _webSocketSessions は RemoveWebSocketSession で既に空になっていることを確認
 			_webSocketSessions.Clear();
 		}
 
@@ -2145,17 +3061,76 @@ namespace Browser
 		// creation date  : 2026/07/27
 		// version        : 2.00 (WebSocket.Abort 導入, 例外ハンドリング強化)
 		//------------------------------------------------------------------------------------
+		//====================================================================================
+		// 処理ブロック名 : RemoveWebSocketSession
+		// 概要           : WebSocketセッションを即時削除し、保持しているリソースをすべて解放する。
+		//                  セッションのタスク（ファンアウト/送信/受信）をキャンセルし、
+		//                  SharedFrameBufferの参照カウントが正しくデクリメントされることを保証する。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/29
+		// version        : 1.00 (フェーズ6：接続管理とクリーンアップの実装)
+		//------------------------------------------------------------------------------------
+		private void RemoveWebSocketSession(string sessionId)
+		{
+			if (_webSocketSessions.TryRemove(sessionId, out WebSocketSession session))
+			{
+				Log(2, $"[RemoteController] WebSocket セッション削除開始: SessionID={sessionId}");
+
+				// 1. CancellationToken をキャンセルして全ループタスクを停止
+				session.CancellationToken.Cancel();
+
+				// 2. 接続カウントをデクリメント
+				Interlocked.Decrement(ref _activeConnectionCount);
+
+				// 3. セッションの Dispose（SemaphoreSlim, CancellationTokenSource, バッファ返却等）
+				session.Dispose();
+
+				Log(2, $"[RemoteController] WebSocket セッション削除完了: SessionID={sessionId}, 接続数={Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0)}/{MaxConcurrentClients}");
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : IsWebSocketOpen
+		// 概要           : [二次レビュー修正] WebSocketの接続状態を安全に確認するヘルパーメソッド。
+		//                  WebSocketState プロパティのアクセスを try-catch で保護し、
+		//                  Abort() や CloseAsync() 呼び出し後の例外発生を防止する。
+		//------------------------------------------------------------------------------------
+		private bool IsWebSocketOpen(System.Net.WebSockets.WebSocket ws)
+		{
+			try
+			{
+				return ws.State == WebSocketState.Open;
+			}
+			catch
+			{
+				return false;
+			}
+		}
+
 		private async Task HandleWebSocketAsync(HttpListenerContext context)
 		{
 			var req = context.Request;
 			var res = context.Response;
 			System.Net.WebSockets.WebSocket ws = null;
+			string sessionId = null;
 
 			// 認証チェック
 			if (!IsAuthenticated(req, res))
 			{
 				Log(2, $"[RemoteController] WebSocket 接続拒否: 未認証 (IP: {req.RemoteEndPoint})");
 				res.StatusCode = 401;
+				res.Close();
+				return;
+			}
+
+			// 最大接続数制限チェック（アトミックな比較-交換）
+			// Interlocked.CompareExchange を使用して、Check-then-Act のレースコンディションを排除
+			int currentCount = Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0);
+			if (currentCount >= MaxConcurrentClients)
+			{
+				Log(2, $"[RemoteController] WebSocket 接続拒否: 最大接続数 ({MaxConcurrentClients}) に到達 (IP: {req.RemoteEndPoint})");
+				res.StatusCode = 503; // Service Unavailable
 				res.Close();
 				return;
 			}
@@ -2167,26 +3142,56 @@ namespace Browser
 				ws = acceptResult.WebSocket;
 
 				// セッションIDを生成（クッキーから取得、または新規発行）
-				string sessionId = GetCookieValue(req, "session_id") ?? Guid.NewGuid().ToString("N");
+				sessionId = GetCookieValue(req, "session_id") ?? Guid.NewGuid().ToString("N");
 				if (string.IsNullOrEmpty(GetCookieValue(req, "session_id")))
 				{
 					_sessions.TryAdd(sessionId, new SessionInfo(sessionId));
 				}
 
 				var session = new WebSocketSession(ws, sessionId);
+
+				// アトミックに接続カウントをインクリメント（上限チェック）
+				int count = Interlocked.Increment(ref _activeConnectionCount);
+				if (count > MaxConcurrentClients)
+				{
+					// レースコンディションで上限超過: 接続を拒否
+					Interlocked.Decrement(ref _activeConnectionCount);
+					Log(2, $"[RemoteController] WebSocket 接続拒否: 最大接続数 ({MaxConcurrentClients}) に到達 - レースコンディション (IP: {req.RemoteEndPoint})");
+					// 標準的な WebSocket 切断フローを使用（Abort ではなく CloseOutputAsync + CloseAsync）
+					try { await ws.CloseOutputAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "接続上限に到達", CancellationToken.None); } catch { }
+					try { await ws.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "接続上限に到達", CancellationToken.None); } catch { }
+					res.StatusCode = 503;
+					res.Close();
+					return;
+				}
+
 				_webSocketSessions.TryAdd(sessionId, session);
 
-				Log(2, $"[RemoteController] WebSocket 接続確立: SessionID={sessionId}, IP={req.RemoteEndPoint}");
+				Log(2, $"[RemoteController] WebSocket 接続確立: SessionID={sessionId}, IP={req.RemoteEndPoint}, 接続数={count}/{MaxConcurrentClients}");
 
-				// 3つの独立タスクを開始（キャプチャ / 送信 / 受信）
-				session.CaptureTask = Task.Run(() => WebSocketCaptureLoopAsync(session));
+				// 中央キャプチャループが起動していない場合は起動（フェーズ5）
+				if (_centralCaptureCts == null || _centralCaptureCts.IsCancellationRequested)
+				{
+					_centralCaptureCts = new CancellationTokenSource();
+					_centralCaptureTask = Task.Run(() => CentralCaptureLoopAsync(_centralCaptureCts.Token));
+					Log(2, "[RemoteController] 中央キャプチャループを起動しました (フェーズ5)");
+				}
+
+				// セッション固有のタスクを開始（ファンアウト / 送信 / 受信）
+				session.CaptureTask = Task.Run(() => WebSocketFanoutLoopAsync(session));
 				session.SendTask = Task.Run(() => WebSocketSendLoopAsync(session));
 				session.ReceiveTask = Task.Run(() => WebSocketReceiveLoopAsync(session));
 			}
 			catch (Exception ex)
 			{
 				Log(3, $"[RemoteController] WebSocket アップグレードエラー (IP: {req.RemoteEndPoint}): {ex.GetType().Name} - {ex.Message}");
-				
+
+				// セッションが既に追加された場合はクリーンアップ
+				if (sessionId != null)
+				{
+					RemoveWebSocketSession(sessionId);
+				}
+
 				// リソースリーク防止のため強制的にソケットを破棄
 				try { ws?.Abort(); } catch { }
 				try { res.StatusCode = 500; res.Close(); } catch { }
@@ -2194,15 +3199,302 @@ namespace Browser
 		}
 
 		//====================================================================================
-		// 処理ブロック名 : WebSocketCaptureLoopAsync
-		// 概要           : 画面キャプチャを専用タスクで実行し、最新1枚をセッションにセットします。
-		//                  SendAsyncのawaitによる遅延蓄積を防ぐため、送信タスクとは分離しています。
+		// 処理ブロック名 : CentralCaptureLoopAsync
+		// 概要           : 単一の中央キャプチャタスクでCefSharpから画面をキャプチャし、
+		//                  共有フレームバッファに格納してから全セッションに通知する。
+		//                  CefSharpへのキャプチャ要求は常に1回/フレーム（O(1)負荷）。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/29
+		// version        : 1.00 (フェーズ5：中央キャプチャ・ファンアウト方式)
+		//------------------------------------------------------------------------------------
+		private async Task CentralCaptureLoopAsync(CancellationToken token)
+		{
+			var sw = new System.Diagnostics.Stopwatch();
+			long nextTargetTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+			long ticksPerMs = System.Diagnostics.Stopwatch.Frequency / 1000;
+			int lastTargetInterval = GetMaxFpsIntervalMs();
+
+			while (!token.IsCancellationRequested)
+			{
+				try
+				{
+					sw.Restart();
+	
+					// 画面キャプチャ（CefSharpへの要求: 1回/フレーム）
+					// [案G-1] CaptureCanvasAsync の実行時間を Stopwatch で計測
+					var swCapture = System.Diagnostics.Stopwatch.StartNew();
+					var capture = await CaptureCanvasAsync(false);
+					swCapture.Stop();
+					long captureElapsedMs = swCapture.ElapsedMilliseconds;
+					RecordCaptureLatency(captureElapsedMs);
+					string type = capture.Item1;
+					string dataUrl = capture.Item2;
+
+						if (type == "full" && !string.IsNullOrEmpty(dataUrl))
+						{
+							// ArrayPool を使用して GC 負荷を低減
+							// ConvertToBytesOptimized は (Buffer, ActualLength) のタプルを返し、
+							// ActualLength は WebP データの正確なバイト数（ArrayPoolのバッファサイズとは異なる）
+							var (webpData, actualDataLength) = ConvertToBytesOptimized(dataUrl, "data:image/webp");
+							if (webpData != null && actualDataLength > 0)
+							{
+								// グローバルシーケンス番号インクリメント（int型、Interlocked.Increment対応）
+								int seq = Interlocked.Increment(ref _globalSequenceNumber);
+	
+								// 共有バッファにセット（参照カウントは GetFrame/ReleaseFrame で管理）
+								// SetFrameは内部でBuffer.BlockCopyするため、独立した内部バッファを持つ
+								_sharedFrameBuffer.SetFrame(webpData, actualDataLength, seq);
+	
+								// [厳格な寿命管理] SetFrameは内部でBuffer.BlockCopyするため、
+								// 直ちにArrayPoolへ返却可能（ファンアウトとのバッファ競合を防止）
+								_bufferPool.Return(webpData);
+	
+								// 全WebSocketセッションにシグナルをキック
+								// .ToList() によりスレッドセーフなコピーを作成してから列挙
+								// 列挙中にセッションが Dispose されて _webSocketSessions から削除されても安全
+								// [二次レビュー修正] ToList → ToArray（GC負荷軽減、リスト構築オーバーヘッド排除）
+								foreach (var session in _webSocketSessions.Values.ToArray())
+								{
+									if (session.WebSocket.State == WebSocketState.Open)
+									{
+										// フレーム到着シグナル（Channelを使用し、例外発生を防止）
+										// TryWrite はチャンネルが一杯でも例外を投げず、false を返す
+										session._frameSignal.Writer.TryWrite(seq);
+									}
+								}
+							}
+						}
+
+					sw.Stop();
+
+					// 動的FPS制御: 接続中の最高FPSをキャプチャFPSとする
+					int targetInterval = GetMaxFpsIntervalMs();
+
+					// FPS設定変更時のリセット
+					if (targetInterval != lastTargetInterval)
+					{
+						nextTargetTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+						lastTargetInterval = targetInterval;
+					}
+
+					// ドリフト補正タイマー
+					nextTargetTicks += targetInterval * ticksPerMs;
+					long currentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+					long remainingTicks = nextTargetTicks - currentTicks;
+					int remainingMs = (int)(remainingTicks / ticksPerMs);
+
+					if (remainingMs > 0)
+					{
+						await Task.Delay(remainingMs, token);
+					}
+					else
+					{
+						// 処理遅延: 次回目標を現在時刻にリセット（スパイラル防止）
+						nextTargetTicks = currentTicks;
+					}
+
+					// ゾンビセッションクリーンアップ（中央ループで集約実行）
+					CleanupZombieSessions();
+				}
+				catch (OperationCanceledException)
+				{
+					// キャンセル要求による正常終了
+					break;
+				}
+				catch (Exception ex)
+				{
+					// CefSharpの一時的な応答不可等の一時的なエラーでもループを継続
+					Log(3, $"[RemoteController] 中央キャプチャループで例外発生（ループ継続）: {ex.Message}");
+					// エラー発生後は短めのウェイトを挟んで次フレームへ移行
+					try
+					{
+						await Task.Delay(200, token);
+					}
+					catch (OperationCanceledException)
+					{
+						break;
+					}
+				}
+			}
+			}
+	
+			//====================================================================================
+			// 処理ブロック名 : RecordCaptureLatency
+			// 概要           : [案G-2] CaptureCanvasAsync の実行遅延統計を記録し、
+			//                  移動平均が500msを超過した場合に警告ログを出力する。
+			//------------------------------------------------------------------------------------
+			private void RecordCaptureLatency(long elapsedMs)
+			{
+				lock (_captureLatencyHistory)
+				{
+					_captureLatencyHistory.Enqueue(elapsedMs);
+					if (_captureLatencyHistory.Count > 30)
+					{
+						_captureLatencyHistory.Dequeue();
+					}
+	
+					var avg = _captureLatencyHistory.Average();
+					var max = _captureLatencyHistory.Max();
+					var min = _captureLatencyHistory.Min();
+		
+					// [案G-3] FPS推定値算出
+					var theoreticalMaxFps = avg > 0 ? 1000.0 / avg : 0;
+		
+					if (avg > 500)
+					{
+						Log(3, $"[Profile] High IPC latency: avg={avg:F0}ms, min={min}ms, max={max}ms, theoreticalMaxFPS={theoreticalMaxFps:F1}");
+					}
+					else
+					{
+						// [二次レビュー修正] 正常系ログを100フレームに1回に抑制（ログI/O負荷軽減）
+						if (Interlocked.Increment(ref _sendFrameCounter) % 100 == 0)
+						{
+							Log(3, $"[Profile] CaptureCanvasAsync: {elapsedMs}ms, avg={avg:F0}ms, min={min}ms, max={max}ms, theoreticalMaxFPS={theoreticalMaxFps:F1}, samples={_captureLatencyHistory.Count}");
+						}
+					}
+				}
+			}
+	
+			//====================================================================================
+			// 処理ブロック名 : WebSocketFanoutLoopAsync
+		// 概要           : 中央キャプチャからのフレームをセッションごとに配信するループ。
 		//                  Drop Frame: 最新1枚以外は破棄して送信しない。
+		//                  lastSentSequenceNumber を保持し、共有バッファのシーケンス番号が
+		//                  前回送信分より大きい場合のみ送信する。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/29
+		// version        : 1.00 (フェーズ5：中央キャプチャ・ファンアウト方式)
+		//------------------------------------------------------------------------------------
+		private async Task WebSocketFanoutLoopAsync(WebSocketSession session)
+		{
+			var ws = session.WebSocket;
+			var token = session.CancellationToken.Token;
+
+			// 前回送信したシーケンス番号（初期値: 0）
+			int lastSentSequenceNumber = 0;
+
+			try
+			{
+				// [二次レビュー修正] WebSocketState チェックを IsWebSocketOpen() で保護
+				while (!token.IsCancellationRequested && IsWebSocketOpen(ws))
+				{
+					// 中央キャプチャのフレーム到着を待機（セッション固有のタイムアウト）
+					int timeoutMs = session.TargetIntervalMs <= 0 ? 16 : session.TargetIntervalMs;
+					bool frameReady = await session.WaitForFrameAsync(timeoutMs, token);
+
+					if (frameReady)
+					{
+						// 共有バッファから最新のフレームを取得（参照カウント +1）
+						// dataLength は実際の WebP データ長（ArrayPoolのバッファサイズとは異なる）
+						var (data, dataLength, seq) = _sharedFrameBuffer.GetFrame();
+		
+						// 前回送信したフレームと同じ場合、スキップ（リソース浪費防止）
+						// [二次レビュー修正] 差分計算によるラップアラウンド対応
+						// int型のseqとlastSentSequenceNumberをuintにキャストし、オーバーフロー時に正しく差を算出
+						uint diff = (uint)seq - (uint)lastSentSequenceNumber;
+						if (diff <= 0 && lastSentSequenceNumber != 0)
+						{
+							_sharedFrameBuffer.ReleaseFrame(data);
+							continue;
+						}
+		
+						try
+						{
+							if (data != null && dataLength > 0)
+								{
+								// [FPS Fix] セマフォ待機時間を測定
+								var swWait = System.Diagnostics.Stopwatch.StartNew();
+								await session.SendSemaphore.WaitAsync(token);
+								long semaphoreWaitMs = swWait.ElapsedMilliseconds;
+								swWait.Stop();
+								try
+								{
+									if (IsWebSocketOpen(ws))
+									{
+										// [FPS Fix] WebSocketフラグメント化を排除: ヘッダーとデータを単一メッセージとして送信
+										// ArrayPoolから新バッファをレンタルしてヘッダー+データを結合
+										byte[] combined = _bufferPool.Rent(6 + dataLength);
+										try
+										{
+											// セッション固有のヘッダーバッファからヘッダーをコピー
+											var header = session._headerBuffer;
+											header[0] = (byte)WebSocketProtocolVersion;
+											header[1] = 0; // Flags = 0
+											// Big-Endian シーケンス番号を直接書き込み
+											header[2] = (byte)(seq >> 24);
+											header[3] = (byte)(seq >> 16);
+											header[4] = (byte)(seq >> 8);
+											header[5] = (byte)seq;
+											
+											// ヘッダーとデータを結合バッファにコピー
+											header.CopyTo(combined, 0);
+											Buffer.BlockCopy(data, 0, combined, 6, dataLength);
+											
+											// [FPS Fix] 単一メッセージとして送信 (endOfMessage = true)
+											var swSend = System.Diagnostics.Stopwatch.StartNew();
+											await ws.SendAsync(
+												new ArraySegment<byte>(combined, 0, 6 + dataLength),
+												WebSocketMessageType.Binary, true, token);
+											long sendMs = swSend.ElapsedMilliseconds;
+											
+											// [FPS Fix] 可観測性: 送信所要時間・セマフォ待機時間をログ出力（100フレームに1回）
+											if (++_sendFrameCounter >= 100)
+											{
+												_sendFrameCounter = 0;
+												Log(3, $"[RemoteController] SendProfile Fanout: send={sendMs}ms, semaphore_wait={semaphoreWaitMs}ms, data={dataLength}B (Session: {session.SessionId})");
+											}
+											
+											// 送信済みシーケンス番号を更新
+											lastSentSequenceNumber = seq;
+										}
+										finally
+										{
+											// ArrayPool への返却
+											_bufferPool.Return(combined);
+										}
+									}
+								}
+								finally
+								{
+									session.SendSemaphore.Release();
+								}
+							}
+						}
+						finally
+						{
+							// GetFrame() で参照カウント +1 したので、必ず ReleaseFrame() を呼ぶ
+							// 送信成否・data null・例外発生に関わらず確実な解放を保証
+							// data参照を渡すことで、正しいフレームの参照カウントがデクリメントされる
+							_sharedFrameBuffer.ReleaseFrame(data);
+						}
+					}
+				}
+			}
+			catch (OperationCanceledException) { /* 正常終了 */ }
+			catch (Exception ex)
+			{
+				Log(3, $"[RemoteController] WebSocket ファンアウトループエラー (Session: {session.SessionId}): {ex.Message}");
+			}
+			finally
+			{
+				// ファンアウトループが終了したらセッションを即時削除（ゾンビ防止）
+				// 複数ループが同時に終了した場合も TryRemove はアトミックなので安全
+				RemoveWebSocketSession(session.SessionId);
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : WebSocketCaptureLoopAsync
+		// 概要           : [Phase 5] 廃止予定。各セッション独立キャプチャを中央キャプチャへ移行。
+		//                  後方互換性のため残すが一時的に無効化されている。
 		//------------------------------------------------------------------------------------
 		// author         : myi
 		// creation date  : 2026/07/27
 		// version        : 1.00
 		//------------------------------------------------------------------------------------
+		// [Phase 5: 廃止] 中央キャプチャ方式へ移行したため、このメソッドは使用されません。
 		private async Task WebSocketCaptureLoopAsync(WebSocketSession session)
 		{
 			var ws = session.WebSocket;
@@ -2223,7 +3515,7 @@ namespace Browser
 
 			try
 			{
-				while (!token.IsCancellationRequested && ws.State == WebSocketState.Open)
+				while (!token.IsCancellationRequested && IsWebSocketOpen(ws))
 				{
 					swTotal.Restart();
 					swCap.Restart();
@@ -2237,24 +3529,75 @@ namespace Browser
 
 					if (type == "full" && !string.IsNullOrEmpty(dataUrl))
 					{
-						byte[] webpData = ConvertToBytes(dataUrl, "data:image/webp");
-						if (webpData != null && webpData.Length > 0)
+						// 2026/07/29 修正: ArrayPool を使用して GC 負荷を低減
+						var (webpData, actualDataLength) = ConvertToBytesOptimized(dataUrl, "data:image/webp");
+						if (webpData != null && actualDataLength > 0)
 						{
-							swSend.Restart();
+							// [Fix] SendSemaphore 取得前にシーケンス番号を確保
+							// HTTP側との競合防止: シーケンス番号はセマフォ外で確保し、
+							// セマフォ保持時間を送信処理のみに極小化
+							int seq = Interlocked.Increment(ref _globalSequenceNumber);
+
+							// 6バイトヘッダーを事前に構築（セマフォ外で準備）
+							byte[] header = new byte[6];
+							header[0] = WebSocketProtocolVersion;
+							header[1] = 0; // Flags = 0
+							// Big-Endian シーケンス番号を直接書き込み（BitConverter+BlockCopyの中間配列を排除）
+							header[2] = (byte)(seq >> 24);
+							header[3] = (byte)(seq >> 16);
+							header[4] = (byte)(seq >> 8);
+							header[5] = (byte)seq;
+
+							// [FPS Fix] セマフォ待機時間を測定
+							var swWait = System.Diagnostics.Stopwatch.StartNew();
 							await session.SendSemaphore.WaitAsync(token);
+							long semaphoreWaitMs = swWait.ElapsedMilliseconds;
+							swWait.Stop();
 							try
 							{
-								if (ws.State == WebSocketState.Open)
+								if (IsWebSocketOpen(ws))
 								{
-									var segment = new ArraySegment<byte>(webpData);
-									await ws.SendAsync(segment, WebSocketMessageType.Binary, true, token);
+									// [FPS Fix] WebSocketフラグメント化を排除: ヘッダーとデータを単一メッセージとして送信
+									byte[] combined = _bufferPool.Rent(6 + actualDataLength);
+									try
+									{
+										// ヘッダーを結合バッファに書き込み
+										combined[0] = WebSocketProtocolVersion;
+										combined[1] = 0; // Flags = 0
+										combined[2] = (byte)(seq >> 24);
+										combined[3] = (byte)(seq >> 16);
+										combined[4] = (byte)(seq >> 8);
+										combined[5] = (byte)seq;
+										// データをコピー
+										Buffer.BlockCopy(webpData, 0, combined, 6, actualDataLength);
+										
+										// [FPS Fix] 単一メッセージとして送信 (endOfMessage = true)
+										var swSendLocal = System.Diagnostics.Stopwatch.StartNew();
+										await ws.SendAsync(
+											new ArraySegment<byte>(combined, 0, 6 + actualDataLength),
+											WebSocketMessageType.Binary, true, token);
+										long sendMs = swSendLocal.ElapsedMilliseconds;
+										
+										// [FPS Fix] 可観測性: 送信所要時間・セマフォ待機時間をログ出力（100フレームに1回）
+										if (++_sendFrameCounter >= 100)
+										{
+											_sendFrameCounter = 0;
+											Log(3, $"[RemoteController] SendProfile CaptureLoop: send={sendMs}ms, semaphore_wait={semaphoreWaitMs}ms, data={actualDataLength}B (Session: {session.SessionId})");
+										}
+									}
+									finally
+									{
+										_bufferPool.Return(combined);
+									}
 								}
 							}
 							finally
 							{
 								session.SendSemaphore.Release();
 							}
-							swSend.Stop();
+
+							// ArrayPool への返却（送信完了後）
+							_bufferPool.Return(webpData);
 
 							frameCounter++;
 							totalCapTime += swCap.ElapsedMilliseconds;
@@ -2329,9 +3672,13 @@ namespace Browser
 			var ws = session.WebSocket;
 			var token = session.CancellationToken.Token;
 
+			// [案E-2] Heartbeatスキップカウンター（サーバーC#側管理）
+			int consecutiveHeartbeatSkips = 0;
+			const int MAX_HEARTBEAT_SKIP = 3; // サーバーC#のPing/Pongタイムアウトと整合
+
 			try
 			{
-				while (!token.IsCancellationRequested && ws.State == WebSocketState.Open)
+				while (!token.IsCancellationRequested && IsWebSocketOpen(ws))
 				{
 					await Task.Delay(WebSocketHeartbeatIntervalMs, token);
 
@@ -2340,19 +3687,34 @@ namespace Browser
 					// Heartbeat 処理
 					if ((DateTime.UtcNow - session.LastHeartbeat).TotalMilliseconds > WebSocketHeartbeatIntervalMs)
 					{
-						await session.SendSemaphore.WaitAsync(token);
-						try
+						// [案E-2] ノンブロッキング送信: セマフォ取得できない場合はスキップ
+						// .NET Framework 4.8ではTryWait(0)が存在しないためWait(0)を使用
+						if (session.SendSemaphore.Wait(0))
 						{
-							if (ws.State == WebSocketState.Open)
+							try
 							{
-								var segment = new ArraySegment<byte>(HeartbeatBytes);
-								await ws.SendAsync(segment, WebSocketMessageType.Text, true, token);
-								session.LastHeartbeat = DateTime.UtcNow;
+								if (IsWebSocketOpen(ws))
+								{
+									var segment = new ArraySegment<byte>(HeartbeatBytes);
+									await ws.SendAsync(segment, WebSocketMessageType.Text, true, token);
+									session.LastHeartbeat = DateTime.UtcNow;
+									consecutiveHeartbeatSkips = 0; // 送信成功でリセット
+								}
+							}
+							finally
+							{
+								session.SendSemaphore.Release();
 							}
 						}
-						finally
+						else
 						{
-							session.SendSemaphore.Release();
+							consecutiveHeartbeatSkips++;
+							if (consecutiveHeartbeatSkips >= MAX_HEARTBEAT_SKIP)
+							{
+								// 3回連続スキップ → 接続切断をトリガー
+								Log(3, $"[RemoteController] Heartbeat {consecutiveHeartbeatSkips}回連続スキップ (Session: {session.SessionId}): 接続切断");
+								session.CancellationToken.Cancel();
+							}
 						}
 					}
 				}
@@ -2378,11 +3740,12 @@ namespace Browser
 			var token = session.CancellationToken.Token;
 
 			// バッファプールから受信バッファを割り当て
-			byte[] receiveBuffer = _bufferPool.Rent(4096);
+			// [二次レビュー修正] 受信バッファを64KBに拡大（1920x1080高画質WebPは50KB〜150KB）
+			byte[] receiveBuffer = _bufferPool.Rent(65536);
 
 			try
 			{
-				while (!token.IsCancellationRequested && ws.State == WebSocketState.Open)
+				while (!token.IsCancellationRequested && IsWebSocketOpen(ws))
 				{
 					var result = await ws.ReceiveAsync(
 						new ArraySegment<byte>(receiveBuffer), token);
@@ -2401,9 +3764,9 @@ namespace Browser
 					{
 						// 受信データをコピーしてから処理（バッファは再利用されるため）
 						byte[] messageBytes = new byte[result.Count];
-						Array.Copy(receiveBuffer, messageBytes, result.Count);
+						Buffer.BlockCopy(receiveBuffer, 0, messageBytes, 0, result.Count);
 						string message = Encoding.UTF8.GetString(messageBytes, 0, result.Count);
-						ProcessWebSocketControlMessage(session, message);
+						await ProcessWebSocketControlMessageAsync(session, message);
 					}
 				}
 			}
@@ -2415,7 +3778,7 @@ namespace Browser
 			finally
 			{
 				// 受信バッファを必ず返却
-				_bufferPool.Return(receiveBuffer, clearArray: true);
+				_bufferPool.Return(receiveBuffer);
 			}
 		}
 
@@ -2423,12 +3786,13 @@ namespace Browser
 		// 処理ブロック名 : ProcessWebSocketControlMessage
 		// 概要           : WebSocket 経由で受信した制御メッセージを処理します。
 		//                  形式: JSON { "action": "init" }, { "action": "move", "x": 0.5, "y": 0.5 }
+		//                  2026/07/29 myi 修正：async Task化、セッション固有カーソル対応
 		//------------------------------------------------------------------------------------
 		// author         : myi
 		// creation date  : 2026/07/27
-		// version        : 2.00 (action == "init" 初期画面キーフレーム要求対応)
+		// version        : 3.00 (async Task化、セッション固有カーソル対応)
 		//------------------------------------------------------------------------------------
-		private void ProcessWebSocketControlMessage(WebSocketSession session, string message)
+		private async Task ProcessWebSocketControlMessageAsync(WebSocketSession session, string message)
 		{
 			try
 			{
@@ -2439,26 +3803,102 @@ namespace Browser
 				if (action == "init")
 				{
 					Log(2, $"[RemoteController] WebSocket init 要求を受領: 初期化フルフレームを生成します (Session: {session.SessionId})");
-					Task.Run(async () =>
+					// 専用セマフォ: init処理専用のセマフォを使用し、SendSemaphoreとの競合を防止
+					await session.InitSemaphore.WaitAsync(session.CancellationToken.Token);
+					try
 					{
-						try
+						// 1. 画面キーフレームのキャプチャと変換（SendSemaphore 取得前）
+						// 2026/07/29 修正: キャプチャと変換を SendSemaphore 取得前に行い、
+						//    SendSemaphore の保持時間を送信処理のみ(最小)に制限
+						var capture = await CaptureCanvasAsync(true); // isInit = true
+						byte[] webpData = null;
+						int actualDataLength = 0;
+						if (capture.Item1 == "full" && !string.IsNullOrEmpty(capture.Item2))
 						{
-							var capture = await CaptureCanvasAsync(true); // isInit = true
-							if (capture.Item1 == "full" && !string.IsNullOrEmpty(capture.Item2))
+							var result = ConvertToBytesOptimized(capture.Item2, "data:image/webp");
+							webpData = result.Buffer;
+							actualDataLength = result.ActualLength;
+						}
+
+						// 2. フレーム送信（SendSemaphore 保持時間を最小化）
+						if (webpData != null && actualDataLength > 0)
+						{
+							// [Fix] SendSemaphore 取得前にシーケンス番号を確保
+							// HTTP側との競合防止: シーケンス番号はセマフォ外で確保し、
+							// セマフォ保持時間を送信処理のみに極小化
+							int seq = Interlocked.Increment(ref _globalSequenceNumber);
+
+							// [二次レビュー修正] 既存の _headerBuffer を流用（毎回の new byte[6] によるアロケーションを排除）
+							var header = session._headerBuffer;
+							header[0] = (byte)WebSocketProtocolVersion;
+							header[1] = 0; // Flags = 0
+							// Big-Endian シーケンス番号を直接書き込み（BitConverter+BlockCopyの中間配列を排除）
+							header[2] = (byte)(seq >> 24);
+							header[3] = (byte)(seq >> 16);
+							header[4] = (byte)(seq >> 8);
+							header[5] = (byte)seq;
+
+							// [FPS Fix] セマフォ待機時間を測定
+							var swWait = System.Diagnostics.Stopwatch.StartNew();
+							await session.SendSemaphore.WaitAsync(session.CancellationToken.Token);
+							long semaphoreWaitMs = swWait.ElapsedMilliseconds;
+							swWait.Stop();
+							try
 							{
-								byte[] webpData = ConvertToBytes(capture.Item2, "data:image/webp");
-								if (webpData != null && webpData.Length > 0)
+								if (session.WebSocket.State == WebSocketState.Open)
 								{
-									session.SetLatestFrame(webpData);
-									Log(2, $"[RemoteController] WebSocket init フルフレーム生成成功 ({webpData.Length} bytes)");
+									// [FPS Fix] WebSocketフラグメント化を排除: ヘッダーとデータを単一メッセージとして送信
+									byte[] combined = _bufferPool.Rent(6 + actualDataLength);
+									try
+									{
+										// ヘッダーを結合バッファに書き込み
+										combined[0] = (byte)WebSocketProtocolVersion;
+										combined[1] = 0; // Flags = 0
+										combined[2] = (byte)(seq >> 24);
+										combined[3] = (byte)(seq >> 16);
+										combined[4] = (byte)(seq >> 8);
+										combined[5] = (byte)seq;
+										// データをコピー
+										Buffer.BlockCopy(webpData, 0, combined, 6, actualDataLength);
+										
+										// [FPS Fix] 単一メッセージとして送信 (endOfMessage = true)
+										var swSend = System.Diagnostics.Stopwatch.StartNew();
+										await session.WebSocket.SendAsync(
+											new ArraySegment<byte>(combined, 0, 6 + actualDataLength),
+											WebSocketMessageType.Binary, true, session.CancellationToken.Token);
+										long sendMs = swSend.ElapsedMilliseconds;
+										
+										// [FPS Fix] 可観測性ログ
+										Log(2, $"[RemoteController] WebSocket init フルフレーム送信成功 ({actualDataLength} bytes, seq={seq}, send={sendMs}ms, semaphore_wait={semaphoreWaitMs}ms, Session: {session.SessionId})");
+									}
+									finally
+									{
+										_bufferPool.Return(combined);
+									}
 								}
 							}
+							finally
+							{
+								session.SendSemaphore.Release();
+							}
 						}
-						catch (Exception ex)
+						// ArrayPool への返却（送信完了後）
+						if (webpData != null)
 						{
-							Log(3, $"[RemoteController] WebSocket init キャプチャエラー: {ex.Message}");
+							_bufferPool.Return(webpData);
 						}
-					});
+
+						// 3. HUD全データのパケット送信（init_hud）
+						await SendInitHudDataAsync(session);
+					}
+					catch (Exception ex)
+					{
+						Log(3, $"[RemoteController] WebSocket init エラー: {ex.Message}");
+					}
+					finally
+					{
+						session.InitSemaphore.Release();
+					}
 				}
 				else if (action == "set_fps")
 				{
@@ -2467,7 +3907,7 @@ namespace Browser
 					{
 						session.TargetIntervalMs = Math.Max(0, Math.Min(300000, intervalMs));
 						int jsInterval = (session.TargetIntervalMs <= 0) ? 16 : Math.Max(16, session.TargetIntervalMs);
-						Log(2, $"[RemoteController] WebSocket 目標間隔変更受領: {session.TargetIntervalMs}ms (Session: {session.SessionId})");
+						Log(2, $"[RemoteController] WebSocket 目標間隔変更受領: {session.TargetIntervalMs}ms → JS側: {jsInterval}ms (Session: {session.SessionId})");
 
 						// ブラウザJS側の常駐キャプチャタイマーも動的更新
 						try
@@ -2480,27 +3920,27 @@ namespace Browser
 				}
 				else if (action == "move" && double.TryParse(xStr, out double x) && double.TryParse(yStr, out double y))
 				{
-					_cursorX = Math.Max(0, Math.Min(1.0, x));
-					_cursorY = Math.Max(0, Math.Min(1.0, y));
-					TriggerMouseMove();
+					session.SetCursorX(Math.Max(0, Math.Min(1.0, x)));
+					session.SetCursorY(Math.Max(0, Math.Min(1.0, y)));
+					await TriggerMouseMoveAsync(session);
 				}
 				else if (action == "click")
 				{
-					TriggerMouseClick();
+					await TriggerMouseClickAsync(session);
 				}
 				else if (action == "touch_click" && double.TryParse(xStr, out double tx) && double.TryParse(yStr, out double ty))
 				{
-					_cursorX = Math.Max(0, Math.Min(1.0, tx));
-					_cursorY = Math.Max(0, Math.Min(1.0, ty));
-					TriggerMouseClick();
+					session.SetCursorX(Math.Max(0, Math.Min(1.0, tx)));
+					session.SetCursorY(Math.Max(0, Math.Min(1.0, ty)));
+					await TriggerMouseClickAsync(session);
 				}
 				else if (action == "mousedown")
 				{
-					TriggerMouseDown();
+					await TriggerMouseDownAsync(session);
 				}
 				else if (action == "mouseup")
 				{
-					TriggerMouseUp();
+					await TriggerMouseUpAsync(session);
 				}
 			}
 			catch (Exception ex)
@@ -2596,6 +4036,68 @@ namespace Browser
 		}
 
 		//====================================================================================
+		// 処理ブロック名 : SendInitHudDataAsync
+		// 概要           : 再接続時にクライアントがHUDデータを最新の状態に同期するための
+		//                  init_hudパケットを送信します。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/29
+		// version        : 1.00
+		//------------------------------------------------------------------------------------
+		private async Task SendInitHudDataAsync(WebSocketSession session)
+		{
+			string hudJson;
+			lock (_hudLock)
+			{
+				hudJson = _cachedHudJson;
+			}
+	
+			if (string.IsNullOrEmpty(hudJson)) return;
+	
+			// [Fix] _cachedHudJson が有効な JSON オブジェクトであることを検証
+			// Trim() で前後の空白を許容し、"{..." }" 形式であることを確認
+			var trimmed = hudJson.Trim();
+			if (!trimmed.StartsWith("{") || !trimmed.EndsWith("}"))
+			{
+				Log(3, $"[RemoteController] init_hud 送信スキップ: _cachedHudJson はJSONオブジェクトではありません (Session: {session.SessionId})");
+				return;
+			}
+		
+			try
+			{
+				// [Fix] init_hud パケットのバイト列変換をセマフォ外で行い、
+				//   SendSemaphore の保持時間を送信処理のみに極小化
+				// [Fix] "data" キーを追加して有効なJSON構造とする
+				//   変更前: {"type":"init_hud",{"material":...}} → 無効なJSON
+				//   変更後: {"type":"init_hud","data":{"material":...}} → 有効なJSON
+				//   注: hudJson が null/空の場合は string.IsNullOrEmpty(hudJson) で既に return している
+				var packet = "{\"type\":\"init_hud\",\"data\":" + hudJson + "}";
+				byte[] bytes = Encoding.UTF8.GetBytes(packet);
+		
+				await session.SendSemaphore.WaitAsync(session.CancellationToken.Token);
+				try
+				{
+					if (session.WebSocket.State == WebSocketState.Open)
+					{
+						await session.WebSocket.SendAsync(
+							new ArraySegment<byte>(bytes),
+							WebSocketMessageType.Text, true, session.CancellationToken.Token);
+					}
+				}
+				finally
+				{
+					session.SendSemaphore.Release();
+				}
+	
+				Log(2, $"[RemoteController] init_hud パケット送信成功 (Session: {session.SessionId})");
+			}
+			catch (Exception ex)
+			{
+				Log(3, $"[RemoteController] init_hud 送信エラー: {ex.Message}");
+			}
+		}
+	
+		//====================================================================================
 		// 処理ブロック名 : SendHeartbeatAsync
 		// 概要           : WebSocket の Heartbeat (Ping) を送信します。
 		//                  .NET Framework 4.8 の WebSocket は Ping/Pong メッセージをサポートしないため、
@@ -2604,7 +4106,7 @@ namespace Browser
 		// author         : myi
 		// creation date  : 2026/07/27
 		// version        : 1.00
-	//------------------------------------------------------------------------------------
+		//------------------------------------------------------------------------------------
 		private async Task SendHeartbeatAsync(System.Net.WebSockets.WebSocket ws, CancellationToken token)
 		{
 			try
