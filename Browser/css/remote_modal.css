@@ -1201,6 +1201,59 @@
         transform: scaleX(-1);
     }
 
+    /* -----------------------------------------------------------------
+     * トグルボタン配置: 上側（横長コンパクト形状）
+     * ゲーム画面上下に十分な余白がある場合、右側ではなく上側に配置
+     * ----------------------------------------------------------------- */
+    #trackpad-toggle.position-top {
+        height: 24px;
+        width: 60px;
+        border-radius: 0 0 4px 4px;
+        border-right: 1px solid var(--glass-border);
+        border-top: none;
+        transform: none;
+    }
+
+    /* 上側配置時: タッチ操作領域の拡張
+     * 見た目は24pxのまま、上下に10pxの不可視タップ領域を追加 */
+    #trackpad-toggle.position-top::before {
+        content: '';
+        position: absolute;
+        top: -10px;
+        bottom: -10px;
+        left: 0;
+        right: 0;
+    }
+
+    /* 上側配置・パネル閉じ状態: アイコン回転 (下向き矢印 ▼ で展開を案内) */
+    #trackpad-toggle.position-top .toggle-icon {
+        transform: rotate(90deg);
+    }
+
+    /* 上側配置・パネル展開状態: アイコン回転 (上向き矢印 ▲ で折りたたみを案内)
+     * 複合セレクターにより .position-top .toggle-icon の特異性を上書き */
+    #trackpad-toggle.position-top.panel-expanded .toggle-icon {
+        transform: rotate(-90deg);
+    }
+
+    /* -----------------------------------------------------------------
+     * トグルボタン配置: 右側（デフォルト形状）
+     * 上下余白が不足する場合のフォールバック配置
+     * ----------------------------------------------------------------- */
+    #trackpad-toggle.position-right {
+        top: 50%;
+        right: 0;
+        width: 24px;
+        height: 80px;
+        border-radius: 4px 0 0 4px;
+        transform: translateY(-50%);
+    }
+
+    /* 右側配置・パネル展開状態のアイコン反転 */
+    #trackpad-toggle.position-right.panel-expanded .toggle-icon {
+        transform: scaleX(-1);
+    }
+
     /* [FIX] 2026/07/27 半透明オーバーレイ方式をフィルター方式へ変更
      * #trackpad-overlay 関連のCSS定義を削除し、#viewport.overlay-active クラスによるフィルター方式へ置き換え */
 

@@ -458,3 +458,146 @@ setInterval(() => {
 
     window.addEventListener('orientationchange', resetPanelState);
 })();
+
+//============================================================================================
+// 横画面 HUD トグルボタン配置計算 (KISS簡素化版)
+//============================================================================================
+// モジュールレベル変数: rAFId はデバウンス用、resizeObserver は GC防止
+let rAFId = null;
+let resizeObserver = null;
+
+/**
+ * トグルボタン配置を計算・適用する
+ * - Window座標系(position: fixed)に準拠した正しくシンプルな座標計算
+ * - 縦画面ガードおよびスタイルリセット
+ * - DOM Read / Write 完全分離
+ * - DOM準備不足によるランタイムエラー防止（nullチェック）
+ */
+function calculateTogglePosition() {
+    const viewport = document.getElementById('viewport');
+    const gameScreen = document.getElementById('game-screen');
+    const toggleBtn = document.getElementById('trackpad-toggle');
+
+    // DOM準備不足によるランタイムエラー防止
+    if (!viewport || !gameScreen || !toggleBtn) return;
+
+    // 横画面チェック：縦画面時はインラインスタイルをリセットして終了
+    const isLandscape = window.matchMedia('(orientation: landscape)').matches;
+    if (!isLandscape) {
+        toggleBtn.classList.remove('position-top', 'position-right');
+        toggleBtn.style.top = '';
+        toggleBtn.style.right = '';
+        toggleBtn.style.transform = '';
+        return;
+    }
+
+    // DOM Read Phase
+
+    // ── viewport の CSS padding に関する注記 ──
+    // viewport.clientWidth / viewport.clientHeight は CSS padding を含んだ値を返す。
+    // viewport 要素に CSS padding が設定されている場合、以下の計算がずれる:
+    //   verticalGap = (vh - gameRect.height) / 2
+    // このズレは、padding がゲーム画面の実際の余白より大きく見積もられる原因となる。
+    // 対策: viewport に CSS padding を設定しないことを前提とする。
+    // ─────────────────────────────────────
+    const vw = viewport.clientWidth;
+    const vh = viewport.clientHeight;
+    if (vw <= 0 || vh <= 0) return;
+
+    const gameRect = gameScreen.getBoundingClientRect();
+    if (gameRect.width <= 0 || gameRect.height <= 0) return;
+
+    const verticalGap = (vh - gameRect.height) / 2;
+    const requiredTopGap = 24; // コンパクトボタン高さ
+    const isTopPosition = verticalGap >= requiredTopGap;
+
+    const windowWidth = window.innerWidth;
+
+    // DOM Write Phase
+
+    // ── 座標計算の基準に関する注記 ──
+    // window.innerWidth を使用する根拠:
+    // gameScreen.getBoundingClientRect() は viewport 座標系（スクロールバーを含む
+    // 論理ビューポート幅を基準とする座標系）を返す。window.innerWidth も同様に
+    // スクロールバーを含む論理ビューポート幅を返すため、両者は同じ座標系に属し
+    // 整合性が取れる。windowWidth - gameRect.right の計算において、window.innerWidth
+    // と getBoundingClientRect().right の座標系が一致することが計算の正確性を保証する。
+    // 対照的に document.documentElement.clientWidth はスクロールバーを除くため、
+    // getBoundingClientRect() の座標系とズレが生じる可能性がある。
+    // ─────────────────────────────────────
+    if (isTopPosition) {
+        toggleBtn.classList.add('position-top');
+        toggleBtn.classList.remove('position-right');
+
+        const topPos = Math.max(0, gameRect.top - requiredTopGap);
+        const rightPos = Math.max(0, windowWidth - gameRect.right);
+
+        toggleBtn.style.top = topPos + 'px';
+        toggleBtn.style.right = rightPos + 'px';
+        toggleBtn.style.transform = 'none';
+    } else {
+        toggleBtn.classList.remove('position-top');
+        toggleBtn.classList.add('position-right');
+
+        toggleBtn.style.top = '';
+        toggleBtn.style.right = '';
+        toggleBtn.style.transform = 'translateY(-50%)';
+    }
+}
+
+/**
+ * requestAnimationFrame デバウンス付きの scheduleTogglePosition
+ * rAFId はモジュールレベルで定義済み
+ */
+function scheduleTogglePosition() {
+    if (rAFId !== null) return;
+    rAFId = requestAnimationFrame(() => {
+        calculateTogglePosition();
+        rAFId = null;
+    });
+}
+
+/**
+ * トグルボタン配置計算用イベントリスナーの初期化
+ * ResizeObserver, window.load などの監視を登録する
+ */
+function initTogglePositionListeners() {
+    const viewport = document.getElementById('viewport');
+    const gameScreen = document.getElementById('game-screen');
+    if (!viewport || !gameScreen) return;
+
+    // 1. ResizeObserver による一括監視（viewport と gameScreen の両方を監視）
+    // resizeObserver をモジュールスコープで保持することで、GCによる予期せぬ破棄を防止
+    if (typeof ResizeObserver !== 'undefined') {
+        resizeObserver = new ResizeObserver(scheduleTogglePosition);
+        resizeObserver.observe(viewport);
+        resizeObserver.observe(gameScreen);
+    } else {
+        // 2. フォールバック: ResizeObserver 未対応ブラウザ
+        // viewport/gameScreenの内部リサイズは検知されないが、CefSharp(Chromium)ではサポート済み
+        window.addEventListener('resize', scheduleTogglePosition);
+    }
+
+    // 3. 画面回転フォールバック
+    // 既存コード（remote_main.js:459）との整合性: 名前付き関数参照で安定性保証
+    window.addEventListener('orientationchange', scheduleTogglePosition);
+
+    // 4. 初回計算実行
+    scheduleTogglePosition();
+
+    // 5. 画像等リソース読み込み完了後の再計算（once: true）
+    // document.readyState チェックにより、loadイベントが既に発火済みの場合もカバー
+    if (document.readyState === 'complete') {
+        scheduleTogglePosition();
+    } else {
+        window.addEventListener('load', scheduleTogglePosition, { once: true });
+    }
+}
+
+// KISS 原則による初期化
+// document.readyState チェック: 既にドキュメントが読み込み済みであれば即座に初期化
+if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    initTogglePositionListeners();
+} else {
+    document.addEventListener('DOMContentLoaded', initTogglePositionListeners);
+}
