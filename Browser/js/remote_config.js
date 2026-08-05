@@ -25,6 +25,14 @@ let lastFpsUpdate = Date.now();
 let isFirstWebpRequest = true;
 let isUpdating = false;
 
+// [task06] スリープ復帰判定用変数
+let lastFrameStartTime = Date.now();
+// 注: lastScheduledDelay の初期値は Infinity に設定する。
+// 0 や 1000 などの小さな値だと、初回更新前にスリープ復帰判定が誤検知される可能性がある。
+// 初回の updateScreenDiff() 実行時に getDynamicDelay() の実際の値で上書きされる。
+let lastScheduledDelay = Infinity;
+const SLEEP_SLIP_TOLERANCE_MS = 5000; // 予定より5秒以上遅延した場合にスリープ復帰と判定
+
 // [Phase 4] グローバルシーケンス番号（WebSocket/HTTP共通）
 let latestSequenceNumber = 0;
 

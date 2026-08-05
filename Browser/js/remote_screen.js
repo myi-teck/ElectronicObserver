@@ -1,8 +1,8 @@
-//============================================================================================
+//=============================================================================================
 // remote_screen.js
 // Canvas差分WebP描画・拡大鏡・画面フィルター
 // 依存: remote_config.js, remote_connection.js
-//============================================================================================
+//=============================================================================================
 
 // DOM要素の取得（ページ読み込み時に実行される）
 const screen = document.getElementById('game-screen');
@@ -18,24 +18,52 @@ const cursor = document.getElementById('virtual-cursor');
 const magCanvas = document.getElementById('magnifier-canvas');
 const magCtx = magCanvas ? magCanvas.getContext('2d') : null;
 
-//============================================================================================
+//=============================================================================================
 // 処理ブロック名 : updateScreen
 // 概要           : 画面更新ルーティングを行う（差分WebP配信へ一本化）
-//============================================================================================
+//=============================================================================================
 async function updateScreen() {
     await updateScreenDiff();
 }
 
-//============================================================================================
+//=============================================================================================
 // 処理ブロック名 : updateScreenDiff
 // 概要           : 差分WebP方式で画面を更新する（HTTPモード用）
-//============================================================================================
+//=============================================================================================
 async function updateScreenDiff() {
+    const now = Date.now();
+
+    // [task06] フォールバック: タイマースリップ検知
+    // 前回のフレーム実行から (予定ディレイ + 5秒) 以上経過している場合、PCスリープから復帰したとみなす
+    // 注: lastFrameStartTime は「最後に更新処理が**開始**された時刻」を記録する。
+    // スリープ復帰検知には「関数呼出間隔」で十分であり、非同期処理の完了時刻ではない。
+    const elapsedSinceLastFrame = now - lastFrameStartTime;
+    if (elapsedSinceLastFrame > (lastScheduledDelay + SLEEP_SLIP_TOLERANCE_MS)) {
+        console.log(`[SleepResume] Timer slip detected: elapsed=${elapsedSinceLastFrame}ms, scheduled=${lastScheduledDelay}ms`);
+        // [v4] 現在すでにupdateScreenDiff()が実行中であるため、triggerResumeUpdate()を呼ばない。
+        // 直接 isFirstWebpRequest = true をセットし、自身のフローでキーフレームを取得する。
+        isFirstWebpRequest = true;
+        if (typeof ProtocolManager !== 'undefined' && ProtocolManager.effectiveMode === 'ws') {
+            ProtocolManager.sendWsControl({ action: 'init' });
+        }
+    }
+    lastFrameStartTime = now;
+
+    // [v4] ヘルパー: スリープ復帰ペンディングがある場合は即時ディレイ (0ms) を適用
+    const getNextDelay = (calculatedDelay) => {
+        if (triggerResumeUpdate._pendingImmediate) {
+            triggerResumeUpdate._pendingImmediate = false;
+            return 0;
+        }
+        return calculatedDelay;
+    };
+
     // WebSocket モード時は HTTP ポーリングをスキップ
     if (ProtocolManager.effectiveMode === 'ws') {
         isUpdating = false;
-        const nextDelay = getDynamicDelay();
-        updateTimer = setTimeout(updateScreen, nextDelay);
+        const nextDelay = getNextDelay(getDynamicDelay());
+        lastScheduledDelay = nextDelay; // [task06] 予定ディレイを記録
+        updateTimer = setTimeout(updateScreenDiff, nextDelay);
         return;
     }
 
@@ -49,8 +77,10 @@ async function updateScreenDiff() {
 
     try {
         let url = `/screen.webp?t=${Date.now()}`;
+        // [v4] URL生成時に isFirstWebpRequest を消費（レスポンス完了時の無条件上書きを防止）
         if (isFirstWebpRequest) {
             url += '&init=1';
+            isFirstWebpRequest = false;
         }
         const response = await fetch(url, { signal: controller.signal });
         clearTimeout(timeoutId);
@@ -65,18 +95,21 @@ async function updateScreenDiff() {
             if (typeof updateDataUsage === 'function') {
                 updateDataUsage(getResponseHeaderBytes(response));
             }
-            isFirstWebpRequest = false;
+            // [v4] isFirstWebpRequest の消費はURL生成時に行うため、ここでの無条件上書きは削除
+            // isFirstWebpRequest = false; // ← 削除
             isUpdating = false;
 
             const elapsed = Date.now() - startTime;
-            const nextDelay = Math.max(5, getDynamicDelay() - elapsed);
-            updateTimer = setTimeout(updateScreen, nextDelay);
+            const nextDelay = getNextDelay(Math.max(5, getDynamicDelay() - elapsed));
+            lastScheduledDelay = nextDelay; // [task06] 予定ディレイを記録
+            updateTimer = setTimeout(updateScreenDiff, nextDelay);
             return;
         }
 
         if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
 
-        isFirstWebpRequest = false;
+        // [v4] isFirstWebpRequest の消費はURL生成時に行うため、ここでの無条件上書きは削除
+        // isFirstWebpRequest = false; // ← 削除 (79行目)
 
         const rawSeqHeader = response.headers.get('X-Frame-Sequence');
         const httpSeq = (rawSeqHeader !== null && !isNaN(parseInt(rawSeqHeader, 10)))
@@ -88,64 +121,76 @@ async function updateScreenDiff() {
 
         const img = new Image();
 
+        // [v5] img.onload 全体を try...finally で保護（描画例外によるデッドロック防止）
         img.onload = () => {
-            if (httpSeq >= 0) {
-                const diff = (httpSeq - latestSequenceNumber) | 0;
-                if (diff <= 0 && latestSequenceNumber !== 0) {
-                    URL.revokeObjectURL(img.src);
-                    isUpdating = false;
-                    const elapsed = Date.now() - startTime;
-                    const nextDelay = Math.max(5, getDynamicDelay() - elapsed);
-                    updateTimer = setTimeout(updateScreen, nextDelay);
-                    return;
+            try {
+                if (httpSeq >= 0) {
+                    const diff = (httpSeq - latestSequenceNumber) | 0;
+                    if (diff <= 0 && latestSequenceNumber !== 0) {
+                        return;
+                    }
+                    latestSequenceNumber = httpSeq;
                 }
-                latestSequenceNumber = httpSeq;
+
+                gameCtx.clearRect(0, 0, screen.width, screen.height);
+                gameCtx.drawImage(img, 0, 0);
+
+                drawMagnifier();
+
+                status.textContent = 'SYNCHRONIZED';
+                status.classList.add('ok');
+
+                frameCount++;
+                updateFpsDisplay();
+            } catch (err) {
+                console.error("[remote_screen] img.onload render error:", err);
+            } finally {
+                // [v5] 例外発生時も確実にリソース解放・更新フラグ解除・タイマー再予約
+                URL.revokeObjectURL(img.src);
+                isUpdating = false;
+
+                const elapsed = Date.now() - startTime;
+                const nextDelay = getNextDelay(Math.max(5, getDynamicDelay() - elapsed));
+                lastScheduledDelay = nextDelay; // [task06] 予定ディレイを記録
+                updateTimer = setTimeout(updateScreenDiff, nextDelay);
             }
-
-            gameCtx.clearRect(0, 0, screen.width, screen.height);
-            gameCtx.drawImage(img, 0, 0);
-
-            drawMagnifier();
-
-            URL.revokeObjectURL(img.src);
-
-            status.textContent = 'SYNCHRONIZED';
-            status.classList.add('ok');
-
-            frameCount++;
-            updateFpsDisplay();
-            isUpdating = false;
-
-            const elapsed = Date.now() - startTime;
-            const nextDelay = Math.max(5, getDynamicDelay() - elapsed);
-            updateTimer = setTimeout(updateScreen, nextDelay);
         };
 
         img.onerror = () => {
             URL.revokeObjectURL(img.src);
             isUpdating = false;
-
+            // [v4] isFirstWebpRequest は維持。次回の updateScreenDiff() でキーフレーム要求によりリカバリ
+            // [v5 重要] _pendingImmediate の消費方針:
+            // 画像ロードエラー時は「一度更新を試みた」とみなし、getNextDelay() を経由して
+            // _pendingImmediate フラグを消費（false にリセット）する。
+            // これにより、エラー発生後の次回のタイマー予約は即時ディレイ (0ms) が適用されるが、
+            // その後のサイクルは通常の getDynamicDelay() に基づく遅延に戻される。
+            // 理由: エラー時は「更新の試行は完了」であり、次回の即時更新を維持するよりも
+            // 通常のタイマーサイクルに任せてサーバー負荷を抑制する設計が適切。
             const elapsed = Date.now() - startTime;
-            const nextDelay = Math.max(5, getDynamicDelay() - elapsed);
-            updateTimer = setTimeout(updateScreen, nextDelay);
+            const nextDelay = getNextDelay(Math.max(5, getDynamicDelay() - elapsed));
+            lastScheduledDelay = nextDelay; // [task06] 予定ディレイを記録
+            updateTimer = setTimeout(updateScreenDiff, nextDelay);
         };
 
         img.src = URL.createObjectURL(blob);
 
     } catch (error) {
         clearTimeout(timeoutId);
-        isFirstWebpRequest = true;
+        isFirstWebpRequest = true; // 例外発生時のみ次回リトライでキーフレーム要求
         status.textContent = 'RE-SYNCING...';
         status.classList.remove('ok');
         isUpdating = false;
 
-        updateTimer = setTimeout(updateScreen, 1000);
+        const nextDelay = getNextDelay(1000);
+        lastScheduledDelay = nextDelay; // [task06] 固定値1000msのため1000を記録
+        updateTimer = setTimeout(updateScreenDiff, nextDelay);
     }
 }
 
-//============================================================================================
+//=============================================================================================
 // 処理ブロック名 : updateFpsDisplay
-//============================================================================================
+//=============================================================================================
 function updateFpsDisplay() {
     const now = Date.now();
     const elapsed = now - lastFpsUpdate;
@@ -167,9 +212,9 @@ function updateFpsDisplay() {
     }
 }
 
-//============================================================================================
+//=============================================================================================
 // 処理ブロック名 : drawMagnifier
-//============================================================================================
+//=============================================================================================
 function drawMagnifier() {
     if (!magCtx || !screen || screen.width === 0) return;
 
@@ -225,9 +270,9 @@ function drawMagnifier() {
     );
 }
 
-//============================================================================================
+//=============================================================================================
 // 仮想カーソル表示＆拡大鏡描画の requestAnimationFrame 同期化
-//============================================================================================
+//=============================================================================================
 function scheduleCursorUpdate() {
     if (isCursorUpdatePending) return;
     isCursorUpdatePending = true;
@@ -247,9 +292,9 @@ function updateCursorDisplay() {
     drawMagnifier();
 }
 
-//============================================================================================
+//=============================================================================================
 // プライバシーフィルター設定（クライアントサイド適用版）
-//============================================================================================
+//=============================================================================================
 function applyClientFilter(mode) {
     const gameScreen = document.getElementById('game-screen');
     gameScreen.classList.remove('filter-grayscale', 'filter-lowcontrast', 'filter-greenscale-night', 'filter-greenscale-military', 'filter-greenscale-phosphor');
@@ -265,9 +310,9 @@ function applyClientFilter(mode) {
     }
 }
 
-//============================================================================================
+//=============================================================================================
 // 暗視フィルター設定（トグルサイクル方式）
-//============================================================================================
+//=============================================================================================
 function applyNightvisionFilter(index) {
     const gameScreen = document.getElementById('game-screen');
     nightvisionModes.forEach(m => { if (m.className) gameScreen.classList.remove(m.className); });

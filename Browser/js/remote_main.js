@@ -5,6 +5,81 @@
 //============================================================================================
 
 //============================================================================================
+// Viewport CSS変数同期サブシステム (task07 v3 決定版)
+//============================================================================================
+
+// [v3対応] TDZ回避のため、モジュール変数は関数の実行より前に定義（let使用）
+let viewportSyncRafId = null;
+
+/**
+ * #viewport の表示座標を取得し、--viewport-* CSS変数としてドキュメントルートに設定
+ * @param {DOMRect|Object|boolean} rectOrImmediate - 座標オブジェクトまたは即時実行フラグ
+ * @param {boolean} immediate2 - rect を渡した場合の即時実行フラグ
+ *
+ * 【v3対応】ダックタイピングで DOMRect 互換を判定（'top' in rectOrImmediate）
+ * 期待されるオブジェクト構造: { top, left, right, bottom }
+ *
+ * 主な呼び出し元と引数パターン:
+ * - calculateTogglePosition(): viewport.getBoundingClientRect() の戻り値（DOMRect）を直接渡す
+ * - togglePanel() / resetPanelState(): rect を渡さない（immediate=true のみ）
+ * - resize / scroll イベント: rect も immediate も渡さない（rAF 同期）
+ */
+function syncViewportToCSSVariables(rectOrImmediate, immediate2 = false) {
+    let immediate = false;
+    let rect = null;
+
+    // ダックタイピングで DOMRect 互換を判定（クロスフレーム環境対応）
+    if (typeof rectOrImmediate === 'object' && rectOrImmediate !== null && 'top' in rectOrImmediate) {
+        rect = rectOrImmediate;
+        immediate = immediate2 === true;
+    } else {
+        immediate = rectOrImmediate === true;
+    }
+
+    const update = () => {
+        const viewport = document.getElementById('viewport');
+        if (!viewport) return;
+        // rect が渡された場合は再取得せず使用（二重 getBoundingClientRect 防止）
+        const actualRect = rect || viewport.getBoundingClientRect();
+        const style = document.documentElement.style;
+        // Math.round() によるピクセル丸め（sub-pixel レイアウトぼやけ防止）
+        style.setProperty('--viewport-top', Math.round(actualRect.top) + 'px');
+        style.setProperty('--viewport-left', Math.round(actualRect.left) + 'px');
+        style.setProperty('--viewport-right', Math.round(window.innerWidth - actualRect.right) + 'px');
+        style.setProperty('--viewport-bottom', Math.round(window.innerHeight - actualRect.bottom) + 'px');
+    };
+
+    if (immediate) {
+        if (viewportSyncRafId !== null) {
+            cancelAnimationFrame(viewportSyncRafId);
+            viewportSyncRafId = null;
+        }
+        update();
+    } else {
+        if (viewportSyncRafId !== null) return; // 既にフレーム予約済みの場合はスキップ
+        viewportSyncRafId = requestAnimationFrame(() => {
+            update();
+            viewportSyncRafId = null;
+        });
+    }
+}
+
+// 初期化フック
+function initViewportSync() {
+    syncViewportToCSSVariables(true);
+}
+
+if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    initViewportSync();
+} else {
+    document.addEventListener('DOMContentLoaded', initViewportSync);
+}
+
+// リサイズ・スクロール時に追従更新（rAF 同期）
+window.addEventListener('resize', () => syncViewportToCSSVariables());
+window.addEventListener('scroll', () => syncViewportToCSSVariables(), { passive: true });
+
+//============================================================================================
 // タイマーフォーマット関数
 //============================================================================================
 function formatTimer(milliseconds) {
@@ -18,67 +93,83 @@ function formatTimer(milliseconds) {
 }
 
 //============================================================================================
-// 状態判定およびstateBadgeのクラス・テキスト更新関数
+// 状態判定および state-badge / hud-mini-state のクラス・テキスト更新関数 (v2 DRY化)
+// [task04 修正] 接続ステータスガードを削除し、制御モードバッジの専用に統合
 //============================================================================================
 function updateStateBadge() {
-    const elapsed = Date.now() - lastOperationTime;
     const stateBadge = document.getElementById('state-badge');
+    const hudMiniState = document.getElementById('hud-mini-state');
+
+    const elapsed = Date.now() - lastOperationTime;
+
+    // 自動FPS制御が無効の場合は常に ACTIVE
+    if (!autoFpsEnabled) {
+        if (stateBadge) {
+            stateBadge.textContent = 'ACT';
+            stateBadge.className = 'badge';
+        }
+        if (hudMiniState) {
+            hudMiniState.textContent = 'ACT';
+        }
+        lastSleepSeconds = -1;
+        return;
+    }
 
     if (elapsed < ACTIVE_TIMEOUT) {
-        stateBadge.textContent = 'ACT';
-        stateBadge.className = 'badge';
+        if (stateBadge) {
+            stateBadge.textContent = 'ACT';
+            stateBadge.className = 'badge';
+        }
+        if (hudMiniState) {
+            hudMiniState.textContent = 'ACT';
+        }
+        lastSleepSeconds = -1;
     } else if (elapsed < IDLE_TIMEOUT) {
-        const idleElapsed = Math.max(0, Date.now() - lastOperationTime - ACTIVE_TIMEOUT);
-        stateBadge.textContent = `IDL:${formatTimer(idleElapsed)}`;
-        stateBadge.className = 'badge idle';
+        const idleElapsed = Math.max(0, elapsed - ACTIVE_TIMEOUT);
+        if (stateBadge) {
+            stateBadge.textContent = `IDL:${formatTimer(idleElapsed)}`;
+            stateBadge.className = 'badge idle';
+        }
+        if (hudMiniState) {
+            hudMiniState.textContent = 'IDL';
+        }
+        lastSleepSeconds = -1;
     } else {
-        const sleepElapsed = Math.max(0, Date.now() - lastOperationTime - ACTIVE_TIMEOUT - IDLE_TIMEOUT);
-        stateBadge.textContent = `SLP:${formatTimer(sleepElapsed)}`;
-        stateBadge.className = 'badge sleep';
+        const sleepElapsed = Math.max(0, elapsed - IDLE_TIMEOUT);
+        const sleepSeconds = Math.floor(sleepElapsed / 1000);
+
+        if (sleepSeconds !== lastSleepSeconds) {
+            lastSleepSeconds = sleepSeconds;
+            const sleepDisplayElapsed = sleepSeconds * 1000;
+
+            if (stateBadge) {
+                stateBadge.textContent = `SLP:${formatTimer(sleepDisplayElapsed)}`;
+                stateBadge.className = 'badge sleep';
+                void stateBadge.offsetWidth; // リフロー発生によるアニメーション再トリガー
+                stateBadge.className = 'badge sleep sleep-pulse';
+            }
+        }
+        if (hudMiniState) {
+            hudMiniState.textContent = 'SLP';
+        }
     }
 }
 
 //============================================================================================
 // タイマー表示をリアルタイムに更新する独立した高頻度タイマー起動関数
 //============================================================================================
+function stopTimerUpdate() {
+    if (timerUpdateInterval !== null) {
+        clearInterval(timerUpdateInterval);
+        timerUpdateInterval = null;
+    }
+}
+
 function startTimerUpdate() {
-    if (timerUpdateInterval !== null) return;
+    // 二重起動防止: 既存タイマーを明示的にクリアしてから再設定
+    stopTimerUpdate();
     timerUpdateInterval = setInterval(() => {
-        const elapsed = Date.now() - lastOperationTime;
-        const stateBadge = document.getElementById('state-badge');
-
-        if (!autoFpsEnabled) {
-            stateBadge.textContent = 'ACT';
-            stateBadge.className = 'badge';
-            lastSleepSeconds = -1;
-            return;
-        }
-
-        if (elapsed < ACTIVE_TIMEOUT) {
-            stateBadge.textContent = 'ACT';
-            stateBadge.className = 'badge';
-            lastSleepSeconds = -1;
-        } else if (elapsed < IDLE_TIMEOUT) {
-            const idleElapsed = Math.max(0, elapsed - ACTIVE_TIMEOUT);
-            stateBadge.textContent = `IDL:${formatTimer(idleElapsed)}`;
-            stateBadge.className = 'badge idle';
-            lastSleepSeconds = -1;
-        } else {
-            const sleepElapsed = Math.max(0, elapsed - IDLE_TIMEOUT);
-            const sleepSeconds = Math.floor(sleepElapsed / 1000);
-
-            if (sleepSeconds !== lastSleepSeconds) {
-                lastSleepSeconds = sleepSeconds;
-
-                const sleepDisplayElapsed = sleepSeconds * 1000;
-                const newTimerText = `SLP:${formatTimer(sleepDisplayElapsed)}`;
-                stateBadge.textContent = newTimerText;
-
-                stateBadge.className = 'badge sleep';
-                void stateBadge.offsetWidth;
-                stateBadge.className = 'badge sleep sleep-pulse';
-            }
-        }
+        updateStateBadge(); // 集約した単一更新関数を呼ぶ
     }, 100);
 }
 
@@ -229,9 +320,8 @@ initSettingsButtons('auto-fps-group', autoFpsInitialValue, value => {
     lastOperationTime = Date.now();
     lastSleepSeconds = -1;
 
-    const stateBadge = document.getElementById('state-badge');
-    stateBadge.textContent = 'ACT';
-    stateBadge.className = 'badge';
+    // 共通関数を使用して #state-badge と #hud-mini-state の両方を更新
+    updateStateBadge();
 
     clearTimeout(updateTimer);
     updateTimer = setTimeout(updateScreen, 50);
@@ -271,6 +361,20 @@ initSettingsButtons('sensitivity-group', targetSensitivity, value => {
 
 // ページロード時に ProtocolManager を初期化
 ProtocolManager.init();
+
+// [task06] スリープ復帰およびタブフォーカス復帰時の即時画面更新トリガー
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+        triggerResumeUpdate();
+    }
+});
+window.addEventListener('focus', () => {
+    triggerResumeUpdate();
+});
+
+// [task06] 初期化時にも即座に呼び出してSLEEP状態から脱出
+// ページリロード時はvisibilityStateが既に'versible'のためvisibilitychangeイベントが発火しない
+triggerResumeUpdate();
 
 initSettingsButtons('zoom-group', targetZoom, value => {
     targetZoom = value;
@@ -402,7 +506,12 @@ setInterval(() => {
 }, 5000);
 
 //============================================================================================
-// 横画面用：操作パネルの折り畳み/展開トグル（KISS同期制御版）
+// ゲーム画面誤クリック防止フラグ（グローバル定義）
+//============================================================================================
+window.isDismissingPanel = false;
+
+//============================================================================================
+// 横画面用：操作パネルの折り畳み/展開トグルおよびゲーム画面タップ消去制御
 // 【クリティカルレビュー指摘1,2反映】transitionend廃止 + 状態管理簡素化
 //============================================================================================
 (function initTrackpadPanel() {
@@ -413,6 +522,10 @@ setInterval(() => {
 
     if (!toggleBtn || !trackpadArea || !hudControlBar) return;
 
+    /**
+     * パネルの展開/閉合を切り替える
+     * [v3対応] 実行順序制約: syncViewportToCSSVariables(true) は setHudSlideState() より前に実行
+     */
     function togglePanel(e) {
         if (e) {
             e.preventDefault();
@@ -424,30 +537,107 @@ setInterval(() => {
         toggleBtn.classList.toggle('panel-expanded', isExpanded);
         toggleBtn.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
 
+        // bodyにもpanel-expandedを同期付与（:has()非対応ブラウザ用CSSセレクタの起点）
+        document.body.classList.toggle('panel-expanded', isExpanded);
+
         if (viewport) {
             viewport.classList.toggle('overlay-active', isExpanded);
+            viewport.classList.toggle('panel-expanded', isExpanded);
         }
 
-        // HUDスライド状態を同期的に更新
+        // [v3対応] パネル開閉に伴う viewport マージン変更を即座にCSS変数へ反映
+        // 【実行順序制約: syncViewportToCSSVariables → setHudSlideState の順で厳密に実行】
+        syncViewportToCSSVariables(true);
+
+        // HUDスライド状態を同期的に更新（最新の --viewport-* 値を参照）
         setHudSlideState(isExpanded);
     }
 
     toggleBtn.addEventListener('click', togglePanel);
     toggleBtn.addEventListener('pointerdown', e => e.stopPropagation());
 
+    /**
+     * パネル状態を閉合にリセットする
+     * [v3対応] 実行順序制約: syncViewportToCSSVariables(true) は setHudSlideState() より前に実行
+     */
     function resetPanelState() {
         trackpadArea.classList.remove('panel-expanded');
         hudControlBar.classList.remove('panel-expanded');
         toggleBtn.classList.remove('panel-expanded');
         toggleBtn.setAttribute('aria-expanded', 'false');
-        if (viewport) viewport.classList.remove('overlay-active');
+        // bodyからもpanel-expandedを削除
+        document.body.classList.remove('panel-expanded');
+        if (viewport) {
+            viewport.classList.remove('overlay-active');
+            viewport.classList.remove('panel-expanded');
+        }
+
+        // [v3対応] パネルリセットに伴う viewport マージン変更を即座にCSS変数へ反映
+        // 【実行順序制約: syncViewportToCSSVariables → setHudSlideState の順で厳密に実行】
+        syncViewportToCSSVariables(true);
+
         setHudSlideState(false);
+        // isDismissingPanel の変更は行わない（クリティカルレビュー指摘2対応）
+    }
+
+    /**
+     * ゲーム画面タッチ/クリックでHUDを非表示にする（initTrackpadPanel IIFE 内定義）
+     *
+     * スコープ: initTrackpadPanel IIFE 内定義、window.dismissIfExpanded としてグローバル公開
+     * resetPanelState() は同一 IIFE 内の関数として参照可能（クリティカルレビュー指摘1対応）
+     *
+     * 注意（クリティカルレビュー指摘2対応）:
+     * resetPanelState() の中で isDismissingPanel = false を実行してはならない。
+     * isDismissingPanel のリセットは touchend ハンドラおよび orientationchange ハンドラに限定する。
+     *
+     * 注意（クリティカルレビュー指摘3対応）:
+     * タッチ操作（touchstart）の場合のみ isDismissingPanel = true を設定。
+     * マウス操作（click）では touchend が発火しないためフラグは不要。
+     */
+    function dismissIfExpanded(e) {
+        // ガード節: 展開中でない場合は早期リターン
+        if (!trackpadArea || !trackpadArea.classList.contains('panel-expanded')) return false;
+
+        // タッチ操作（touchstart）の場合のみガードフラグを立てる（クリティカルレビュー指摘3対応）
+        if (e && e.type === 'touchstart') {
+            window.isDismissingPanel = true;
+        }
+
+        // 既存の resetPanelState() を呼び出し、ロジックの共通化を図る
+        // resetPanelState() 内で isDismissingPanel を変更しない（クリティカルレビュー指摘2対応）
+        resetPanelState();
+
+        // イベントを消費する（誤タップ防止）
+        if (e && e.cancelable) {
+            e.preventDefault();
+        }
+
+        return true;
+    }
+
+    // 外部（remote_input.js 等）からアクセス可能にするためグローバル公開
+    window.dismissIfExpanded = dismissIfExpanded;
+
+    // クリックイベント（マウス操作時、フォールバック用）
+    // touchstart は remote_input.js 側で処理するため、click のみを登録（クリティカルレビュー指摘4対応）
+    if (viewport) {
+        viewport.addEventListener('click', dismissIfExpanded);
+    }
+
+    // 画面回転時の状態クリーンアップ
+    // 【二次レビュー💡指摘2対応】 scheduleTogglePosition() もここで統合呼び出し。
+    // 単一のリスナーでパネル状態リセットとトグルボタン位置計算の両方を実行し、
+    // initTogglePositionListeners 内での二重登録を不要化。
+    function handleOrientationChange() {
+        window.isDismissingPanel = false; // 画面回転時にガードフラグをクリア
+        resetPanelState();
+        scheduleTogglePosition(); // トグルボタン位置の再計算もここで実行
     }
 
     if (screen && screen.orientation) {
-        screen.orientation.addEventListener('change', resetPanelState);
+        screen.orientation.addEventListener('change', handleOrientationChange);
     }
-    window.addEventListener('orientationchange', resetPanelState);
+    window.addEventListener('orientationchange', handleOrientationChange);
 })();
 
 /**
@@ -487,6 +677,7 @@ let resizeObserver = null;
  * - position-top / position-right クラス切替のみ（インラインスタイル設定なし）
  * - CSSの right: var(--panel-width) でパネル展開追従を完結
  * - DOM準備不足によるランタイムエラー防止（nullチェック）
+ * [v3対応] #viewport の margin-right 固定化に伴い hasRightMargin 補正を削除
  */
 function calculateTogglePosition() {
     const viewport = document.getElementById('viewport');
@@ -502,6 +693,7 @@ function calculateTogglePosition() {
     if (!isLandscape) {
         hudControlBar.classList.remove('position-top', 'position-right');
         if (trackpadArea) trackpadArea.classList.remove('position-top', 'position-right');
+        document.body.classList.remove('position-top', 'position-right');
         return;
     }
 
@@ -512,13 +704,22 @@ function calculateTogglePosition() {
     const gameRect = gameScreen.getBoundingClientRect();
     if (gameRect.height <= 0) return;
 
-    const verticalGap = (vh - gameRect.height) / 2;
+    // [v3対応] #viewport の margin-right が常時 4px に固定されたため、
+    // hasRightMargin 補正は不要。viewport.clientWidth そのものがベース幅となる。
+    const baseViewportWidth = viewport.clientWidth;
+    // アスペクト比 5:3 (1200/720 = 5/3) からベース高さを計算
+    const baseGameWidth = Math.min(baseViewportWidth, vh * (5 / 3));
+    const baseGameHeight = baseGameWidth * (3 / 5);
+    const verticalGap = (vh - baseGameHeight) / 2;
     const isTopPosition = verticalGap >= 24; // HUD制御バー高さ
 
     // DOM Write Phase: クラス切替のみ（インラインスタイル設定なし）
+    // bodyにも同期付与することで、:has()非対応ブラウザでもCSSセレクタが機能する
     if (isTopPosition) {
         hudControlBar.classList.add('position-top');
         hudControlBar.classList.remove('position-right');
+        document.body.classList.add('position-top');
+        document.body.classList.remove('position-right');
         if (trackpadArea) {
             trackpadArea.classList.add('position-top');
             trackpadArea.classList.remove('position-right');
@@ -526,11 +727,18 @@ function calculateTogglePosition() {
     } else {
         hudControlBar.classList.remove('position-top');
         hudControlBar.classList.add('position-right');
+        document.body.classList.remove('position-top');
+        document.body.classList.add('position-right');
         if (trackpadArea) {
             trackpadArea.classList.remove('position-top');
             trackpadArea.classList.add('position-right');
         }
     }
+
+    // [v3対応] DOM Write Phase 完了後に Viewport CSS変数を同期更新
+    // 取得済みの viewportRect を渡し、二重 getBoundingClientRect() を防止
+    const viewportRect = viewport.getBoundingClientRect();
+    syncViewportToCSSVariables(viewportRect, true);
 }
 
 /**
@@ -567,8 +775,10 @@ function initTogglePositionListeners() {
     }
 
     // 3. 画面回転フォールバック
-    // 既存コード（remote_main.js:459）との整合性: 名前付き関数参照で安定性保証
-    window.addEventListener('orientationchange', scheduleTogglePosition);
+    // 【二次レビュー💡指摘2対応】二重登録を削除。
+    // handleOrientationChange (initTrackpadPanel IIFE内) が scheduleTogglePosition() も
+    // 統合呼び出しするため、本リスナーは不要となった。
+    // window.addEventListener('orientationchange', scheduleTogglePosition); // 削除
 
     // 4. 初回計算実行
     scheduleTogglePosition();
@@ -586,12 +796,12 @@ function initTogglePositionListeners() {
 // document.readyState チェック: 既にドキュメントが読み込み済みであれば即座に初期化
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
     initTogglePositionListeners();
-    // 初期HUD状態: デフォルトで表示状態
-    setHudSlideState(true);
+    // 初期HUD状態: デフォルトで非表示状態（パネル折り畳み時）
+    setHudSlideState(false);
 } else {
     document.addEventListener('DOMContentLoaded', () => {
         initTogglePositionListeners();
-        // 初期HUD状態: デフォルトで表示状態
-        setHudSlideState(true);
+        // 初期HUD状態: デフォルトで非表示状態（パネル折り畳み時）
+        setHudSlideState(false);
     });
 }

@@ -1,3 +1,13 @@
+/*
+ * 指摘4対応: HUDコンテナ自体は常に pointer-events: none を維持
+ *
+ * HUD内の操作対象要素（#fleet-hud, #fleet-detail-panel 等）は個別に
+ * pointer-events: auto を設定する（既存定義を維持）。
+ * これにより、HUD要素間の空隙をタップした際に背後の #viewport へ
+ * イベントが到達し、ゲーム画面タップでの非表示機能が正しく動作する。
+ */
+
+/* HUDコンテナ自体は常に透過（空隙タップをviewportへ通過させる） */
 #hud-container {
     position: absolute;
     left: 2px;
@@ -12,6 +22,15 @@
     gap: 2px;
     z-index: 100; /* [FIX] 2026/07/27 5→100に引き上げ。オーバーレイ(z-index:99)より前面にHUDを配置し、暗いフィルター遮蔽を防ぐ */
     pointer-events: none; /* ドラッグ操作を妨げないようにする */
+}
+
+/* HUD内の操作対象要素のみポインタイベントを有効 */
+#hud-container #fleet-hud {
+    pointer-events: auto;
+}
+
+#hud-container #fleet-detail-panel {
+    pointer-events: auto;
 }
 
 /* 以前の各HUD的絶対配置を解除し、通常のflexアイテム化 */

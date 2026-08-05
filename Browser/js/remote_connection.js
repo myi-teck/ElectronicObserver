@@ -796,3 +796,51 @@ function sendControlAction(action, x, y) {
         fetch(url).catch(() => {});
     }
 }
+
+//=============================================================================================
+// [task06] スリープ復帰・リロード時の画面即時更新トリガー
+//=============================================================================================
+/**
+ * [task06] スリープ復帰・リロード時の画面即時更新トリガー
+ * - 二重ループの発生を防止しながら、即座に1回画面リフレッシュを実行する
+ * - lastOperationTime には触れず、Auto-FPS 状態を破壊しない
+ * - 100ms以内の重複呼出し（visibilitychangeとfocusの同時発生等）をタイムスタンプで確実にガード (KISS原則)
+ */
+function triggerResumeUpdate() {
+    const now = Date.now();
+    // [v5] 100ms以内の重複呼出しをタイムスタンプ判定で無視するガード
+    if (now - (triggerResumeUpdate._lastTriggerTime || 0) < 100) {
+        return;
+    }
+    triggerResumeUpdate._lastTriggerTime = now;
+
+    // 初回のみログ出力（冗長化防止）
+    if (!triggerResumeUpdate._logged) {
+        console.log('[Resume] Immediate screen update triggered');
+        triggerResumeUpdate._logged = true;
+    }
+
+    // 1. 次回の描画でフルキーフレームを要求
+    isFirstWebpRequest = true;
+
+    // 2. WebSocketモード時はinit要求を送信してサーバーにキーフレームを強制させる
+    if (typeof ProtocolManager !== 'undefined' && ProtocolManager.effectiveMode === 'ws') {
+        ProtocolManager.sendWsControl({ action: 'init' });
+    }
+
+    // 3. すでに画面更新処理が実行中（fetch / draw 待機中）の場合
+    if (isUpdating) {
+        // 次回のタイマー設定時に即時実行(delay 0)させるためペンディングフラグを設定
+        triggerResumeUpdate._pendingImmediate = true;
+        return;
+    }
+
+    // 4. 既存の待機タイマーを解除し、即座に更新を実行
+    if (updateTimer !== null) {
+        clearTimeout(updateTimer);
+        updateTimer = null;
+    }
+    updateTimer = setTimeout(() => {
+        updateScreenDiff();
+    }, 0);
+}

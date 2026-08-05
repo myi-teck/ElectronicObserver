@@ -34,7 +34,18 @@ function handleViewportMove(clientX, clientY) {
 }
 
 // viewport touchstart
+// 【二次レビュー💡指摘3対応】 passive: false について:
+// このイベントはタッチサイクル中のゲーム操作防止（preventDefault）のために passive: false を必要とする。
+// touch-action: none が #viewport に設定されている場合、デフォルトアクションは既に無効化されており、
+// preventDefault() の呼び出しは安全である。一部のブラウザで「passive:false イベントで preventDefault を
+// 呼んだがデフォルトアクションが存在しない」警告が出る可能性があるが、機能的な影響はない。
 viewport.addEventListener('touchstart', (e) => {
+    // HUD展開中のタップであれば、パネルをたたんでゲームアクション送信をスキップ
+    // dismissIfExpanded は remote_main.js 側の initTrackpadPanel IIFE 内で定義・公開
+    if (typeof window.dismissIfExpanded === 'function' && window.dismissIfExpanded(e)) {
+        return;
+    }
+
     const touch = e.touches[0];
     viewportTouchStartX = touch.clientX;
     viewportTouchStartY = touch.clientY;
@@ -42,7 +53,7 @@ viewport.addEventListener('touchstart', (e) => {
     isDraggingOnViewport = false;
     activateViewportFpsControl();
     handleViewportMove(touch.clientX, touch.clientY);
-}, { passive: true });
+}, { passive: false });
 
 // viewport touchmove
 viewport.addEventListener('touchmove', (e) => {
@@ -61,6 +72,15 @@ viewport.addEventListener('touchmove', (e) => {
 
 // viewport touchend
 viewport.addEventListener('touchend', (e) => {
+    // 注意: touchend では dismissIfExpanded(e) を呼ばない（二次レビュー💡指摘4対応）。
+    // パネル折り畳みは touchstart/click 時点で完了しているため、touchend では
+    // isDismissingPanel フラグによるゲームアクションのキャンセルのみを行う。
+    // isDismissingPanel のリセットはここで実行（クリティカルレビュー指摘2対応）。
+    if (window.isDismissingPanel) {
+        window.isDismissingPanel = false;
+        return;
+    }
+
     const elapsed = Date.now() - viewportTouchStartTime;
 
     if (isDraggingOnViewport) {
@@ -78,6 +98,13 @@ viewport.addEventListener('touchend', (e) => {
 // viewport mousedown
 viewport.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
+
+    // HUD展開中のクリックであれば、パネルをたたんでゲームアクション送信をスキップ
+    // dismissIfExpanded は remote_main.js 側の initTrackpadPanel IIFE 内で定義・公開
+    if (typeof window.dismissIfExpanded === 'function' && window.dismissIfExpanded(e)) {
+        return;
+    }
+
     e.preventDefault();
 
     isMouseDownOnViewport = true;

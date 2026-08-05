@@ -463,25 +463,59 @@
         }
 
 /* 艦船詳細テーブル本体 */
+/* [v3対応] table-layout: fixed + font-size 7.5px (極小画面対応) */
 #ship-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 9px;
+    font-size: 7.5px; /* 既存 9px → 7.5px へ縮小（極小画面対応） */
     font-family: 'Consolas', 'Courier New', monospace;
     color: var(--text-color);
+    table-layout: fixed; /* [v3対応] 固定レイアウトによるセル幅制御 */
+}
+
+/* [v3対応] <col> 要素による列幅制御（table-layout: fixed 用） */
+#ship-table col.col-name {
+    width: 3em; /* 漢字3文字分 */
+}
+#ship-table col.col-level {
+    width: 2em;
+}
+#ship-table col.col-condition {
+    width: 2.5em;
+}
+#ship-table col.col-hp {
+    width: 5em; /* セグメントゲージ分 */
+}
+#ship-table col.col-fuel {
+    width: 5em; /* セグメントゲージ分 */
+}
+#ship-table col.col-ammo {
+    width: 5em; /* セグメントゲージ分 */
 }
 
 /* テーブルヘッダ */
+/* [v3対応] ヘッダとボディのフォントサイズを統一（7.5px） */
 #ship-table thead th {
     text-align: left;
     padding: 1px 2px;
     border-bottom: 1px solid rgba(0, 255, 102, 0.3);
     color: var(--accent-color);
-    font-size: 8px;
+    font-size: 7.5px; /* 既存 8px → 7.5px へ縮小（ボディと統一） */
     font-weight: bold;
     letter-spacing: 0.1em;
     text-transform: uppercase;
     text-shadow: 0 0 3px rgba(0, 255, 102, 0.4);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* [v3対応] th/td に overflow 制御を追加（列幅超過時のテキスト省略） */
+#ship-table th,
+#ship-table td {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* テーブルボディの行 - 行間隙を縮小・行高固定でトグル時のガタつき防止 */
@@ -1126,13 +1160,43 @@
     text-shadow: 0 0 3px rgba(239, 68, 68, 0.5);
 }
 
-/* HUDミニ情報: パネル展開時はフェードアウト */
+/* HUDミニ情報: パネル展開時はフェードアウト
+ * 基本定義 (右側配置時は #hud-control-bar.position-right #hud-mini-info で上書き)
+ * 継承されるプロパティ: display: flex, transition: opacity 0.15s ease
+ * 上書きされるプロパティ: flex-direction, align-items, gap, justify-content
+ */
 #hud-mini-info {
     display: flex;
+    flex-direction: row;
     align-items: center;
     gap: 2px;
     opacity: 1;
     transition: opacity 0.15s ease;
+}
+
+/* 左セクション: 接続ステータス + 状態 */
+.hud-mini-left,
+.hud-mini-right {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 2px;
+}
+
+/* 右セクション: メトリクスラベル */
+.hud-mini-label {
+    font-size: 7px;
+    color: rgba(163, 247, 191, 0.6);
+    font-family: 'Consolas', monospace;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+.hud-mini-label .hud-mini-badge {
+    color: #a3f7bf;
+    font-size: 7px;
 }
 
 /* パネル展開時: ヘッダ情報をフェードアウト */
@@ -1160,6 +1224,8 @@
     :root {
         --panel-width: 340px;
         --hud-control-bar-width: 90px; /* HUD制御バーのデフォルト幅 */
+        --game-margin-left: 4px;       /* 左側最小余白 */
+        --hud-transition-timing: cubic-bezier(0.4, 0, 0.2, 1); /* HUDスライドアニメーションのイージング関数 */
     }
 
     /* body: 縦スタック → 横並列（ゲーム画面 + 操作パネル）に変更 */
@@ -1170,12 +1236,19 @@
     /* -----------------------------------------------------------------
      * ゲーム画面（#viewport）の最適化
      * ----------------------------------------------------------------- */
-    #viewport {
+    /* [v3対応] 横画面時は position-right / position-top / panel-expanded を問わず
+       #viewport の margin-right を 4px に完全固定し、全画面オーバーレイを維持
+       Specificity: body:not(.modal-open) #viewport = (0,2,0) で既存定義を上書き */
+    body:not(.modal-open) #viewport,
+    body:not(.modal-open).panel-expanded #viewport {
         flex: 1;
         width: auto;
         height: 100dvh;
         border-bottom: none;
         border-right: 2px solid var(--accent-color);
+        margin-left: var(--game-margin-left);
+        margin-right: var(--game-margin-left); /* 4px: 常時固定 */
+        transition: none; /* 既存の margin-right トランジションを無効化（跳ね防止） */
     }
 
     #game-screen {
@@ -1198,7 +1271,7 @@
         width: var(--panel-width);
         max-width: 80vw;
         transform: translateX(100%);
-        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        transition: transform 0.3s var(--hud-transition-timing);
         z-index: 98; /* [FIX] Step 3: パネルを背面へ移動（ボタン(1000) > オーバーレイ(99) > パネル(98) の階層構造を明確化） */
         background: var(--bg-color);
         box-shadow: -4px 0 20px rgba(0, 0, 0, 0.6);
@@ -1230,27 +1303,86 @@
         pointer-events: auto;
     }
 
-    /* 右側配置（デフォルトの配置）: 画面右端中央 */
+    /* 右側配置: ゲーム画面と同じ縦幅で右端に密着 */
     #hud-control-bar.position-right {
-        top: 50%;
-        transform: translateY(-50%);
+        top: 0;
+        height: 100dvh;
+        transform: none;
+        flex-direction: column;
+        justify-content: space-between;
+        align-items: center;
     }
 
-    /* 上側配置: ゲーム画面下端右に配置 */
+    /* 上側配置: ゲーム画面上端に横幅いっぱいに密着 */
     #hud-control-bar.position-top {
-        top: auto;
+        top: 0;
+        left: 0;
         right: 0;
-        bottom: 0;
+        width: 100%;
         transform: none;
         flex-direction: row;
-        border-radius: 4px 0 0 0;
+        border-radius: 0 0 4px 4px;
         border-bottom: none;
         border-right: none;
+        border-top: none;
+        outline: none;
     }
 
     /* パネル展開時: CSSのみでバーをパネル左端に追従 */
     #hud-control-bar.panel-expanded {
         right: var(--panel-width);
+    }
+
+    /* 右側配置 + パネル展開時: バーをパネル左端に追従 */
+    #hud-control-bar.position-right.panel-expanded {
+        right: var(--panel-width);
+        transform: none;
+    }
+
+    /* 上部表示 + パネル展開時: 横幅をパネル幅分縮小（leftアンカーを明確化） */
+    #hud-control-bar.position-top.panel-expanded {
+        left: 0;
+        right: auto;
+        width: calc(100% - var(--panel-width));
+    }
+
+    /* 右側配置時: 縦積み構成に切り替え（writing-mode廃止） */
+    #hud-control-bar.position-right #hud-mini-info {
+        flex-direction: column;
+        gap: 4px;
+        margin-top: auto;
+        padding-bottom: 4px;
+    }
+
+    #hud-control-bar.position-right .hud-mini-left,
+    #hud-control-bar.position-right .hud-mini-right {
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    #hud-control-bar.position-right .hud-mini-label {
+        text-align: center;
+    }
+
+    /* 右側配置時: セクション間区切り線 */
+    #hud-control-bar.position-right .hud-mini-left::after {
+        content: '';
+        display: block;
+        width: 60%;
+        margin: 2px auto;
+        border-top: 1px solid rgba(0, 255, 102, 0.2);
+    }
+
+    /* 右側配置時: 縦書きを廃止（writing-mode: vertical-rl を削除） */
+    /* 既存の .hud-mini-badge 縦書き制約を解除 */
+    #hud-control-bar.position-right #hud-mini-info .hud-mini-badge {
+        max-width: none;
+        max-height: none;
+    }
+
+    /* パネル追従時のスムーズなトランジション（位置切替はスナップ） */
+    #hud-control-bar {
+        transition: right 0.25s var(--hud-transition-timing);
     }
 
     /* -----------------------------------------------------------------
@@ -1318,32 +1450,80 @@
     }
 
     /* -----------------------------------------------------------------
-     * HUDスライドインアニメーション
+     * HUDオーバーラップ表示（横画面時）
+     * #hud-containerをゲーム画面上にposition:fixedでオーバーラップ配置
+     * [v3対応] CSS変数 (--viewport-*) による動的配置 + panel-expanded 時の --hud-control-bar-width 除外
      * ----------------------------------------------------------------- */
-    #hud-container {
-        transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
-                    opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-
-    /* 上側配置時: 上からスライドイン */
-    #hud-container.slide-from-top {
-        transform: translateY(-100%);
-        opacity: 0;
+    /* [v3対応] position-right 時のみ position: fixed 上書き + right 計算式統合
+       Specificity: body.position-right = (0,2,0) で既存定義 (0,1,0) を上書き */
+    body.position-right #hud-container {
+        position: fixed;
+        z-index: 100;
+        top: calc(var(--viewport-top, 0px) + 2px);
+        left: calc(var(--viewport-left, 0px) + 2px);
+        right: calc(var(--viewport-right, 0px) + var(--hud-control-bar-width) + 4px + env(safe-area-inset-right, 0px));
+        bottom: calc(var(--viewport-bottom, 0px) + 6px);
+        box-sizing: border-box;
         pointer-events: none;
+        /* [v3対応] right のアニメーションを除外しつつ opacity/transform は維持
+           [v3修正] ベジェ曲線値をCSS変数化 */
+        transition: opacity 0.25s var(--hud-transition-timing),
+                    transform 0.25s var(--hud-transition-timing);
     }
 
-    /* 右側配置時: 右からスライドイン */
+    /* パネル折り畳み時: HUDを右にスライドアウトして非表示 */
     #hud-container.slide-from-right {
         transform: translateX(100%);
         opacity: 0;
         pointer-events: none;
     }
 
-    /* 表示状態: アニメーションクラスを除去して通常表示 */
+    /*
+     * 指摘3対応: slide-from-top の translateX 統一
+     *
+     * 下端 (bottom: 2px) にアンカーされた要素に対して translateY(-100%) を適用すると、
+     * 画面上部に消えるのではなく、ゲーム画面の中央付近へ浮上する不自然な挙動になる。
+     * 横画面モードでは下端アンカーが統一されるため、非表示時のスライドを右方向
+     * (translateX(100%)) へ一貫統一する（KISS原則）。
+     */
+    #hud-container.slide-from-top {
+        transform: translateX(100%);
+        opacity: 0;
+        pointer-events: none;
+    }
+
+    /* パネル展開時: HUDを通常表示 */
     #hud-container.slide-visible {
         transform: none;
         opacity: 1;
-        pointer-events: auto;
+    }
+
+    /*
+     * [v3修正] 設計書§3.5準拠: panel-expanded 時の統一セレクタ
+     *
+     * panel-expanded 時は #hud-control-bar が display:none !important となるため、
+     * 右端のオフセットは --viewport-right + --panel-width + 4px + safe-area-inset-right のみで十分。
+     * position-right / position-top の区別は不要（両者の計算式が同一）。
+     */
+    body.position-right.panel-expanded #hud-container,
+    body.position-top.panel-expanded #hud-container {
+        right: calc(var(--viewport-right, 0px) + var(--panel-width) + 4px + env(safe-area-inset-right, 0px));
+    }
+
+    /*
+     * 指摘5対応: パネル展開時: トグルバー全体を非表示化
+     *
+     * #trackpad-toggle だけでなく、親要素 #hud-control-bar 全体を非表示にする。
+     * 理由: #hud-control-bar の background, border, padding, box-shadow が
+     * トグルボタンのみの display:none では消えず、浮遊ボックス枠が残るため。
+     */
+    body.panel-expanded #hud-control-bar {
+        display: none !important;
+    }
+
+    /* パネル展開時: ゲーム画面を暗転（既存定義を維持） */
+    #viewport.overlay-active {
+        filter: brightness(0.3);
     }
 
     /* [FIX] 2026/07/27 半透明オーバーレイ方式をフィルター方式へ変更
@@ -1355,14 +1535,6 @@
     #click-btn {
         height: 60px;
         font-size: 16px;
-    }
-
-    /* -----------------------------------------------------------------
-     * 横画面時の HUD レイアウト調整
-     * ----------------------------------------------------------------- */
-    #hud-container {
-        right: 4px;
-        left: 4px;
     }
 
     /* 拡大鏡のサイズ調整（横画面時はやや小さめ） */
@@ -1383,8 +1555,46 @@
         min-width: 80px; /* 最小幅フォールバック */
     }
 
+    /* 極小端末でも上部表示時は横幅いっぱい（Specificityによる優先） */
+    #hud-control-bar.position-top {
+        width: 100%;
+        min-width: unset;
+    }
+
     .hud-mini-badge {
         font-size: 6px; /* フォントサイズ縮小 */
         padding: 1px 2px;
+    }
+}
+
+/* 超極小端末（400px以下）: HUDミニ情報を非表示・トグルボタン操作性の確保 */
+@media (orientation: landscape) and (max-width: 400px) {
+    #hud-mini-info {
+        display: none;
+    }
+
+    /* 誤操作防止のための余白追加 */
+    #hud-control-bar {
+        padding: 4px;
+    }
+
+    #trackpad-toggle {
+        margin: 4px 0; /* 上下の余白を確保し、誤操作を防止 */
+    }
+}
+
+/*
+ * 縦画面時はHUDを完全に非表示
+ *
+ * display: none のみ指定し、positionの初期値に戻さない。
+ * 理由:
+ * - 横画面時の @media (orientation: landscape) ブロックで position: fixed が指定される
+ * - 縦画面時に position の値を初期値に戻す必要はない（display: none で要素はレイアウトから除外されるため）
+ * - display: none が適用される場合、position の値は計算上無効化される
+ * - したがって、position の指定を省略することで、横画面/縦画面切り替え時のスタイル計算を最小限に抑える
+ */
+@media (orientation: portrait) {
+    #hud-container {
+        display: none;
     }
 }
