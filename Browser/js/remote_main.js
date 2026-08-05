@@ -402,62 +402,78 @@ setInterval(() => {
 }, 5000);
 
 //============================================================================================
-// 横画面用：操作パネルの折り畳み/展開トグル
+// 横画面用：操作パネルの折り畳み/展開トグル（KISS同期制御版）
+// 【クリティカルレビュー指摘1,2反映】transitionend廃止 + 状態管理簡素化
 //============================================================================================
 (function initTrackpadPanel() {
-    let isExpanded = false;
-
     const toggleBtn = document.getElementById('trackpad-toggle');
     const trackpadArea = document.getElementById('trackpad-area');
+    const hudControlBar = document.getElementById('hud-control-bar');
     const viewport = document.getElementById('viewport');
-    if (!toggleBtn || !trackpadArea) return;
 
-    function closePanel() {
-        isExpanded = false;
-        trackpadArea.classList.remove('panel-expanded');
-        toggleBtn.classList.remove('panel-expanded');
-        toggleBtn.setAttribute('aria-expanded', 'false');
-        if (viewport) {
-            viewport.classList.remove('overlay-active');
-        }
-    }
+    if (!toggleBtn || !trackpadArea || !hudControlBar) return;
 
     function togglePanel(e) {
         if (e) {
             e.preventDefault();
             e.stopPropagation();
         }
-        isExpanded = !isExpanded;
 
-        if (isExpanded) {
-            trackpadArea.classList.add('panel-expanded');
-            toggleBtn.classList.add('panel-expanded');
-            toggleBtn.setAttribute('aria-expanded', 'true');
-            if (viewport) {
-                viewport.classList.add('overlay-active');
-            }
-        } else {
-            closePanel();
+        const isExpanded = trackpadArea.classList.toggle('panel-expanded');
+        hudControlBar.classList.toggle('panel-expanded', isExpanded);
+        toggleBtn.classList.toggle('panel-expanded', isExpanded);
+        toggleBtn.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+
+        if (viewport) {
+            viewport.classList.toggle('overlay-active', isExpanded);
         }
+
+        // HUDスライド状態を同期的に更新
+        setHudSlideState(isExpanded);
     }
 
-    toggleBtn.addEventListener('click', (e) => {
-        togglePanel(e);
-    });
-    toggleBtn.addEventListener('pointerdown', e => {
-        e.stopPropagation();
-    });
+    toggleBtn.addEventListener('click', togglePanel);
+    toggleBtn.addEventListener('pointerdown', e => e.stopPropagation());
 
     function resetPanelState() {
-        closePanel();
+        trackpadArea.classList.remove('panel-expanded');
+        hudControlBar.classList.remove('panel-expanded');
+        toggleBtn.classList.remove('panel-expanded');
+        toggleBtn.setAttribute('aria-expanded', 'false');
+        if (viewport) viewport.classList.remove('overlay-active');
+        setHudSlideState(false);
     }
 
     if (screen && screen.orientation) {
         screen.orientation.addEventListener('change', resetPanelState);
     }
-
     window.addEventListener('orientationchange', resetPanelState);
 })();
+
+/**
+ * HUDの表示/非表示をスライドインアニメーションで制御 (簡素化版)
+ * 【クリティカルレビュー指摘2反映】.slide-no-animation 廃止
+ *
+ * @param {boolean} visible - 表示=true, 非表示=false
+ */
+function setHudSlideState(visible) {
+    const hudContainer = document.getElementById('hud-container');
+    if (!hudContainer) return;
+
+    const hudControlBar = document.getElementById('hud-control-bar');
+    const isTopPosition = hudControlBar && hudControlBar.classList.contains('position-top');
+
+    // 全てのスライド状態クラスを除去
+    hudContainer.classList.remove('slide-from-top', 'slide-from-right', 'slide-visible');
+
+    if (visible) {
+        // 表示: 通常表示クラス
+        hudContainer.classList.add('slide-visible');
+    } else {
+        // 非表示: 方向に応じたスライドアウトクラスを付与
+        hudContainer.classList.add(isTopPosition ? 'slide-from-top' : 'slide-from-right');
+    }
+}
 
 //============================================================================================
 // 横画面 HUD トグルボタン配置計算 (KISS簡素化版)
@@ -468,80 +484,52 @@ let resizeObserver = null;
 
 /**
  * トグルボタン配置を計算・適用する
- * - Window座標系(position: fixed)に準拠した正しくシンプルな座標計算
- * - 縦画面ガードおよびスタイルリセット
- * - DOM Read / Write 完全分離
+ * - position-top / position-right クラス切替のみ（インラインスタイル設定なし）
+ * - CSSの right: var(--panel-width) でパネル展開追従を完結
  * - DOM準備不足によるランタイムエラー防止（nullチェック）
  */
 function calculateTogglePosition() {
     const viewport = document.getElementById('viewport');
     const gameScreen = document.getElementById('game-screen');
-    const toggleBtn = document.getElementById('trackpad-toggle');
+    const hudControlBar = document.getElementById('hud-control-bar');
+    const trackpadArea = document.getElementById('trackpad-area');
 
     // DOM準備不足によるランタイムエラー防止
-    if (!viewport || !gameScreen || !toggleBtn) return;
+    if (!viewport || !gameScreen || !hudControlBar) return;
 
-    // 横画面チェック：縦画面時はインラインスタイルをリセットして終了
+    // 横画面チェック：縦画面時は位置クラスをリセットして終了
     const isLandscape = window.matchMedia('(orientation: landscape)').matches;
     if (!isLandscape) {
-        toggleBtn.classList.remove('position-top', 'position-right');
-        toggleBtn.style.top = '';
-        toggleBtn.style.right = '';
-        toggleBtn.style.transform = '';
+        hudControlBar.classList.remove('position-top', 'position-right');
+        if (trackpadArea) trackpadArea.classList.remove('position-top', 'position-right');
         return;
     }
 
     // DOM Read Phase
-
-    // ── viewport の CSS padding に関する注記 ──
-    // viewport.clientWidth / viewport.clientHeight は CSS padding を含んだ値を返す。
-    // viewport 要素に CSS padding が設定されている場合、以下の計算がずれる:
-    //   verticalGap = (vh - gameRect.height) / 2
-    // このズレは、padding がゲーム画面の実際の余白より大きく見積もられる原因となる。
-    // 対策: viewport に CSS padding を設定しないことを前提とする。
-    // ─────────────────────────────────────
-    const vw = viewport.clientWidth;
     const vh = viewport.clientHeight;
-    if (vw <= 0 || vh <= 0) return;
+    if (vh <= 0) return;
 
     const gameRect = gameScreen.getBoundingClientRect();
-    if (gameRect.width <= 0 || gameRect.height <= 0) return;
+    if (gameRect.height <= 0) return;
 
     const verticalGap = (vh - gameRect.height) / 2;
-    const requiredTopGap = 24; // コンパクトボタン高さ
-    const isTopPosition = verticalGap >= requiredTopGap;
+    const isTopPosition = verticalGap >= 24; // HUD制御バー高さ
 
-    const windowWidth = window.innerWidth;
-
-    // DOM Write Phase
-
-    // ── 座標計算の基準に関する注記 ──
-    // window.innerWidth を使用する根拠:
-    // gameScreen.getBoundingClientRect() は viewport 座標系（スクロールバーを含む
-    // 論理ビューポート幅を基準とする座標系）を返す。window.innerWidth も同様に
-    // スクロールバーを含む論理ビューポート幅を返すため、両者は同じ座標系に属し
-    // 整合性が取れる。windowWidth - gameRect.right の計算において、window.innerWidth
-    // と getBoundingClientRect().right の座標系が一致することが計算の正確性を保証する。
-    // 対照的に document.documentElement.clientWidth はスクロールバーを除くため、
-    // getBoundingClientRect() の座標系とズレが生じる可能性がある。
-    // ─────────────────────────────────────
+    // DOM Write Phase: クラス切替のみ（インラインスタイル設定なし）
     if (isTopPosition) {
-        toggleBtn.classList.add('position-top');
-        toggleBtn.classList.remove('position-right');
-
-        const topPos = Math.max(0, gameRect.top - requiredTopGap);
-        const rightPos = Math.max(0, windowWidth - gameRect.right);
-
-        toggleBtn.style.top = topPos + 'px';
-        toggleBtn.style.right = rightPos + 'px';
-        toggleBtn.style.transform = 'none';
+        hudControlBar.classList.add('position-top');
+        hudControlBar.classList.remove('position-right');
+        if (trackpadArea) {
+            trackpadArea.classList.add('position-top');
+            trackpadArea.classList.remove('position-right');
+        }
     } else {
-        toggleBtn.classList.remove('position-top');
-        toggleBtn.classList.add('position-right');
-
-        toggleBtn.style.top = '';
-        toggleBtn.style.right = '';
-        toggleBtn.style.transform = 'translateY(-50%)';
+        hudControlBar.classList.remove('position-top');
+        hudControlBar.classList.add('position-right');
+        if (trackpadArea) {
+            trackpadArea.classList.remove('position-top');
+            trackpadArea.classList.add('position-right');
+        }
     }
 }
 
@@ -598,6 +586,12 @@ function initTogglePositionListeners() {
 // document.readyState チェック: 既にドキュメントが読み込み済みであれば即座に初期化
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
     initTogglePositionListeners();
+    // 初期HUD状態: デフォルトで表示状態
+    setHudSlideState(true);
 } else {
-    document.addEventListener('DOMContentLoaded', initTogglePositionListeners);
+    document.addEventListener('DOMContentLoaded', () => {
+        initTogglePositionListeners();
+        // 初期HUD状態: デフォルトで表示状態
+        setHudSlideState(true);
+    });
 }

@@ -151,7 +151,17 @@ function updateFpsDisplay() {
     const elapsed = now - lastFpsUpdate;
     if (elapsed >= 1000) {
         const fps = ((frameCount * 1000) / elapsed).toFixed(2);
-        fpsInfo.textContent = `${fps} FPS`;
+        if (fpsInfo) fpsInfo.textContent = `${fps} FPS`;
+
+        // ミニ情報に直接反映
+        const hudMiniFps = document.getElementById('hud-mini-fps');
+        if (hudMiniFps) {
+            const miniFpsText = parseFloat(fps).toFixed(1);
+            if (hudMiniFps.textContent !== miniFpsText) {
+                hudMiniFps.textContent = miniFpsText;
+            }
+        }
+
         frameCount = 0;
         lastFpsUpdate = now;
     }

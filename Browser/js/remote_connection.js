@@ -608,6 +608,13 @@ const ProtocolManager = {
                 el.classList.remove('ok');
             }
         }
+        // ミニ情報に直接反映（DOM逆引きなし）
+        const hudMiniConn = document.getElementById('hud-mini-conn');
+        if (hudMiniConn) {
+            hudMiniConn.textContent = isConnected ? 'OK' : 'DISC';
+            hudMiniConn.classList.toggle('ok', isConnected);
+            hudMiniConn.classList.toggle('disc', !isConnected);
+        }
     },
 
     updateUIProtocolButtons() {
@@ -681,14 +688,25 @@ function getResponseHeaderBytes(response) {
 //============================================================================================
 function updateDataUsage(bytes) {
     accumulatedBytes += bytes;
+    let displayText;
     if (accumulatedBytes < 1024) {
-        dataUsage.textContent = `${accumulatedBytes} B`;
+        displayText = `${accumulatedBytes} B`;
     } else if (accumulatedBytes < 1024 * 1024) {
-        dataUsage.textContent = `${(accumulatedBytes / 1024).toFixed(1)} KB`;
+        displayText = `${(accumulatedBytes / 1024).toFixed(1)} KB`;
     } else if (accumulatedBytes < 1024 * 1024 * 1024) {
-        dataUsage.textContent = `${(accumulatedBytes / (1024 * 1024)).toFixed(1)} MB`;
+        displayText = `${(accumulatedBytes / (1024 * 1024)).toFixed(1)} MB`;
     } else {
-        dataUsage.textContent = `${(accumulatedBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+        displayText = `${(accumulatedBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+    }
+    if (dataUsage) dataUsage.textContent = displayText;
+
+    // ミニ情報に直接反映（単位短縮版）
+    const hudMiniBw = document.getElementById('hud-mini-bw');
+    if (hudMiniBw) {
+        const abbreviatedText = displayText.replace(/MB/, 'M').replace(/KB/, 'K').replace(/GB/, 'G');
+        if (hudMiniBw.textContent !== abbreviatedText) {
+            hudMiniBw.textContent = abbreviatedText;
+        }
     }
 }
 
