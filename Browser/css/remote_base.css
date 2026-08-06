@@ -3,23 +3,42 @@
  * ======================================================================================== */
 :root {
     /* 漆黒に近い極限まで深いダークグリーン(NERVモニタベースのベース背景) */
-    --bg-color: #030805; 
+    --bg-color: #030805;
     /* 鮮烈なエヴァネオングリーン (メインアクセントカラー) */
-    --accent-color: #00ff66; 
+    --accent-color: #00ff66;
     /* グロー(発光)効果用のネオングリーン透過カラー */
-    --accent-glow: rgba(0, 255, 102, 0.4); 
+    --accent-glow: rgba(0, 255, 102, 0.4);
     /* トラックパッド等に適用する薄いグリーン半透明ガラス背景 */
-    --glass-bg: rgba(0, 255, 102, 0.04); 
+    --glass-bg: rgba(0, 255, 102, 0.04);
     /* NERVタクティカルフレーム境界線用の半透明グリーン */
-    --glass-border: rgba(0, 255, 102, 0.25); 
+    --glass-border: rgba(0, 255, 102, 0.25);
     /* モニタ上の文字読み取り用、明るくクリアなミントグリーンテキスト */
-    --text-color: #a3f7bf; 
+    --text-color: #a3f7bf;
     /* 警告・大破アラートサイン用の暗い赤 (エマージェンシー用) */
-    --nerv-dark-red: #3e050c; 
+    --nerv-dark-red: #3e050c;
+    /* システムモニターバーの高さ / HUDコンテナのtopオフセット */
+    --hud-bar-height: 32px;
 }
 
-/* 全要素の初期化とタップハイライト防止 */
-* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+/* 全要素の初期化とタップハイライト防止・範囲選択防止 */
+*, *::before, *::after {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent !important;
+    -webkit-user-select: none !important;
+    -moz-user-select: none !important;
+    -ms-user-select: none !important;
+    user-select: none !important;
+    -webkit-touch-callout: none !important;
+    -webkit-user-drag: none !important;
+}
+
+/* 入力可能フォーム(存在する場合)のみテキスト入力を許可 */
+input, textarea {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+}
 
 /* 
  * 全体ボディスタイル：
@@ -62,9 +81,21 @@ body {
 }
 
 /* [FIX] 2026/07/27 オーバーレイ方式をフィルター方式へ変更
- * パネル展開時にビューポートにbrightnessフィルターを適用して暗くする */
-#viewport.overlay-active {
+ * パネル展開時に#screen-containerにbrightnessフィルターを適用して暗くする
+ * #trackpad-area（トラックパッド領域）にはフィルターを適用しない */
+#viewport.overlay-active #screen-container {
     filter: brightness(0.3);
+}
+
+/* ゲーム画面ラッパー（暗転フィルター対象） - z-index: 0 */
+#screen-container {
+    position: relative;
+    z-index: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    height: 100%;
 }
 
 /*

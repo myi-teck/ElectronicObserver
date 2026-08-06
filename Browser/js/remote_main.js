@@ -121,7 +121,8 @@ function updateStateBadge() {
             stateBadge.className = 'badge';
         }
         if (hudMiniState) {
-            hudMiniState.textContent = 'ACT';
+            hudMiniState.textContent = stateBadge ? stateBadge.textContent : 'ACT';
+            hudMiniState.className = 'hud-mini-item';
         }
         lastSleepSeconds = -1;
     } else if (elapsed < IDLE_TIMEOUT) {
@@ -150,7 +151,8 @@ function updateStateBadge() {
             }
         }
         if (hudMiniState) {
-            hudMiniState.textContent = 'SLP';
+            hudMiniState.textContent = stateBadge ? stateBadge.textContent : 'SLP';
+            hudMiniState.className = 'hud-mini-item';
         }
     }
 }
@@ -182,7 +184,10 @@ const settingsPanel = document.getElementById('settings-panel');
 function toggleSettings(e) {
     e.preventDefault();
     e.stopPropagation();
-    settingsPanel.classList.toggle('settings-closed');
+    const isClosed = settingsPanel.classList.toggle('settings-closed');
+    if (document.body) {
+        document.body.classList.toggle('settings-open', !isClosed);
+    }
 }
 toggleBtn.addEventListener('click', toggleSettings);
 toggleBtn.addEventListener('pointerdown', e => {
@@ -524,7 +529,6 @@ window.isDismissingPanel = false;
 
     /**
      * パネルの展開/閉合を切り替える
-     * [v3対応] 実行順序制約: syncViewportToCSSVariables(true) は setHudSlideState() より前に実行
      */
     function togglePanel(e) {
         if (e) {
@@ -545,12 +549,8 @@ window.isDismissingPanel = false;
             viewport.classList.toggle('panel-expanded', isExpanded);
         }
 
-        // [v3対応] パネル開閉に伴う viewport マージン変更を即座にCSS変数へ反映
-        // 【実行順序制約: syncViewportToCSSVariables → setHudSlideState の順で厳密に実行】
+        // viewport マージン変更を即座にCSS変数へ反映
         syncViewportToCSSVariables(true);
-
-        // HUDスライド状態を同期的に更新（最新の --viewport-* 値を参照）
-        setHudSlideState(isExpanded);
     }
 
     toggleBtn.addEventListener('click', togglePanel);
@@ -558,7 +558,6 @@ window.isDismissingPanel = false;
 
     /**
      * パネル状態を閉合にリセットする
-     * [v3対応] 実行順序制約: syncViewportToCSSVariables(true) は setHudSlideState() より前に実行
      */
     function resetPanelState() {
         trackpadArea.classList.remove('panel-expanded');
@@ -572,12 +571,8 @@ window.isDismissingPanel = false;
             viewport.classList.remove('panel-expanded');
         }
 
-        // [v3対応] パネルリセットに伴う viewport マージン変更を即座にCSS変数へ反映
-        // 【実行順序制約: syncViewportToCSSVariables → setHudSlideState の順で厳密に実行】
+        // パネルリセットに伴う viewport マージン変更を即座にCSS変数へ反映
         syncViewportToCSSVariables(true);
-
-        setHudSlideState(false);
-        // isDismissingPanel の変更は行わない（クリティカルレビュー指摘2対応）
     }
 
     /**
@@ -618,6 +613,9 @@ window.isDismissingPanel = false;
     // 外部（remote_input.js 等）からアクセス可能にするためグローバル公開
     window.dismissIfExpanded = dismissIfExpanded;
 
+    // [Task10 v2] 外部（initHudPosition IIFE 等）からアクセス可能にするためグローバル公開
+    window.resetPanelState = resetPanelState;
+
     // クリックイベント（マウス操作時、フォールバック用）
     // touchstart は remote_input.js 側で処理するため、click のみを登録（クリティカルレビュー指摘4対応）
     if (viewport) {
@@ -625,13 +623,17 @@ window.isDismissingPanel = false;
     }
 
     // 画面回転時の状態クリーンアップ
-    // 【二次レビュー💡指摘2対応】 scheduleTogglePosition() もここで統合呼び出し。
-    // 単一のリスナーでパネル状態リセットとトグルボタン位置計算の両方を実行し、
-    // initTogglePositionListeners 内での二重登録を不要化。
     function handleOrientationChange() {
-        window.isDismissingPanel = false; // 画面回転時にガードフラグをクリア
-        resetPanelState();
-        scheduleTogglePosition(); // トグルボタン位置の再計算もここで実行
+        if (orientationDebounceTimer) clearTimeout(orientationDebounceTimer);
+        orientationDebounceTimer = setTimeout(() => {
+            // ガードフラグのクリア
+            window.isDismissingPanel = false;
+
+            // パネル状態のリセット
+            if (typeof resetPanelState === 'function') {
+                resetPanelState();
+            }
+        }, ORIENTATION_DEBOUNCE_MS); // 100msデバウンス
     }
 
     if (screen && screen.orientation) {
@@ -640,168 +642,9 @@ window.isDismissingPanel = false;
     window.addEventListener('orientationchange', handleOrientationChange);
 })();
 
-/**
- * HUDの表示/非表示をスライドインアニメーションで制御 (簡素化版)
- * 【クリティカルレビュー指摘2反映】.slide-no-animation 廃止
- *
- * @param {boolean} visible - 表示=true, 非表示=false
- */
-function setHudSlideState(visible) {
-    const hudContainer = document.getElementById('hud-container');
-    if (!hudContainer) return;
-
-    const hudControlBar = document.getElementById('hud-control-bar');
-    const isTopPosition = hudControlBar && hudControlBar.classList.contains('position-top');
-
-    // 全てのスライド状態クラスを除去
-    hudContainer.classList.remove('slide-from-top', 'slide-from-right', 'slide-visible');
-
-    if (visible) {
-        // 表示: 通常表示クラス
-        hudContainer.classList.add('slide-visible');
-    } else {
-        // 非表示: 方向に応じたスライドアウトクラスを付与
-        hudContainer.classList.add(isTopPosition ? 'slide-from-top' : 'slide-from-right');
-    }
-}
-
 //============================================================================================
-// 横画面 HUD トグルボタン配置計算 (KISS簡素化版)
+// [Task10 v2] 画面回転デバウンス用タイマー
 //============================================================================================
-// モジュールレベル変数: rAFId はデバウンス用、resizeObserver は GC防止
-let rAFId = null;
-let resizeObserver = null;
+let orientationDebounceTimer = null;
 
-/**
- * トグルボタン配置を計算・適用する
- * - position-top / position-right クラス切替のみ（インラインスタイル設定なし）
- * - CSSの right: var(--panel-width) でパネル展開追従を完結
- * - DOM準備不足によるランタイムエラー防止（nullチェック）
- * [v3対応] #viewport の margin-right 固定化に伴い hasRightMargin 補正を削除
- */
-function calculateTogglePosition() {
-    const viewport = document.getElementById('viewport');
-    const gameScreen = document.getElementById('game-screen');
-    const hudControlBar = document.getElementById('hud-control-bar');
-    const trackpadArea = document.getElementById('trackpad-area');
-
-    // DOM準備不足によるランタイムエラー防止
-    if (!viewport || !gameScreen || !hudControlBar) return;
-
-    // 横画面チェック：縦画面時は位置クラスをリセットして終了
-    const isLandscape = window.matchMedia('(orientation: landscape)').matches;
-    if (!isLandscape) {
-        hudControlBar.classList.remove('position-top', 'position-right');
-        if (trackpadArea) trackpadArea.classList.remove('position-top', 'position-right');
-        document.body.classList.remove('position-top', 'position-right');
-        return;
-    }
-
-    // DOM Read Phase
-    const vh = viewport.clientHeight;
-    if (vh <= 0) return;
-
-    const gameRect = gameScreen.getBoundingClientRect();
-    if (gameRect.height <= 0) return;
-
-    // [v3対応] #viewport の margin-right が常時 4px に固定されたため、
-    // hasRightMargin 補正は不要。viewport.clientWidth そのものがベース幅となる。
-    const baseViewportWidth = viewport.clientWidth;
-    // アスペクト比 5:3 (1200/720 = 5/3) からベース高さを計算
-    const baseGameWidth = Math.min(baseViewportWidth, vh * (5 / 3));
-    const baseGameHeight = baseGameWidth * (3 / 5);
-    const verticalGap = (vh - baseGameHeight) / 2;
-    const isTopPosition = verticalGap >= 24; // HUD制御バー高さ
-
-    // DOM Write Phase: クラス切替のみ（インラインスタイル設定なし）
-    // bodyにも同期付与することで、:has()非対応ブラウザでもCSSセレクタが機能する
-    if (isTopPosition) {
-        hudControlBar.classList.add('position-top');
-        hudControlBar.classList.remove('position-right');
-        document.body.classList.add('position-top');
-        document.body.classList.remove('position-right');
-        if (trackpadArea) {
-            trackpadArea.classList.add('position-top');
-            trackpadArea.classList.remove('position-right');
-        }
-    } else {
-        hudControlBar.classList.remove('position-top');
-        hudControlBar.classList.add('position-right');
-        document.body.classList.remove('position-top');
-        document.body.classList.add('position-right');
-        if (trackpadArea) {
-            trackpadArea.classList.remove('position-top');
-            trackpadArea.classList.add('position-right');
-        }
-    }
-
-    // [v3対応] DOM Write Phase 完了後に Viewport CSS変数を同期更新
-    // 取得済みの viewportRect を渡し、二重 getBoundingClientRect() を防止
-    const viewportRect = viewport.getBoundingClientRect();
-    syncViewportToCSSVariables(viewportRect, true);
-}
-
-/**
- * requestAnimationFrame デバウンス付きの scheduleTogglePosition
- * rAFId はモジュールレベルで定義済み
- */
-function scheduleTogglePosition() {
-    if (rAFId !== null) return;
-    rAFId = requestAnimationFrame(() => {
-        calculateTogglePosition();
-        rAFId = null;
-    });
-}
-
-/**
- * トグルボタン配置計算用イベントリスナーの初期化
- * ResizeObserver, window.load などの監視を登録する
- */
-function initTogglePositionListeners() {
-    const viewport = document.getElementById('viewport');
-    const gameScreen = document.getElementById('game-screen');
-    if (!viewport || !gameScreen) return;
-
-    // 1. ResizeObserver による一括監視（viewport と gameScreen の両方を監視）
-    // resizeObserver をモジュールスコープで保持することで、GCによる予期せぬ破棄を防止
-    if (typeof ResizeObserver !== 'undefined') {
-        resizeObserver = new ResizeObserver(scheduleTogglePosition);
-        resizeObserver.observe(viewport);
-        resizeObserver.observe(gameScreen);
-    } else {
-        // 2. フォールバック: ResizeObserver 未対応ブラウザ
-        // viewport/gameScreenの内部リサイズは検知されないが、CefSharp(Chromium)ではサポート済み
-        window.addEventListener('resize', scheduleTogglePosition);
-    }
-
-    // 3. 画面回転フォールバック
-    // 【二次レビュー💡指摘2対応】二重登録を削除。
-    // handleOrientationChange (initTrackpadPanel IIFE内) が scheduleTogglePosition() も
-    // 統合呼び出しするため、本リスナーは不要となった。
-    // window.addEventListener('orientationchange', scheduleTogglePosition); // 削除
-
-    // 4. 初回計算実行
-    scheduleTogglePosition();
-
-    // 5. 画像等リソース読み込み完了後の再計算（once: true）
-    // document.readyState チェックにより、loadイベントが既に発火済みの場合もカバー
-    if (document.readyState === 'complete') {
-        scheduleTogglePosition();
-    } else {
-        window.addEventListener('load', scheduleTogglePosition, { once: true });
-    }
-}
-
-// KISS 原則による初期化
-// document.readyState チェック: 既にドキュメントが読み込み済みであれば即座に初期化
-if (document.readyState === 'complete' || document.readyState === 'interactive') {
-    initTogglePositionListeners();
-    // 初期HUD状態: デフォルトで非表示状態（パネル折り畳み時）
-    setHudSlideState(false);
-} else {
-    document.addEventListener('DOMContentLoaded', () => {
-        initTogglePositionListeners();
-        // 初期HUD状態: デフォルトで非表示状態（パネル折り畳み時）
-        setHudSlideState(false);
-    });
-}
+const ORIENTATION_DEBOUNCE_MS = 100; // 画面回転デバウンス時間（ms）

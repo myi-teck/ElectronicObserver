@@ -141,16 +141,59 @@ viewport.addEventListener('mouseup', (e) => {
 });
 
 //============================================================================================
-// トラックパッド操作
+// 範囲選択防止イベント（CSS + JSの3層防御）
+//============================================================================================
+document.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    return false;
+}, { passive: false });
+
+document.addEventListener('selectstart', e => {
+    e.preventDefault();
+    return false;
+}, { passive: false });
+
+document.addEventListener('dragstart', e => {
+    e.preventDefault();
+    return false;
+}, { passive: false });
+
+//============================================================================================
+// トラックパッド操作（ポインタキャプチャ制御付き）
 //============================================================================================
 const pad = document.getElementById('trackpad');
+const hudContainerElement = document.getElementById('hud-container');
 
 let lastX = 0, lastY = 0;
+let isTrackpadDragging = false;
 
-pad.addEventListener('pointerdown', e => {
+function handleTrackpadPointerDown(e) {
+    // 右端16pxエリア（明示的スクロールバー領域）でのタッチはスクロール操作に委ねる
+    if (hudContainerElement) {
+        const rect = hudContainerElement.getBoundingClientRect();
+        if (e.clientX >= rect.right - 16) {
+            return; // 右端明示的スクロールバー専用領域（幅12px + 誤触防止4px）
+        }
+    }
+
+    // ボタン要素などのクリック操作は通過
+    if (e.target && (e.target.tagName === 'BUTTON' || e.target.closest('button'))) {
+        return;
+    }
+
     lastX = e.clientX;
     lastY = e.clientY;
-    pad.setPointerCapture(e.pointerId);
+    isTrackpadDragging = true;
+
+    // ⚠️ CRITICAL FIX: e.targetではなく安定した親コンテナ pad (#trackpad) に対して
+    // setPointerCapture を適用する。
+    if (pad && pad.setPointerCapture) {
+        try {
+            pad.setPointerCapture(e.pointerId);
+        } catch (err) {
+            console.error('pad.setPointerCapture failed:', err);
+        }
+    }
 
     if (magnifierTimer) {
         clearTimeout(magnifierTimer);
@@ -162,32 +205,21 @@ pad.addEventListener('pointerdown', e => {
             magnifier.classList.add('visible');
         }
     }, 1000);
-});
+}
 
-pad.addEventListener('pointerup', e => {
-    if (magnifierTimer) {
-        clearTimeout(magnifierTimer);
-        magnifierTimer = null;
+function handleTrackpadPointerMove(e) {
+    // 🚨 厳格なガード: isTrackpadDragging が false の場合は一切処理しない
+    if (!isTrackpadDragging) {
+        return;
     }
-    const magnifier = document.querySelector('.magnifier-container');
-    if (magnifier) {
-        magnifier.classList.remove('visible');
-    }
-});
 
-pad.addEventListener('pointercancel', e => {
-    if (magnifierTimer) {
-        clearTimeout(magnifierTimer);
-        magnifierTimer = null;
+    // 右端16pxエリア（明示的スクロールバー領域）でのタッチはスクロール操作に委ねる
+    if (hudContainerElement) {
+        const rect = hudContainerElement.getBoundingClientRect();
+        if (e.clientX >= rect.right - 16) {
+            return; // 右端明示的スクロールバー専用領域
+        }
     }
-    const magnifier = document.querySelector('.magnifier-container');
-    if (magnifier) {
-        magnifier.classList.remove('visible');
-    }
-});
-
-pad.addEventListener('pointermove', e => {
-    if (e.buttons === 0) return;
 
     const isSlowFpsMode = (Date.now() - lastOperationTime) >= ACTIVE_TIMEOUT;
     lastOperationTime = Date.now();
@@ -211,7 +243,62 @@ pad.addEventListener('pointermove', e => {
 
     scheduleCursorUpdate();
     sendMoveControl(vCursorX, vCursorY);
+}
+
+function handleTrackpadPointerUp(e) {
+    // releasePointerCapture の明示的呼び出し（MDN推奨）
+    if (pad && pad.releasePointerCapture) {
+        try {
+            pad.releasePointerCapture(e.pointerId);
+        } catch (err) {
+            // NotFoundError は既に解放済みの場合の正常系
+            if (err.name !== 'NotFoundError') {
+                console.error('releasePointerCapture failed:', err);
+            }
+        }
+    }
+    isTrackpadDragging = false;
+
+    if (magnifierTimer) {
+        clearTimeout(magnifierTimer);
+        magnifierTimer = null;
+    }
+    const magnifier = document.querySelector('.magnifier-container');
+    if (magnifier) {
+        magnifier.classList.remove('visible');
+    }
+}
+
+// 親要素（#trackpad）のみでイベントを一元管理
+if (pad) {
+    pad.addEventListener('pointerdown', handleTrackpadPointerDown);
+    pad.addEventListener('pointermove', handleTrackpadPointerMove);
+    pad.addEventListener('pointerup', handleTrackpadPointerUp);
+    pad.addEventListener('pointercancel', handleTrackpadPointerUp);
+}
+
+// ウィンドウフォーカス喪失時のドラッグ状態リセット
+window.addEventListener('blur', () => {
+    isTrackpadDragging = false;
+    // 拡大鏡タイマーのクリア（フォーカス喪失時に残り続けるのを防止）
+    if (magnifierTimer) {
+        clearTimeout(magnifierTimer);
+        magnifierTimer = null;
+    }
 });
+
+/* クリーンアップ関数 */
+function cleanupTrackpadListeners() {
+    if (pad) {
+        pad.removeEventListener('pointerdown', handleTrackpadPointerDown);
+        pad.removeEventListener('pointermove', handleTrackpadPointerMove);
+        pad.removeEventListener('pointerup', handleTrackpadPointerUp);
+        pad.removeEventListener('pointercancel', handleTrackpadPointerUp);
+    }
+}
+
+/* ページアンロード時のクリーンアップ */
+window.addEventListener('unload', cleanupTrackpadListeners);
 
 //============================================================================================
 // クリックボタン操作
@@ -245,55 +332,67 @@ clickBtnElement.addEventListener('pointercancel', e => {
 });
 
 //============================================================================================
-// 艦隊ステータスHUDのシングルクリックで艦隊詳細HUDを切り替え
+// HUDタップトグルとトラックパッドドラッグ操作の両立メカニズム
+// 移動閾値（8px）によるタップ/ドラッグ分岐ロジック
 //============================================================================================
 (function() {
-    const fleetHud = document.getElementById('fleet-hud');
-    if (!fleetHud) return;
+    /**
+     * HUD要素のタップ/ドラッグ判定を設定する
+     * e.stopPropagation() を廃止し、イベントを背後の #trackpad へ通過させる
+     * @param {string} elementId - 対象要素のID
+     * @param {Function} toggleCallback - タップ時に実行するコールバック
+     */
+    function setupHudTapToggle(elementId, toggleCallback) {
+        const el = document.getElementById(elementId);
+        if (!el) return;
 
-    fleetHud.addEventListener('pointerdown', e => {
-        e.stopPropagation();
-    });
+        let startX = 0;
+        let startY = 0;
+        let startTime = 0;
+        let isCanceled = false;
 
-    fleetHud.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
+        el.addEventListener('pointerdown', (e) => {
+            // e.stopPropagation() は呼ばない！ (トラックパッドへのイベント伝播を維持)
+            startX = e.clientX;
+            startY = e.clientY;
+            startTime = Date.now();
+            isCanceled = false;
+        });
+
+        el.addEventListener('pointermove', (e) => {
+            if (isCanceled) return;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            // HUD_TAP_THRESHOLD_PX px以上の移動があればドラッグ（トラックパッドカーソル移動）と判定し、タップトグルをキャンセル
+            if (dist >= HUD_TAP_THRESHOLD_PX) {
+                isCanceled = true;
+            }
+        });
+
+        el.addEventListener('pointerup', (e) => {
+            if (isCanceled) return;
+            const elapsed = Date.now() - startTime;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            // 移動距離HUD_TAP_THRESHOLD_PX px未満 かつ HUD_TAP_TIMEOUT_MS ms以内のタップのみトグル実行
+            if (dist < HUD_TAP_THRESHOLD_PX && elapsed <= HUD_TAP_TIMEOUT_MS) {
+                toggleCallback();
+            }
+        });
+    }
+
+    // 艦隊ステータスHUD: タップで艦隊切替
+    setupHudTapToggle('fleet-hud', () => {
         switchFleetDetail();
     });
 
-    fleetHud.addEventListener('touchend', (e) => {
-        if (e.cancelable) {
-            e.preventDefault();
-        }
-        e.stopPropagation();
-        switchFleetDetail();
-    }, { passive: false });
-})();
-
-//============================================================================================
-// 艦隊詳細HUDのタップで表示モードをトグル切り替え
-//============================================================================================
-(function() {
-    const detailPanel = document.getElementById('fleet-detail-panel');
-    if (!detailPanel) return;
-
-    detailPanel.addEventListener('pointerdown', e => {
-        e.stopPropagation();
-    });
-
-    detailPanel.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
+    // 艦隊詳細HUD: タップで装備/HP表示切り替え
+    setupHudTapToggle('fleet-detail-panel', () => {
         window._showFleetEquipment = !window._showFleetEquipment;
         renderFleetDetail(currentDetailFleetId);
     });
-
-    detailPanel.addEventListener('touchend', (e) => {
-        if (e.cancelable) {
-            e.preventDefault();
-        }
-        e.stopPropagation();
-        window._showFleetEquipment = !window._showFleetEquipment;
-        renderFleetDetail(currentDetailFleetId);
-    }, { passive: false });
 })();

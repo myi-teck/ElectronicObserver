@@ -611,9 +611,12 @@ const ProtocolManager = {
         // ミニ情報に直接反映（DOM逆引きなし）
         const hudMiniConn = document.getElementById('hud-mini-conn');
         if (hudMiniConn) {
-            hudMiniConn.textContent = isConnected ? 'OK' : 'DISC';
-            hudMiniConn.classList.toggle('ok', isConnected);
-            hudMiniConn.classList.toggle('disc', !isConnected);
+            hudMiniConn.textContent = text; // 接続状態テキスト（conn-statusと一致）
+            if (isConnected) {
+                hudMiniConn.classList.add('ok');
+            } else {
+                hudMiniConn.classList.remove('ok');
+            }
         }
     },
 
@@ -700,12 +703,11 @@ function updateDataUsage(bytes) {
     }
     if (dataUsage) dataUsage.textContent = displayText;
 
-    // ミニ情報に直接反映（単位短縮版）
+    // ミニ情報に直接反映（system-monitor-barと完全一致）
     const hudMiniBw = document.getElementById('hud-mini-bw');
     if (hudMiniBw) {
-        const abbreviatedText = displayText.replace(/MB/, 'M').replace(/KB/, 'K').replace(/GB/, 'G');
-        if (hudMiniBw.textContent !== abbreviatedText) {
-            hudMiniBw.textContent = abbreviatedText;
+        if (hudMiniBw.textContent !== displayText) {
+            hudMiniBw.textContent = displayText; // e.g. "83.4 MB"
         }
     }
 }

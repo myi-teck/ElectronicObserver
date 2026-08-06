@@ -12,6 +12,7 @@
     justify-content: center;
     align-items: center;
     overflow: hidden;
+    pointer-events: auto; /* ポインタイベント発火の前提条件 */
 }
 
 #trackpad-label {
@@ -80,15 +81,16 @@
     top: 0;
     left: 0;
     width: 100%;
-    height: 20px;
+    height: var(--hud-bar-height); /* CSS変数で管理（32px） */
     background: rgba(0, 255, 102, 0.08); /* 透過ネオングリーン背景 */
     border-bottom: 1px solid var(--glass-border);
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0 5px;
+    padding: 2px 6px;
+    box-sizing: border-box;
     z-index: 6;
-    pointer-events: none; /* ★文字部分を触ってもドラッグ操作を妨げないように透過します */
+    pointer-events: auto; /* SETUPボタンおよびステータス表示エリアのインタラクションを有効化 */
 }
 .sys-label {
     font-size: 8.5px;

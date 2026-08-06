@@ -198,12 +198,12 @@ function updateFpsDisplay() {
         const fps = ((frameCount * 1000) / elapsed).toFixed(2);
         if (fpsInfo) fpsInfo.textContent = `${fps} FPS`;
 
-        // ミニ情報に直接反映
+        // ミニ情報に直接反映（system-monitor-barと完全一致）
         const hudMiniFps = document.getElementById('hud-mini-fps');
         if (hudMiniFps) {
-            const miniFpsText = parseFloat(fps).toFixed(1);
-            if (hudMiniFps.textContent !== miniFpsText) {
-                hudMiniFps.textContent = miniFpsText;
+            const fpsText = `${fps} FPS`; // e.g. "21.45 FPS"
+            if (hudMiniFps.textContent !== fpsText) {
+                hudMiniFps.textContent = fpsText;
             }
         }
 

@@ -59,7 +59,7 @@ let timerUpdateInterval = null;
 // 仮想カーソル関連
 let isCursorUpdatePending = false;
 
-// 拡大鏡表示用タイマーID
+// 拡大鏡表示用タイマーID（remote_input.js で使用）
 let magnifierTimer = null;
 
 // 艦隊詳細HUDの表示モードフラグ
@@ -104,6 +104,10 @@ let targetSensitivity = parseFloat(localStorage.getItem('targetSensitivity')) ||
 let targetZoom = parseFloat(localStorage.getItem('targetZoom')) || 3.0;
 let dragThreshold = parseInt(localStorage.getItem('dragThreshold'), 10) || 10;
 let tapTimeout = parseInt(localStorage.getItem('tapTimeout'), 10) || 300;
+
+// HUDタップ/ドラッグ判定用定数
+const HUD_TAP_THRESHOLD_PX = 8;    // タップ/ドラッグの移動閾値（px）
+const HUD_TAP_TIMEOUT_MS = 300;    // タップ判定の最大時間（ms）
 
 // 仮想カーソル位置
 let vCursorX = 0.5, vCursorY = 0.5;

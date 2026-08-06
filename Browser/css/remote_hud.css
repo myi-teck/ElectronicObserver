@@ -7,30 +7,73 @@
  * イベントが到達し、ゲーム画面タップでの非表示機能が正しく動作する。
  */
 
-/* HUDコンテナ自体は常に透過（空隙タップをviewportへ通過させる） */
+/* HUDコンテナ自体は常に透過（空隙タップをtrackpadへ通過させる） */
 #hud-container {
     position: absolute;
     left: 2px;
-    top: 26px; /* システムモニターバー(20px)の高さぶん、HUDの開始位置を押し下げて被りを防ぎます */
+    top: var(--hud-bar-height, 32px); /* CSS変数でシステムモニターバーの高さに追従（フォールバック値: 32px） */
     right: 2px;
-    bottom: 6px;
+    bottom: 2px;
     display: flex;
-    flex-direction: row;
-    flex-wrap: wrap;
+    flex-direction: column;
     align-content: flex-start;
     justify-content: flex-start;
-    gap: 2px;
-    z-index: 100; /* [FIX] 2026/07/27 5→100に引き上げ。オーバーレイ(z-index:99)より前面にHUDを配置し、暗いフィルター遮蔽を防ぐ */
-    pointer-events: none; /* ドラッグ操作を妨げないようにする */
+    gap: 4px;
+    z-index: 10;
+    pointer-events: none; /* 背後の #trackpad へのクリック透過 */
+    touch-action: none !important; /* タッチスクロールによるトラックパッド操作の横取りを完全防止 */
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    overscroll-behavior: contain;
+    /* Firefox: スクロールバーの表示とスタイル定義 */
+    -ms-overflow-style: scrollbar;
+    scrollbar-width: auto;
+    scrollbar-color: var(--accent-color) rgba(3, 8, 5, 0.7);
 }
 
 /* HUD内の操作対象要素のみポインタイベントを有効 */
-#hud-container #fleet-hud {
+#hud-container #resource-hud,
+#hud-container #fleet-hud,
+#hud-container #fleet-detail-panel,
+#hud-container #quest-hud,
+#hud-container #battle-hud,
+#hud-container #log-hud {
     pointer-events: auto;
 }
 
-#hud-container #fleet-detail-panel {
-    pointer-events: auto;
+/* 縦スクロールバー: 右端12px、常時可視化 */
+#hud-container::-webkit-scrollbar:vertical {
+    width: 12px !important;
+    display: block !important;
+    pointer-events: auto !important;
+    touch-action: pan-y !important;
+}
+
+#hud-container::-webkit-scrollbar-track:vertical {
+    background: rgba(3, 8, 5, 0.7);
+    border-left: 1px solid rgba(0, 255, 102, 0.3);
+    border-radius: 4px;
+    pointer-events: auto !important;
+}
+
+#hud-container::-webkit-scrollbar-thumb:vertical {
+    background: var(--accent-color);
+    border-radius: 4px;
+    box-shadow: 0 0 8px var(--accent-glow);
+    min-height: 35px;
+    pointer-events: auto !important;
+    touch-action: pan-y !important;
+}
+
+#hud-container::-webkit-scrollbar-thumb:vertical:hover {
+    background: #86efac;
+    box-shadow: 0 0 12px rgba(134, 239, 172, 0.9);
+}
+
+/* 横スクロールバー: 完全消去 */
+#hud-container::-webkit-scrollbar:horizontal {
+    height: 0px !important;
+    display: none !important;
 }
 
 /* 以前の各HUD的絶対配置を解除し、通常のflexアイテム化 */
@@ -71,28 +114,60 @@
  * 艦隊情報行コンテナ (#fleet-info-row)
  * 艦隊ステータスHUD (#fleet-hud) と艦隊詳細パネル (#fleet-detail-panel) を
  * 常に同じ行(右隣)に固定配置するためのコンテナ。
- * flex-wrap: nowrap により折り返しを防止し、左右並列を強制。
+ * 横幅 4:6 比率で配置
  */
 #fleet-info-row {
     display: flex;
     flex-direction: row;
-    flex-wrap: nowrap;
-    align-items: flex-start;
-    gap: 6px;
-    flex-shrink: 0; /* 親コンテナの折り返し時にも縮小しない */
+    align-items: stretch;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+#fleet-info-row #fleet-hud {
+    width: calc(40% - 2px);
+    flex: 0 0 calc(40% - 2px);
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+#fleet-info-row #fleet-detail-panel {
+    width: calc(60% - 2px);
+    flex: 0 0 calc(60% - 2px);
+    min-width: 0;
+    box-sizing: border-box;
 }
 
 /*
  * 任務HUDとTACTICAL SYSTEMを横並びに配置する行コンテナ
- * #fleet-info-rowと同様のflex: nowrapで横並びを強制
+ * 横幅 3:7 比率で配置
  */
 #tactical-quest-row {
     display: flex;
     flex-direction: row;
-    flex-wrap: nowrap;
-    align-items: flex-start;
-    gap: 2px;
-    flex-shrink: 0; /* 親コンテナの折り返し時にも縮小しない */
+    align-items: stretch;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+#tactical-quest-row #quest-hud {
+    width: calc(30% - 2px);
+    flex: 0 0 calc(30% - 2px);
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+#tactical-quest-row #battle-hud {
+    width: calc(70% - 2px);
+    flex: 0 0 calc(70% - 2px);
+    min-width: 0;
+    box-sizing: border-box;
 }
 
 /* 各艦隊行のボックス定義 */
@@ -342,23 +417,40 @@
     flex-shrink: 0;
 }
 
-/* 各資源のリストアイテム（横長1行用コンパクトデザイン） */
+/* 各資源のリストアイテム（全幅5等分） */
 .res-hud-item {
+    flex: 1 1 0;
+    min-width: 0;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 3px;
+    justify-content: center;
+    gap: 2px;
     background: rgba(3, 8, 5, 0.85);
     border: 1px solid rgba(0, 255, 102, 0.25);
-    padding: 1px 4px;
+    padding: 1px 2px;
     border-radius: 2px;
-    font-size: 8px;
+    font-size: 7.5px;
     font-family: 'Consolas', 'Courier New', monospace;
     backdrop-filter: blur(4px);
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
-    white-space: nowrap;
+    box-sizing: border-box;
+    overflow: hidden;
     border-right: 2px solid var(--accent-color); /* 右側にグリーンのアクセント線 */
     transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.res-hud-item .res-icon {
+    font-size: 7px;
+    flex-shrink: 0;
+    font-weight: bold;
+}
+
+.res-hud-item .res-val {
+    font-size: 7.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
 }
 
 /*
@@ -663,13 +755,13 @@
     font-size: 8px;
 }
 
-/* 艦名セル：固定幅（漢字3文字分 ≈ 3em）*/
+/* 艦名セル：可変幅＋折り返し・見切れ防止 */
 .combat-ship-name-cell {
     font-weight: bold;
     color: #a3f7bf;
-    width: 3em;
-    min-width: 3em;
-    max-width: 3em;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
     overflow: hidden;
     white-space: nowrap;
 }
@@ -776,8 +868,19 @@
  * 20. ログHUD (LOG SYSTEM) スタイル定義
  * 本家ブラウザのログ最新10件を表示。青系テーマ。
  * ======================================================================================== */
+#log-hud {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    min-width: 0;
+    flex-shrink: 0;
+}
+
 #log-hud-panel {
-    min-width: 180px;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    min-width: 0;
 }
 
 .log-entry {

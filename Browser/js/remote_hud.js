@@ -404,7 +404,7 @@ async function updateHud() {
 
                     const statusSpan = document.createElement('span');
                     statusSpan.className = 'fleet-status';
-                    statusSpan.textContent = fleet.stateText;
+                    statusSpan.textContent = fleet.stateText || (fleet.state === 'MISSION' ? 'MISSION' : 'READY');
 
                     item.appendChild(numSpan);
                     item.appendChild(statusSpan);

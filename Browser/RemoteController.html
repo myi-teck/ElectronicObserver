@@ -27,137 +27,14 @@
 </head>
 <body>
     <div id='viewport'>
-        <!-- 差分WebP方式対応：表示要素を <img> から <canvas> へ変更 -->
-        <canvas id='game-screen' width='1200' height='720'></canvas>
-        <div id='virtual-cursor'></div>
+        <!-- ゲーム画面ラッパー（暗転フィルター対象） -->
+        <div id='screen-container'>
+            <!-- 差分WebP方式対応：表示要素を <img> から <canvas> へ変更 -->
+            <canvas id='game-screen' width='1200' height='720'></canvas>
+            <div id='virtual-cursor'></div>
+        </div>
     </div>
 
-    <!-- HUDコンテナ (body直下に配置 - 横画面時にゲーム画面上にオーバーラップ表示) -->
-    <div id='hud-container'>
-        <!-- 資源・資材ステータスHUD（最上段横長1行表示） -->
-        <div id='resource-hud'>
-            <div class='res-hud-item'>
-                <span class='res-icon res-fuel'>FU</span>
-                <span class='res-val' id='res-fuel-val'>000,000</span>
-            </div>
-            <div class='res-hud-item'>
-                <span class='res-icon res-ammo'>AM</span>
-                <span class='res-val' id='res-ammo-val'>000,000</span>
-            </div>
-            <div class='res-hud-item'>
-                <span class='res-icon res-steel'>ST</span>
-                <span class='res-val' id='res-steel-val'>000,000</span>
-            </div>
-            <div class='res-hud-item'>
-                <span class='res-icon res-baux'>BX</span>
-                <span class='res-val' id='res-baux-val'>000,000</span>
-            </div>
-            <div class='res-hud-item'>
-                <span class='res-icon res-bucket'>BC</span>
-                <span class='res-val' id='res-bucket-val'>0,000</span>
-            </div>
-        </div> <!-- /#resource-hud -->
-
-        <!-- 艦隊ステータスHUDと艦隊詳細パネルを常に右隣に固定配置するコンテナ -->
-        <div id='fleet-info-row'>
-            <!-- 1〜4艦隊ステータスHUD -->
-            <div id='fleet-hud'>
-                <!-- 動的にJSで再構築されますが、初期ロード時のためのダミープレースホルダー -->
-                <div class='fleet-hud-item fleet-state-ready'>
-                    <span class='fleet-num'>01</span>
-                    <span class='fleet-status'>LOADING / ------</span>
-                </div>
-                <div class='fleet-hud-item fleet-state-expedition'>
-                    <span class='fleet-num'>02</span>
-                    <span class='fleet-status'>LOADING / ------</span>
-                </div>
-                <div class='fleet-hud-item fleet-state-warning'>
-                    <span class='fleet-num'>03</span>
-                    <span class='fleet-status'>LOADING / ------</span>
-                </div>
-                <div class='fleet-hud-item fleet-state-critical'>
-                    <span class='fleet-num'>04</span>
-                    <span class='fleet-status'>LOADING / ------</span>
-                </div>
-                <span class='fleet-hud-label'>Tap 2 Toggle</span>
-            </div>
-            <!-- 艦船詳細パネル（艦隊1固定表示） -->
-            <div id='fleet-detail-panel'>
-                <table id='ship-table'>
-                    <!-- [v3対応] table-layout: fixed 適用時の列幅制御用 <col> 要素追加 -->
-                    <col class='col-name' />
-                    <col class='col-level' />
-                    <col class='col-condition' />
-                    <col class='col-hp' />
-                    <col class='col-fuel' />
-                    <col class='col-ammo' />
-                    <thead>
-                        <tr>
-                            <th class='col-name'>NAME</th>
-                            <th class='col-level'>LV</th>
-                            <th class='col-condition'>CND</th>
-                            <th class='col-hp'>HP</th>
-                            <th class='col-fuel'>FEL</th>
-                            <th class='col-ammo'>AMO</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <!-- 動的に生成 -->
-                    </tbody>
-                </table>
-            </div>
-        </div> <!-- /#fleet-info-row -->
-
-        <!-- 任務HUDとTACTICAL SYSTEMを横並びに配置する行コンテナ -->
-        <div id='tactical-quest-row'>
-            <!-- 受領中任務HUD -->
-            <div id='quest-hud'>
-                <div class='battle-hud-item' id='quest-hud-panel'>
-                    <span class='battle-title' style='color: #ff6600; border-bottom: 1px solid rgba(255, 102, 0, 0.2);'>QUEST SYSTEM</span>
-                    <div id='quest-list' style='display: flex; flex-direction: column; gap: 2px;'>
-                        <!-- 8スロットの任務が動的に生成されます -->
-                    </div>
-                </div>
-            </div>
-
-            <!-- 作戦海域・戦術予測HUD ＆ 詳細戦闘情報HUD -->
-            <div id='battle-hud'>
-            <div class='battle-hud-item'>
-                <span class='battle-title'>TACTICAL SYSTEM</span>
-                <span class='battle-area-tag' id='battle-area'>3-2 / AREA NORTH</span>
-                <!-- 統合戦闘情報ヘッダ 1行目: 海域・陣形・交戦・触接 -->
-                <div id='combat-header'>
-                    <span class='combat-tag' id='combat-formation'>FORM: ------</span>
-                    <span class='combat-tag' id='combat-engagement'>ENGAGE: ------</span>
-                    <span class='combat-tag' id='combat-touch'>TOUCH: ------</span>
-                </div>
-                <!-- 統合戦闘情報ヘッダ 2行目: 損害率・勝利区分・航空戦・予測 -->
-                <div id='combat-header-2'>
-                    <span class='damage-tag' id='combat-damage'>DMG: ---%</span>
-                    <span class='victory-tag' id='combat-victory'>RESULT: ------</span>
-                    <span class='air-tag' id='combat-air'>AIR: ------</span>
-                    <span class='predict-tag' id='battle-predict'>S-WIN PREDICT / 雪風</span>
-                </div>
-                <!-- 敵艦隊構成 -->
-                <div id='battle-enemy' style='font-size: 7.5px; opacity: 0.8; padding: 1px 0;'>ENEMY: NO SIGNAL</div>
-                <!-- 戦闘艦隊テーブルコンテナ (艦隊詳細HUD風の高密度レイアウト) -->
-                <div id='combat-fleets-container'>
-                    <!-- 動的にJSで自艦隊・敵艦隊のテーブルが構築されます -->
-                </div>
-            </div>
-        </div>
-    </div> <!-- /#tactical-quest-row -->
-
-        <!-- ログHUD（最新10件） -->
-        <div id='log-hud'>
-            <div class='battle-hud-item' id='log-hud-panel'>
-                <span class='battle-title' style='color: #60a5fa; border-bottom: 1px solid rgba(96, 165, 250, 0.2);'>LOG SYSTEM</span>
-                <div id='log-list' style='display: flex; flex-direction: column; gap: 1px; max-height: 200px; overflow-y: auto;'>
-                    <!-- 最新10件のログが動的に生成されます -->
-                </div>
-            </div>
-        </div>
-    </div> <!-- /#hud-container -->
 
     <div id='trackpad-area'>
         <!-- システム設定トグルパネル (SYSTEM SETUP) - 左右2カラムマスター・ディテール構成 -->
@@ -358,6 +235,132 @@
                     </div>
                 </div>
 
+                <!-- HUD統合コンテナ -->
+                <div id='hud-container'>
+                    <!-- 資源・資材ステータスHUD（最上段横長1行表示） -->
+                    <div id='resource-hud'>
+                        <div class='res-hud-item'>
+                            <span class='res-icon res-fuel'>FU</span>
+                            <span class='res-val' id='res-fuel-val'>000,000</span>
+                        </div>
+                        <div class='res-hud-item'>
+                            <span class='res-icon res-ammo'>AM</span>
+                            <span class='res-val' id='res-ammo-val'>000,000</span>
+                        </div>
+                        <div class='res-hud-item'>
+                            <span class='res-icon res-steel'>ST</span>
+                            <span class='res-val' id='res-steel-val'>000,000</span>
+                        </div>
+                        <div class='res-hud-item'>
+                            <span class='res-icon res-baux'>BX</span>
+                            <span class='res-val' id='res-baux-val'>000,000</span>
+                        </div>
+                        <div class='res-hud-item'>
+                            <span class='res-icon res-bucket'>BC</span>
+                            <span class='res-val' id='res-bucket-val'>0,000</span>
+                        </div>
+                    </div> <!-- /#resource-hud -->
+
+                    <!-- 艦隊ステータスHUDと艦隊詳細パネルを常に右隣に固定配置するコンテナ -->
+                    <div id='fleet-info-row'>
+                        <!-- 1〜4艦隊ステータスHUD -->
+                        <div id='fleet-hud'>
+                            <!-- 動的にJSで再構築されますが、初期ロード時のためのダミープレースホルダー -->
+                            <div class='fleet-hud-item fleet-state-ready'>
+                                <span class='fleet-num'>01</span>
+                                <span class='fleet-status'>LOADING / ------</span>
+                            </div>
+                            <div class='fleet-hud-item fleet-state-expedition'>
+                                <span class='fleet-num'>02</span>
+                                <span class='fleet-status'>LOADING / ------</span>
+                            </div>
+                            <div class='fleet-hud-item fleet-state-warning'>
+                                <span class='fleet-num'>03</span>
+                                <span class='fleet-status'>LOADING / ------</span>
+                            </div>
+                            <div class='fleet-hud-item fleet-state-critical'>
+                                <span class='fleet-num'>04</span>
+                                <span class='fleet-status'>LOADING / ------</span>
+                            </div>
+                            <span class='fleet-hud-label'>Tap 2 Toggle</span>
+                        </div>
+                        <!-- 艦船詳細パネル（艦隊1固定表示） -->
+                        <div id='fleet-detail-panel'>
+                            <table id='ship-table'>
+                                <!-- [v3対応] table-layout: fixed 適用時の列幅制御用 <col> 要素追加 -->
+                                <col class='col-name' />
+                                <col class='col-level' />
+                                <col class='col-condition' />
+                                <col class='col-hp' />
+                                <col class='col-fuel' />
+                                <col class='col-ammo' />
+                                <thead>
+                                    <tr>
+                                        <th class='col-name'>NAME</th>
+                                        <th class='col-level'>LV</th>
+                                        <th class='col-condition'>CND</th>
+                                        <th class='col-hp'>HP</th>
+                                        <th class='col-fuel'>FEL</th>
+                                        <th class='col-ammo'>AMO</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- 動的に生成 -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div> <!-- /#fleet-info-row -->
+
+                    <!-- 任務HUDとTACTICAL SYSTEMを横並びに配置する行コンテナ -->
+                    <div id='tactical-quest-row'>
+                        <!-- 受領中任務HUD -->
+                        <div id='quest-hud'>
+                            <div class='battle-hud-item' id='quest-hud-panel'>
+                                <span class='battle-title' style='color: #ff6600; border-bottom: 1px solid rgba(255, 102, 0, 0.2);'>QUEST SYSTEM</span>
+                                <div id='quest-list' style='display: flex; flex-direction: column; gap: 2px;'>
+                                    <!-- 8スロットの任務が動的に生成されます -->
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 作戦海域・戦術予測HUD ＆ 詳細戦闘情報HUD -->
+                        <div id='battle-hud'>
+                        <div class='battle-hud-item'>
+                            <span class='battle-title'>TACTICAL SYSTEM</span>
+                            <span class='battle-area-tag' id='battle-area'>3-2 / AREA NORTH</span>
+                            <!-- 統合戦闘情報ヘッダ 1行目: 海域・陣形・交戦・触接 -->
+                            <div id='combat-header'>
+                                <span class='combat-tag' id='combat-formation'>FORM: ------</span>
+                                <span class='combat-tag' id='combat-engagement'>ENGAGE: ------</span>
+                                <span class='combat-tag' id='combat-touch'>TOUCH: ------</span>
+                            </div>
+                            <!-- 統合戦闘情報ヘッダ 2行目: 損害率・勝利区分・航空戦・予測 -->
+                            <div id='combat-header-2'>
+                                <span class='damage-tag' id='combat-damage'>DMG: ---%</span>
+                                <span class='victory-tag' id='combat-victory'>RESULT: ------</span>
+                                <span class='air-tag' id='combat-air'>AIR: ------</span>
+                                <span class='predict-tag' id='battle-predict'>S-WIN PREDICT / 雪風</span>
+                            </div>
+                            <!-- 敵艦隊構成 -->
+                            <div id='battle-enemy' style='font-size: 7.5px; opacity: 0.8; padding: 1px 0;'>ENEMY: NO SIGNAL</div>
+                            <!-- 戦闘艦隊テーブルコンテナ (艦隊詳細HUD風の高密度レイアウト) -->
+                            <div id='combat-fleets-container'>
+                                <!-- 動的にJSで自艦隊・敵艦隊のテーブルが構築されます -->
+                            </div>
+                        </div>
+                    </div> <!-- /#tactical-quest-row -->
+
+                    <!-- ログHUD（最新10件） -->
+                    <div id='log-hud'>
+                        <div class='battle-hud-item' id='log-hud-panel'>
+                            <span class='battle-title' style='color: #60a5fa; border-bottom: 1px solid rgba(96, 165, 250, 0.2);'>LOG SYSTEM</span>
+                            <div id='log-list' style='display: flex; flex-direction: column; gap: 1px; max-height: 200px; overflow-y: auto;'>
+                                <!-- 最新10件のログが動的に生成されます -->
+                            </div>
+                        </div>
+                    </div>
+                </div> <!-- /#hud-container -->
+
                 <!-- タクティカルモニター調のセンタリングロゴ -->
                 <span id='trackpad-label' class='trackpad-info'>86式艦隊臨時指揮端末</span>
                 
@@ -378,27 +381,26 @@
         </button>
     </div>
 
-    <!-- [FIX] 2026/07/27 #trackpad-overlay 要素を削除。フィルター方式へ変更 -->
-
-    <!-- HUD制御バー（トグルボタン + ヘッダミニ情報） -->
+    <!-- [Version 2.0] #hud-control-bar を #trackpad-area の兄弟要素に配置
+         横画面時: position: fixed でビューポート右端に常時表示
+         縦画面時: display: none で非表示
+         パネル展開時: .panel-expanded クラスで display: none -->
     <div id='hud-control-bar'>
-        <!-- トグルボタン -->
         <button id='trackpad-toggle' class='trackpad-toggle-btn' aria-label='操作パネルの表示/非表示' aria-expanded='false'>
             <span class='toggle-icon'>◀</span>
         </button>
-
-        <!-- ヘッダ情報（HUD非表示時のみ表示） -->
         <div id='hud-mini-info'>
-            <div class='hud-mini-left'>
-                <span id='hud-mini-conn' class='hud-mini-badge'>SYNCHRONIZING...</span>
-                <span id='hud-mini-state' class='hud-mini-badge'>SYNCHRONIZING...</span>
-            </div>
-            <div class='hud-mini-right'>
-                <span class='hud-mini-label'>BANDWIDTH<br/><span id='hud-mini-bw' class='hud-mini-badge'>0.0M</span></span>
-                <span class='hud-mini-label'>REFRESH RATE<br/><span id='hud-mini-fps' class='hud-mini-badge'>0.0</span></span>
-            </div>
+            <span id='hud-mini-conn' class='hud-mini-item'>SYNCHRONIZING...</span>
+            <span class='mini-sep'>|</span>
+            <span id='hud-mini-state' class='hud-mini-item'>ACT</span>
+            <span class='mini-sep'>|</span>
+            <span id='hud-mini-bw' class='hud-mini-item'>0.0 MB</span>
+            <span class='mini-sep'>|</span>
+            <span id='hud-mini-fps' class='hud-mini-item'>0.00 FPS</span>
         </div>
     </div>
+
+    <!-- [FIX] 2026/07/27 #trackpad-overlay 要素を削除。フィルター方式へ変更 -->
 
     <!-- 外部JSファイル参照 -->
     <script src="/js/remote_config.js"></script>
