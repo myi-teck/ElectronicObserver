@@ -104,6 +104,7 @@ let targetSensitivity = parseFloat(localStorage.getItem('targetSensitivity')) ||
 let targetZoom = parseFloat(localStorage.getItem('targetZoom')) || 3.0;
 let dragThreshold = parseInt(localStorage.getItem('dragThreshold'), 10) || 10;
 let tapTimeout = parseInt(localStorage.getItem('tapTimeout'), 10) || 300;
+let hudBarPosition = localStorage.getItem('hudBarPosition') || 'right';
 
 // HUDタップ/ドラッグ判定用定数
 const HUD_TAP_THRESHOLD_PX = 8;    // タップ/ドラッグの移動閾値（px）

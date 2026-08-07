@@ -367,6 +367,56 @@ initSettingsButtons('sensitivity-group', targetSensitivity, value => {
 // ページロード時に ProtocolManager を初期化
 ProtocolManager.init();
 
+//============================================================================================
+// HUDバー位置設定（上付き / 右付き）
+//============================================================================================
+function setHudBarPosition(mode) {
+    const validModes = ['right', 'top', 'left', 'bottom'];
+    if (!validModes.includes(mode)) mode = 'right';
+    hudBarPosition = mode;
+    localStorage.setItem('hudBarPosition', mode);
+
+    const hudControlBar = document.getElementById('hud-control-bar');
+    const viewport = document.getElementById('viewport');
+
+    if (hudControlBar) {
+        validModes.forEach(m => {
+            hudControlBar.classList.toggle(`position-${m}`, mode === m);
+        });
+    }
+
+    if (viewport) {
+        validModes.forEach(m => {
+            viewport.classList.toggle(`hud-pos-${m}`, mode === m);
+        });
+    }
+
+    const group = document.getElementById('hud-position-group');
+    if (group) {
+        const buttons = group.querySelectorAll('.settings-btn');
+        buttons.forEach(btn => {
+            btn.classList.toggle('active', btn.getAttribute('data-hud-pos') === mode);
+        });
+    }
+
+    syncViewportToCSSVariables(true);
+}
+
+(function initHudPositionButtons() {
+    const group = document.getElementById('hud-position-group');
+    if (group) {
+        const buttons = group.querySelectorAll('.settings-btn');
+        buttons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const pos = btn.getAttribute('data-hud-pos');
+                setHudBarPosition(pos);
+            });
+        });
+    }
+    // 初期適用
+    setHudBarPosition(hudBarPosition);
+})();
+
 // [task06] スリープ復帰およびタブフォーカス復帰時の即時画面更新トリガー
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
@@ -525,7 +575,7 @@ window.isDismissingPanel = false;
     const hudControlBar = document.getElementById('hud-control-bar');
     const viewport = document.getElementById('viewport');
 
-    if (!toggleBtn || !trackpadArea || !hudControlBar) return;
+    if (!trackpadArea || !hudControlBar) return;
 
     /**
      * パネルの展開/閉合を切り替える
@@ -538,8 +588,10 @@ window.isDismissingPanel = false;
 
         const isExpanded = trackpadArea.classList.toggle('panel-expanded');
         hudControlBar.classList.toggle('panel-expanded', isExpanded);
-        toggleBtn.classList.toggle('panel-expanded', isExpanded);
-        toggleBtn.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+        if (toggleBtn) {
+            toggleBtn.classList.toggle('panel-expanded', isExpanded);
+            toggleBtn.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+        }
 
         // bodyにもpanel-expandedを同期付与（:has()非対応ブラウザ用CSSセレクタの起点）
         document.body.classList.toggle('panel-expanded', isExpanded);
@@ -553,8 +605,12 @@ window.isDismissingPanel = false;
         syncViewportToCSSVariables(true);
     }
 
-    toggleBtn.addEventListener('click', togglePanel);
-    toggleBtn.addEventListener('pointerdown', e => e.stopPropagation());
+    hudControlBar.addEventListener('click', togglePanel);
+    hudControlBar.addEventListener('pointerdown', e => e.stopPropagation());
+    if (toggleBtn) {
+        toggleBtn.addEventListener('click', togglePanel);
+        toggleBtn.addEventListener('pointerdown', e => e.stopPropagation());
+    }
 
     /**
      * パネル状態を閉合にリセットする
@@ -562,8 +618,10 @@ window.isDismissingPanel = false;
     function resetPanelState() {
         trackpadArea.classList.remove('panel-expanded');
         hudControlBar.classList.remove('panel-expanded');
-        toggleBtn.classList.remove('panel-expanded');
-        toggleBtn.setAttribute('aria-expanded', 'false');
+        if (toggleBtn) {
+            toggleBtn.classList.remove('panel-expanded');
+            toggleBtn.setAttribute('aria-expanded', 'false');
+        }
         // bodyからもpanel-expandedを削除
         document.body.classList.remove('panel-expanded');
         if (viewport) {

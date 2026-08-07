@@ -1202,29 +1202,42 @@
 
 #hud-control-bar {
     display: none;
+    cursor: pointer;
 }
 
 /* hud-control-barの横画面（position-right）時のmini-infoレイアウト */
 #hud-control-bar.position-right #hud-mini-info {
-    writing-mode: vertical-rl;
-    text-orientation: mixed;
+    writing-mode: horizontal-tb !important; /* Y軸（縦方向）にアイテムを積み重ねるため標準モード */
     display: flex;
-    flex-direction: column;
+    flex-direction: column-reverse; /* 下から上へ項目を配置 */
     align-items: center;
-    gap: 4px;
+    justify-content: space-evenly; /* Y軸方向での均等配置 */
+    gap: 8px;
+    height: 100%;
+    width: 100%;
+    padding: 6px 0;
+    box-sizing: border-box;
 }
 
-#hud-control-bar #hud-mini-info .hud-mini-item,
-#hud-control-bar #hud-mini-info .mini-sep {
-    font-size: 7px;
+#hud-control-bar #hud-mini-info .hud-mini-item {
+    font-size: 8px;
+    font-family: 'Consolas', 'Play', monospace;
+    font-weight: bold;
+    padding: 3px 2px;
+    border-radius: 2px;
+    background: rgba(2, 15, 6, 0.95);
+    border: 1px solid rgba(0, 255, 102, 0.25);
     color: var(--text-color);
     white-space: nowrap;
-    writing-mode: inherit;
-    text-orientation: inherit;
+    writing-mode: vertical-rl; /* 各バッジ内のテキストのみ縦書き回転 */
+    text-orientation: mixed;
+    transform: rotate(180deg); /* 読みやすい -90° 回転 */
+    box-shadow: inset 0 0 4px rgba(0, 255, 102, 0.1);
+    text-align: center;
 }
 
 #hud-control-bar #hud-mini-info .mini-sep {
-    color: rgba(0, 255, 102, 0.3);
+    display: none !important;
 }
 
 /* 縦画面（position-top）時のmini-infoレイアウト */
@@ -1232,24 +1245,49 @@
     display: flex;
     flex-direction: row;
     align-items: center;
+    justify-content: space-evenly;
     gap: 4px;
     writing-mode: horizontal-tb !important; /* 横画面の vertical-rl 継承をリセット。flex-direction: row との衝突でテキスト横倒しを防止 */
     text-orientation: initial !important; /* 同上のテキスト向きリセット */
+    transform: none !important;
 }
 
-/* panel-expanded 時はhud-control-barを非表示 */
+/* 【task12_hud_control_bar 要件3】 panel-expanded 時はhud-control-barを完全非表示 */
+body.panel-expanded #hud-control-bar,
 #hud-control-bar.panel-expanded {
     display: none !important;
 }
 
-/* 接続状況: 色分け（#hud-mini-conn のみ） */
+/* 接続状況: 色分け */
 #hud-mini-conn {
     color: #eab308;
+    border-color: rgba(234, 179, 8, 0.35);
     text-shadow: 0 0 2px rgba(234, 179, 8, 0.5);
 }
 #hud-mini-conn.ok {
     color: #86efac;
+    border-color: rgba(134, 239, 172, 0.35);
     text-shadow: 0 0 3px rgba(134, 239, 172, 0.5);
+}
+
+#hud-mini-state {
+    color: #22c55e;
+    border-color: rgba(34, 197, 94, 0.35);
+    text-shadow: 0 0 3px rgba(34, 197, 94, 0.6);
+}
+#hud-mini-state.idle {
+    color: #eab308;
+    border-color: rgba(234, 179, 8, 0.35);
+}
+#hud-mini-state.sleep {
+    color: #6b7280;
+    border-color: rgba(107, 114, 128, 0.35);
+}
+
+#hud-mini-bw, #hud-mini-fps {
+    color: var(--accent-color);
+    border-color: rgba(0, 255, 102, 0.25);
+    text-shadow: 0 0 4px var(--accent-glow);
 }
 
 /* =====================================================================
@@ -1270,7 +1308,7 @@
     /* 横画面用CSSカスタムプロパティ */
     :root {
         --panel-width: 340px;
-        --hud-control-bar-width: 90px; /* HUD制御バーのデフォルト幅 */
+        --hud-control-bar-width: 30px; /* HUD制御バーの幅 (縦帯スタイル) */
         --hud-control-bar-height: 32px; /* HUD制御バーの高さ */
         --hud-gap: 4px;               /* HUDとcontrol-barの間のギャップ */
         --game-margin-left: 4px;       /* 左側最小余白 */
@@ -1288,7 +1326,60 @@
     /* [v3対応] 横画面時は position-right / position-top / panel-expanded を問わず
        #viewport の margin-right を 4px に完全固定し、全画面オーバーレイを維持
        Specificity: body:not(.modal-open) #viewport = (0,2,0) で既存定義を上書き */
-    body:not(.modal-open) #viewport,
+    /* [v3対応] 横画面時、非展開時は #hud-control-bar (30px) の領域分マージンを確保してオーバーラップを防止 */
+    body:not(.modal-open):not(.panel-expanded) #viewport.hud-pos-right,
+    body:not(.modal-open):not(.panel-expanded) #viewport:not(.hud-pos-top):not(.hud-pos-left):not(.hud-pos-bottom) {
+        flex: 1;
+        width: auto;
+        height: 100dvh;
+        border-bottom: none;
+        border-right: 2px solid var(--accent-color);
+        margin-left: var(--game-margin-left);
+        margin-top: 0;
+        margin-bottom: 0;
+        margin-right: calc(var(--hud-control-bar-width, 30px) + var(--game-margin-left, 4px)); /* 34px: 右側重なり防止 */
+        transition: none;
+    }
+
+    body:not(.modal-open):not(.panel-expanded) #viewport.hud-pos-left {
+        flex: 1;
+        width: auto;
+        height: 100dvh;
+        border-bottom: none;
+        border-right: 2px solid var(--accent-color);
+        margin-left: calc(var(--hud-control-bar-width, 30px) + var(--game-margin-left, 4px)); /* 34px: 左側重なり防止 */
+        margin-top: 0;
+        margin-bottom: 0;
+        margin-right: var(--game-margin-left);
+        transition: none;
+    }
+
+    body:not(.modal-open):not(.panel-expanded) #viewport.hud-pos-top {
+        flex: 1;
+        width: auto;
+        height: 100dvh;
+        border-bottom: none;
+        border-right: 2px solid var(--accent-color);
+        margin-left: var(--game-margin-left);
+        margin-top: calc(var(--hud-control-bar-height, 30px) + var(--game-margin-left, 4px)); /* 34px: 上部重なり防止 */
+        margin-bottom: 0;
+        margin-right: var(--game-margin-left);
+        transition: none;
+    }
+
+    body:not(.modal-open):not(.panel-expanded) #viewport.hud-pos-bottom {
+        flex: 1;
+        width: auto;
+        height: 100dvh;
+        border-bottom: none;
+        border-right: 2px solid var(--accent-color);
+        margin-left: var(--game-margin-left);
+        margin-top: 0;
+        margin-bottom: calc(var(--hud-control-bar-height, 30px) + var(--game-margin-left, 4px)); /* 34px: 下部重なり防止 */
+        margin-right: var(--game-margin-left);
+        transition: none;
+    }
+
     body:not(.modal-open).panel-expanded #viewport {
         flex: 1;
         width: auto;
@@ -1296,8 +1387,9 @@
         border-bottom: none;
         border-right: 2px solid var(--accent-color);
         margin-left: var(--game-margin-left);
-        margin-right: var(--game-margin-left); /* 4px: 常時固定 */
-        transition: none; /* 既存の margin-right トランジションを無効化（跳ね防止） */
+        margin-top: 0;
+        margin-right: var(--game-margin-left); /* 4px: 展開時 */
+        transition: none;
     }
 
     #game-screen {
@@ -1387,12 +1479,12 @@
     }
 
     /* 折り畳み時: #hud-control-bar (32px) が存在するため top: 68px */
-    #trackpad:not(.panel-expanded) #hud-container {
+    body:not(.panel-expanded) #hud-container {
         top: calc(var(--hud-bar-height, 32px) + var(--hud-control-bar-height, 32px) + var(--hud-gap, 4px)); /* 68px */
     }
 
     /* 展開時: #hud-control-bar は display: none のため top: 36px に復帰 */
-    #trackpad.panel-expanded #hud-container {
+    body.panel-expanded #hud-container {
         top: calc(var(--hud-bar-height, 32px) + var(--hud-gap, 4px)); /* 36px */
     }
 
@@ -1417,35 +1509,175 @@
      * 既存の #hud-control-bar.position-right (specificity: 0,2,0) との競合を回避。
      * z-index: 101 は #hud-container(100)より手前、#click-btn(1000)より奥。
      * ----------------------------------------------------------------- */
-    body #hud-control-bar {
-        display: flex;
+    /* 右付きモード (position-right) */
+    body:not(.panel-expanded) #hud-control-bar.position-right,
+    body:not(.panel-expanded) #hud-control-bar:not(.position-top):not(.position-left):not(.position-bottom) {
+        display: flex !important;
         position: fixed;
         right: 0;
-        top: 50%;
-        transform: translateY(-50%);
-        width: var(--hud-control-bar-width, 90px);
-        height: auto;
+        top: 0;
+        bottom: 0;
+        left: auto;
+        height: 100%;
+        width: var(--hud-control-bar-width, 30px);
         z-index: 101; /* #hud-container(100)より手前、#click-btn(1000)より奥 [Version 2.0: 99→101] */
-        background: rgba(var(--nerv-bg-dark), 0.9);
-        border: 1px solid rgba(0, 255, 102, 0.3);
-        border-right: none;
-        border-radius: 4px 0 0 4px;
+        background: rgba(0, 255, 102, 0.08); /* 透過ネオングリーン背景 (system-monitor-barと同等) */
+        border: none;
+        border-left: 1px solid rgba(0, 255, 102, 0.3); /* system-monitor-barと同等の枠線 */
+        border-radius: 0;
         box-shadow: -2px 0 10px rgba(0, 0, 0, 0.5);
         flex-direction: column;
         align-items: center;
-        justify-content: center;
-        gap: 8px;
+        justify-content: space-evenly;
+        padding: 4px 0;
+        box-sizing: border-box;
         pointer-events: auto;
+        cursor: pointer;
     }
 
-    /* ミニ情報表示（縦書き） */
-    body #hud-control-bar #hud-mini-info {
+    body:not(.panel-expanded) #hud-control-bar.position-right #hud-mini-info,
+    body:not(.panel-expanded) #hud-control-bar:not(.position-top):not(.position-left):not(.position-bottom) #hud-mini-info {
+        writing-mode: horizontal-tb !important;
+        display: flex;
+        flex-direction: column-reverse;
+        align-items: center;
+        justify-content: space-evenly;
+        gap: 8px;
+        height: 100%;
+        width: 100%;
+    }
+
+    body:not(.panel-expanded) #hud-control-bar.position-right #hud-mini-info .hud-mini-item,
+    body:not(.panel-expanded) #hud-control-bar:not(.position-top):not(.position-left):not(.position-bottom) #hud-mini-info .hud-mini-item {
         writing-mode: vertical-rl;
         text-orientation: mixed;
-        display: flex;
+        transform: rotate(180deg);
+    }
+
+    /* 左付きモード (position-left) */
+    body:not(.panel-expanded) #hud-control-bar.position-left {
+        display: flex !important;
+        position: fixed;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        right: auto;
+        height: 100%;
+        width: var(--hud-control-bar-width, 30px);
+        z-index: 101;
+        background: rgba(0, 255, 102, 0.08);
+        border: none;
+        border-right: 1px solid rgba(0, 255, 102, 0.3);
+        border-radius: 0;
+        box-shadow: 2px 0 10px rgba(0, 0, 0, 0.5);
         flex-direction: column;
         align-items: center;
-        gap: 4px;
+        justify-content: space-evenly;
+        padding: 4px 0;
+        box-sizing: border-box;
+        pointer-events: auto;
+        cursor: pointer;
+    }
+
+    body:not(.panel-expanded) #hud-control-bar.position-left #hud-mini-info {
+        writing-mode: horizontal-tb !important;
+        display: flex;
+        flex-direction: column-reverse;
+        align-items: center;
+        justify-content: space-evenly;
+        gap: 8px;
+        height: 100%;
+        width: 100%;
+    }
+
+    body:not(.panel-expanded) #hud-control-bar.position-left #hud-mini-info .hud-mini-item {
+        writing-mode: vertical-rl;
+        text-orientation: mixed;
+        transform: rotate(180deg);
+    }
+
+    /* 上付きモード (position-top) */
+    body:not(.panel-expanded) #hud-control-bar.position-top {
+        display: flex !important;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: auto;
+        width: 100%;
+        height: var(--hud-control-bar-height, 30px);
+        z-index: 101;
+        background: rgba(0, 255, 102, 0.08);
+        border: none;
+        border-bottom: 1px solid rgba(0, 255, 102, 0.3);
+        border-radius: 0;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-evenly;
+        padding: 0 8px;
+        box-sizing: border-box;
+        pointer-events: auto;
+        cursor: pointer;
+    }
+
+    body:not(.panel-expanded) #hud-control-bar.position-top #hud-mini-info {
+        writing-mode: horizontal-tb !important;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-evenly;
+        gap: 8px;
+        height: 100%;
+        width: 100%;
+    }
+
+    body:not(.panel-expanded) #hud-control-bar.position-top #hud-mini-info .hud-mini-item {
+        writing-mode: horizontal-tb !important;
+        text-orientation: initial !important;
+        transform: none !important;
+    }
+
+    /* 下付きモード (position-bottom) */
+    body:not(.panel-expanded) #hud-control-bar.position-bottom {
+        display: flex !important;
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        top: auto;
+        width: 100%;
+        height: var(--hud-control-bar-height, 30px);
+        z-index: 101;
+        background: rgba(0, 255, 102, 0.08);
+        border: none;
+        border-top: 1px solid rgba(0, 255, 102, 0.3);
+        border-radius: 0;
+        box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.5);
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-evenly;
+        padding: 0 8px;
+        box-sizing: border-box;
+        pointer-events: auto;
+        cursor: pointer;
+    }
+
+    body:not(.panel-expanded) #hud-control-bar.position-bottom #hud-mini-info {
+        writing-mode: horizontal-tb !important;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-evenly;
+        gap: 8px;
+        height: 100%;
+        width: 100%;
+    }
+
+    body:not(.panel-expanded) #hud-control-bar.position-bottom #hud-mini-info .hud-mini-item {
+        writing-mode: horizontal-tb !important;
+        text-orientation: initial !important;
+        transform: none !important;
     }
 
     /* -----------------------------------------------------------------
@@ -1466,12 +1698,11 @@
 /* 極小端末用（500px以下）: 幅縮小（二次レビュー指摘6反映） */
 @media (orientation: landscape) and (max-width: 500px) {
     :root {
-        --hud-control-bar-width: 80px; /* 縮小 */
+        --hud-control-bar-width: 28px; /* 縮小 */
     }
 
     #hud-control-bar {
         width: var(--hud-control-bar-width);
-        min-width: 80px; /* 最小幅フォールバック */
     }
 
     /* 極小端末でも上部表示時は横幅いっぱい（Specificityによる優先） */
@@ -1480,25 +1711,20 @@
         min-width: unset;
     }
 
-    .hud-mini-badge {
-        font-size: 6px; /* フォントサイズ縮小 */
-        padding: 1px 2px;
+    #hud-control-bar #hud-mini-info .hud-mini-item {
+        font-size: 7px; /* フォントサイズ縮小 */
+        padding: 2px 1px;
     }
 }
 
-/* 超極小端末（400px以下）: HUDミニ情報を非表示・トグルボタン操作性の確保 */
+/* 超極小端末（400px以下）: HUDミニ情報を非表示 */
 @media (orientation: landscape) and (max-width: 400px) {
     #hud-mini-info {
         display: none;
     }
 
-    /* 誤操作防止のための余白追加 */
     #hud-control-bar {
         padding: 4px;
-    }
-
-    #trackpad-toggle {
-        margin: 4px 0; /* 上下の余白を確保し、誤操作を防止 */
     }
 }
 
@@ -1517,6 +1743,7 @@
     #hud-container {
         display: flex !important; /* 既存の display:none を確実に上書き */
         visibility: visible !important; /* 既存の visibility:hidden を確実に上書き */
+        opacity: 1 !important;
         position: absolute;
         top: var(--hud-bar-height, 32px); /* CSS変数でシステムモニターバーの高さに追従 */
         left: 2px;
@@ -1525,9 +1752,14 @@
         width: auto;
         height: auto;
         transform: none;
-        opacity: 1;
         pointer-events: none;
         z-index: 10;
+    }
+
+    /* 縦画面時、HUDコンテナ内の主要要素を強制的に表示可能化 */
+    #hud-container > * {
+        visibility: visible !important;
+        opacity: 1 !important;
     }
 
     /* 子要素のポインタイベント有効化 */

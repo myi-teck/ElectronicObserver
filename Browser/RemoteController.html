@@ -48,6 +48,7 @@
                 <div class='master-item' data-target='zoom-group'>拡大率</div>
                 <div class='master-item' data-target='drag-distance-group'>ドラッグ距離</div>
                 <div class='master-item' data-target='tap-timeout-group'>タップ時間</div>
+                <div class='master-item' data-target='hud-position-group'>HUDバー位置</div>
                 <div class='master-item' data-target='protocol-group'>PROTOCOL</div>
                 <div class='master-item' data-target='browser-nav-group'>ブラウザ操作</div>
                 <div class='master-item' data-target='filter-group'>プライバシーフィルター</div>
@@ -155,6 +156,19 @@
                             <button class='settings-btn' data-tap-timeout='200'>200ms</button>
                             <button class='settings-btn active' data-tap-timeout='300'>300ms</button>
                             <button class='settings-btn' data-tap-timeout='500'>500ms</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- HUDバー位置設定 -->
+                <div class='detail-panel' id='detail-hud-position-group'>
+                    <div class='setting-group'>
+                        <label>HUDバー位置</label>
+                        <div class='btn-group' id='hud-position-group'>
+                            <button class='settings-btn active' data-hud-pos='right'>右</button>
+                            <button class='settings-btn' data-hud-pos='top'>上</button>
+                            <button class='settings-btn' data-hud-pos='left'>左</button>
+                            <button class='settings-btn' data-hud-pos='bottom'>下</button>
                         </div>
                     </div>
                 </div>
@@ -348,7 +362,8 @@
                                 <!-- 動的にJSで自艦隊・敵艦隊のテーブルが構築されます -->
                             </div>
                         </div>
-                    </div> <!-- /#tactical-quest-row -->
+                    </div>
+                </div> <!-- /#tactical-quest-row -->
 
                     <!-- ログHUD（最新10件） -->
                     <div id='log-hud'>
@@ -385,17 +400,11 @@
          横画面時: position: fixed でビューポート右端に常時表示
          縦画面時: display: none で非表示
          パネル展開時: .panel-expanded クラスで display: none -->
-    <div id='hud-control-bar'>
-        <button id='trackpad-toggle' class='trackpad-toggle-btn' aria-label='操作パネルの表示/非表示' aria-expanded='false'>
-            <span class='toggle-icon'>◀</span>
-        </button>
+    <div id='hud-control-bar' class='position-right'>
         <div id='hud-mini-info'>
             <span id='hud-mini-conn' class='hud-mini-item'>SYNCHRONIZING...</span>
-            <span class='mini-sep'>|</span>
             <span id='hud-mini-state' class='hud-mini-item'>ACT</span>
-            <span class='mini-sep'>|</span>
             <span id='hud-mini-bw' class='hud-mini-item'>0.0 MB</span>
-            <span class='mini-sep'>|</span>
             <span id='hud-mini-fps' class='hud-mini-item'>0.00 FPS</span>
         </div>
     </div>
