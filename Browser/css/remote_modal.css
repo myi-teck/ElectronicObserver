@@ -1336,6 +1336,7 @@ body.panel-expanded #hud-control-bar,
         min-height: 0;
         width: auto;
         height: auto;
+        max-height: 100%; /* [Task17] 右/左モード時の高さ膨張(上下見切れ)を防止 */
         border-bottom: none;
         border-right: 2px solid var(--accent-color);
         margin-left: var(--game-margin-left);
@@ -1377,21 +1378,12 @@ body.panel-expanded #hud-control-bar,
         display: flex;
         justify-content: center;
         align-items: center;
-        width: 100%;
-        height: 100%;
-        overflow: hidden;
-        touch-action: none;
-    }
-
-    /* -----------------------------------------------------------------
-     * [task15] #game-screen のサイズ制約（フレームアウト防止）
-     * ----------------------------------------------------------------- */
-    #game-screen {
         width: auto;
         height: auto;
         max-width: 100%;
         max-height: 100%;
-        aspect-ratio: var(--game-aspect-ratio); /* ゲーム画面のアスペクト比(1200:720)を維持 */
+        overflow: hidden;
+        touch-action: none;
     }
 
     /* -----------------------------------------------------------------

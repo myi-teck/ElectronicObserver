@@ -31,6 +31,8 @@ function activateViewportFpsControl() {
 
 function handleViewportMove(clientX, clientY) {
     const rect = screen.getBoundingClientRect();
+    // [Task17] ゼロサイズ保護ガード: rect.width または rect.height が 0 の場合は処理をスキップ
+    if (rect.width === 0 || rect.height === 0) return;
     const x = Math.max(0, Math.min(1.0, (clientX - rect.left) / rect.width));
     const y = Math.max(0, Math.min(1.0, (clientY - rect.top) / rect.height));
     vCursorX = x;
