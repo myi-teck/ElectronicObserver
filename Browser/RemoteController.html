@@ -26,12 +26,21 @@
     <link rel="stylesheet" href="/css/remote_modal.css">
 </head>
 <body>
-    <div id='viewport'>
+    <div id='viewport' class='hud-pos-right'>
         <!-- ゲーム画面ラッパー（暗転フィルター対象） -->
         <div id='screen-container'>
             <!-- 差分WebP方式対応：表示要素を <img> から <canvas> へ変更 -->
             <canvas id='game-screen' width='1200' height='720'></canvas>
             <div id='virtual-cursor'></div>
+        </div>
+        <!-- [task15] #hud-control-bar を #viewport の子要素に移動（flexboxフローベースレイアウト） -->
+        <div id='hud-control-bar' class='position-right'>
+            <div id='hud-mini-info'>
+                <span id='hud-mini-conn' class='hud-mini-item'>SYNCHRONIZING...</span>
+                <span id='hud-mini-state' class='hud-mini-item'>ACT</span>
+                <span id='hud-mini-bw' class='hud-mini-item'>0.0 MB</span>
+                <span id='hud-mini-fps' class='hud-mini-item'>0.00 FPS</span>
+            </div>
         </div>
     </div>
 
@@ -396,18 +405,7 @@
         </button>
     </div>
 
-    <!-- [Version 2.0] #hud-control-bar を #trackpad-area の兄弟要素に配置
-         横画面時: position: fixed でビューポート右端に常時表示
-         縦画面時: display: none で非表示
-         パネル展開時: .panel-expanded クラスで display: none -->
-    <div id='hud-control-bar' class='position-right'>
-        <div id='hud-mini-info'>
-            <span id='hud-mini-conn' class='hud-mini-item'>SYNCHRONIZING...</span>
-            <span id='hud-mini-state' class='hud-mini-item'>ACT</span>
-            <span id='hud-mini-bw' class='hud-mini-item'>0.0 MB</span>
-            <span id='hud-mini-fps' class='hud-mini-item'>0.00 FPS</span>
-        </div>
-    </div>
+    <!-- [task15] #hud-control-bar は #viewport の子要素へ移動済み（flexboxフローベースレイアウト） -->
 
     <!-- [FIX] 2026/07/27 #trackpad-overlay 要素を削除。フィルター方式へ変更 -->
 

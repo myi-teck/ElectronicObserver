@@ -6,6 +6,12 @@
 
 // ゲーム画面タッチ/マウス操作
 let viewportTouchStartX = 0;
+
+// [task15] イベントバブリングガード: #hud-control-bar 上の操作を無視（バブリング防止）
+function isHudControlBarEvent(e) {
+    return e.target && e.target.closest('#hud-control-bar') !== null;
+}
+
 let viewportTouchStartY = 0;
 let viewportTouchStartTime = 0;
 let isDraggingOnViewport = false;
@@ -40,6 +46,9 @@ function handleViewportMove(clientX, clientY) {
 // preventDefault() の呼び出しは安全である。一部のブラウザで「passive:false イベントで preventDefault を
 // 呼んだがデフォルトアクションが存在しない」警告が出る可能性があるが、機能的な影響はない。
 viewport.addEventListener('touchstart', (e) => {
+    // [task15] HUDバー上の操作を無視（バブリング防止）
+    if (isHudControlBarEvent(e)) return;
+
     // HUD展開中のタップであれば、パネルをたたんでゲームアクション送信をスキップ
     // dismissIfExpanded は remote_main.js 側の initTrackpadPanel IIFE 内で定義・公開
     if (typeof window.dismissIfExpanded === 'function' && window.dismissIfExpanded(e)) {
@@ -57,6 +66,9 @@ viewport.addEventListener('touchstart', (e) => {
 
 // viewport touchmove
 viewport.addEventListener('touchmove', (e) => {
+    // [task15] HUDバー上の操作を無視（バブリング防止）
+    if (isHudControlBarEvent(e)) return;
+
     const touch = e.touches[0];
     const dx = touch.clientX - viewportTouchStartX;
     const dy = touch.clientY - viewportTouchStartY;
@@ -72,6 +84,9 @@ viewport.addEventListener('touchmove', (e) => {
 
 // viewport touchend
 viewport.addEventListener('touchend', (e) => {
+    // [task15] HUDバー上の操作を無視（バブリング防止）
+    if (isHudControlBarEvent(e)) return;
+
     // 注意: touchend では dismissIfExpanded(e) を呼ばない（二次レビュー💡指摘4対応）。
     // パネル折り畳みは touchstart/click 時点で完了しているため、touchend では
     // isDismissingPanel フラグによるゲームアクションのキャンセルのみを行う。
@@ -98,6 +113,9 @@ viewport.addEventListener('touchend', (e) => {
 // viewport mousedown
 viewport.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
+
+    // [task15] HUDバー上の操作を無視（バブリング防止）
+    if (isHudControlBarEvent(e)) return;
 
     // HUD展開中のクリックであれば、パネルをたたんでゲームアクション送信をスキップ
     // dismissIfExpanded は remote_main.js 側の initTrackpadPanel IIFE 内で定義・公開

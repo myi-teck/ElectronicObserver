@@ -1510,15 +1510,17 @@ namespace Browser
 				else if (path.StartsWith("/css/") || path.StartsWith("/js/"))
 				{
 					// パスから相対パスを抽出（../ によるディレクトリトラバーサル防止）
-					// 【Bug Fix】先頭のパス区切り文字を除去して Path.Combine のパス脱走バグを防止
 					string relativePath = path.TrimStart('/', '\\');
 	
 					// 許可されたディレクトリ配下のファイルのみサーブ
 					string basePath = GetStaticFileBasePath();
-					// 【Bug Fix】GetStaticFileBasePath の戻り値が null だった場合のガード
+					var now = DateTime.Now.ToString("HH:mm:ss.fff");
+					var debugLogPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug_static.log");
 					if (string.IsNullOrEmpty(basePath))
 					{
-						res.StatusCode = 500; // Internal Server Error
+						string debugMsg = $"[{now}] GetStaticFileBasePath returned null for: {path}";
+						System.IO.File.AppendAllText(debugLogPath, debugMsg + Environment.NewLine);
+						res.StatusCode = 500;
 						res.Close();
 						return;
 					}
@@ -1526,14 +1528,23 @@ namespace Browser
 	
 					// セキュリティチェック：basePath 配下か確認
 					string basePathFull = Path.GetFullPath(basePath);
-					if (fullPath.StartsWith(basePathFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
-						fullPath.Equals(basePathFull, StringComparison.OrdinalIgnoreCase))
+					// basePathFull は既に末尾にパス区切り文字を含む場合があるため、Normalize
+					string searchPrefix = basePathFull.EndsWith(Path.DirectorySeparatorChar.ToString())
+						? basePathFull
+						: basePathFull + Path.DirectorySeparatorChar;
+					bool isSafe = fullPath.StartsWith(searchPrefix, StringComparison.OrdinalIgnoreCase) ||
+						fullPath.Equals(basePathFull, StringComparison.OrdinalIgnoreCase);
+					string debugMsg2 = $"[{now}] Static file: path={path}, basePathFull={basePathFull}, fullPath={fullPath}, isSafe={isSafe}";
+					System.IO.File.AppendAllText(debugLogPath, debugMsg2 + Environment.NewLine);
+					if (isSafe)
 					{
 						SendStaticFile(req, res, fullPath);
 					}
 					else
 					{
-						res.StatusCode = 403; // Forbidden
+						string debugMsg3 = $"[{now}] Static file BLOCKED: {path}";
+						System.IO.File.AppendAllText(debugLogPath, debugMsg3 + Environment.NewLine);
+						res.StatusCode = 403;
 						res.Close();
 					}
 				}
@@ -2596,7 +2607,14 @@ namespace Browser
 		{
 			var baseDir = AppDomain.CurrentDomain.BaseDirectory;
 
-			// 1. 【最優先】開発用: 親階層を遡って Browser ディレクトリを探索
+			// 1. 【リリース環境優先】実行フォルダ直下に css/ または js/ があるか確認
+			//    デプロイ環境（bin/Release等）ではファイルが直接配置されているため
+			if (Directory.Exists(Path.Combine(baseDir, "css")) && Directory.Exists(Path.Combine(baseDir, "js")))
+			{
+				return Path.GetFullPath(baseDir);
+			}
+
+			// 2. 【開発用】親階層を遡って Browser ディレクトリを探索
 			var dir = new DirectoryInfo(baseDir);
 			while (dir != null)
 			{
@@ -2613,7 +2631,7 @@ namespace Browser
 				dir = dir.Parent;
 			}
 
-			// 2. リリース環境用フォールバック: 実行フォルダ直下
+			// 3. 最終フォールバック: 実行フォルダ直下
 			return Path.GetFullPath(baseDir);
 		}
 

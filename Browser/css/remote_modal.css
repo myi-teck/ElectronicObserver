@@ -1313,95 +1313,183 @@ body.panel-expanded #hud-control-bar,
         --hud-gap: 4px;               /* HUDとcontrol-barの間のギャップ */
         --game-margin-left: 4px;       /* 左側最小余白 */
         --hud-transition-timing: cubic-bezier(0.4, 0, 0.2, 1); /* HUDスライドアニメーションのイージング関数 */
+        /* [task15] 追加: #viewport の gap としてHUDバーとゲーム画面の間の隙間 */
+        --viewport-padding: 4px;
+        /* [task15] 追加: #trackpad-area の固定幅 */
+        --trackpad-width: 200px;
     }
 
-    /* body: 縦スタック → 横並列（ゲーム画面 + 操作パネル）に変更 */
+    /* [task15] bodyのflex layout変更（コンテンツ中央配置 + 横並列） */
     body {
         flex-direction: row;
+        justify-content: center;
+        align-items: center;
     }
 
     /* -----------------------------------------------------------------
-     * ゲーム画面（#viewport）の最適化
+     * [task15] ゲーム画面（#viewport）のflexコンテナ化
+     * flexboxフローベースレイアウトでオーバーラップ/フレームアウトを防止
      * ----------------------------------------------------------------- */
-    /* [v3対応] 横画面時は position-right / position-top / panel-expanded を問わず
-       #viewport の margin-right を 4px に完全固定し、全画面オーバーレイを維持
-       Specificity: body:not(.modal-open) #viewport = (0,2,0) で既存定義を上書き */
-    /* [v3対応] 横画面時、非展開時は #hud-control-bar (30px) の領域分マージンを確保してオーバーラップを防止 */
-    body:not(.modal-open):not(.panel-expanded) #viewport.hud-pos-right,
-    body:not(.modal-open):not(.panel-expanded) #viewport:not(.hud-pos-top):not(.hud-pos-left):not(.hud-pos-bottom) {
-        flex: 1;
+    #viewport {
+        flex: 1 1 auto;
+        min-width: 0;
+        min-height: 0;
         width: auto;
-        height: 100dvh;
+        height: auto;
         border-bottom: none;
         border-right: 2px solid var(--accent-color);
         margin-left: var(--game-margin-left);
+        margin-right: var(--game-margin-left);
         margin-top: 0;
         margin-bottom: 0;
-        margin-right: calc(var(--hud-control-bar-width, 30px) + var(--game-margin-left, 4px)); /* 34px: 右側重なり防止 */
-        transition: none;
+        /* flexboxコンテナとして設定（flex-directionはhud-pos-*クラスで切り替え） */
+        display: flex;
+        flex-direction: row; /* デフォルト: right モード */
+        gap: var(--viewport-padding, 4px); /* HUDバーとゲーム画面の間の隙間 */
     }
 
-    body:not(.modal-open):not(.panel-expanded) #viewport.hud-pos-left {
-        flex: 1;
-        width: auto;
-        height: 100dvh;
-        border-bottom: none;
-        border-right: 2px solid var(--accent-color);
-        margin-left: calc(var(--hud-control-bar-width, 30px) + var(--game-margin-left, 4px)); /* 34px: 左側重なり防止 */
-        margin-top: 0;
-        margin-bottom: 0;
+    /* モード別の flex-direction 切り替え */
+    #viewport.hud-pos-right {
+        flex-direction: row;
+    }
+    #viewport.hud-pos-left {
+        flex-direction: row-reverse;
+    }
+    #viewport.hud-pos-top {
+        flex-direction: column-reverse;
+    }
+    #viewport.hud-pos-bottom {
+        flex-direction: column;
+    }
+
+    /* パネル展開時はHUDバー非表示のため、viewportのmarginを標準化 */
+    body.panel-expanded #viewport {
         margin-right: var(--game-margin-left);
-        transition: none;
     }
 
-    body:not(.modal-open):not(.panel-expanded) #viewport.hud-pos-top {
-        flex: 1;
-        width: auto;
-        height: 100dvh;
-        border-bottom: none;
-        border-right: 2px solid var(--accent-color);
-        margin-left: var(--game-margin-left);
-        margin-top: calc(var(--hud-control-bar-height, 30px) + var(--game-margin-left, 4px)); /* 34px: 上部重なり防止 */
-        margin-bottom: 0;
-        margin-right: var(--game-margin-left);
-        transition: none;
+    /* -----------------------------------------------------------------
+     * [task15] #screen-container のflex item設定（フレームアウト防止）
+     * ----------------------------------------------------------------- */
+    #screen-container {
+        flex: 1 1 auto;
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        touch-action: none;
     }
 
-    body:not(.modal-open):not(.panel-expanded) #viewport.hud-pos-bottom {
-        flex: 1;
-        width: auto;
-        height: 100dvh;
-        border-bottom: none;
-        border-right: 2px solid var(--accent-color);
-        margin-left: var(--game-margin-left);
-        margin-top: 0;
-        margin-bottom: calc(var(--hud-control-bar-height, 30px) + var(--game-margin-left, 4px)); /* 34px: 下部重なり防止 */
-        margin-right: var(--game-margin-left);
-        transition: none;
-    }
-
-    body:not(.modal-open).panel-expanded #viewport {
-        flex: 1;
-        width: auto;
-        height: 100dvh;
-        border-bottom: none;
-        border-right: 2px solid var(--accent-color);
-        margin-left: var(--game-margin-left);
-        margin-top: 0;
-        margin-right: var(--game-margin-left); /* 4px: 展開時 */
-        transition: none;
-    }
-
+    /* -----------------------------------------------------------------
+     * [task15] #game-screen のサイズ制約（フレームアウト防止）
+     * ----------------------------------------------------------------- */
     #game-screen {
         width: auto;
         height: auto;
         max-width: 100%;
-        max-height: 100dvh;
-        aspect-ratio: 5 / 3;
+        max-height: 100%;
+        aspect-ratio: var(--game-aspect-ratio); /* ゲーム画面のアスペクト比(1200:720)を維持 */
+    }
+
+    /* -----------------------------------------------------------------
+     * [task15] #hud-control-bar のflex item設定
+     * position: fixedを廃止し、flexboxフローベース配置に置き換え
+     * ----------------------------------------------------------------- */
+    /* 横画面時のみflex itemとして表示（position: fixedを廃止） */
+    body:not(.modal-open):not(.panel-expanded) #hud-control-bar {
+        display: flex;
+        flex-shrink: 0;
+        flex-grow: 0;
+        background: rgba(0, 255, 102, 0.08);
+        pointer-events: auto;
+        cursor: pointer;
+        touch-action: none;
+    }
+
+    /* パネル展開時およびモーダルオープン時は確実に非表示 */
+    body.panel-expanded #hud-control-bar,
+    body.modal-open #hud-control-bar {
+        display: none !important;
+    }
+
+    /* 右/左配置モード: 縦帯スタイル */
+    body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-right,
+    body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-left {
+        width: var(--hud-control-bar-width, 30px);
+        height: 100%;
+        flex-basis: var(--hud-control-bar-width, 30px);
+        border-left: 1px solid rgba(0, 255, 102, 0.3);
+        border-radius: 0;
+        box-shadow: -2px 0 10px rgba(0, 0, 0, 0.5);
+        flex-direction: column;
+        align-items: center;
+        justify-content: space-evenly;
+        padding: 4px 0;
+        box-sizing: border-box;
+    }
+
+    /* 上/下配置モード: 横帯スタイル */
+    body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-top,
+    body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-bottom {
+        width: 100%;
+        height: var(--hud-control-bar-height, 32px);
+        flex-basis: var(--hud-control-bar-height, 32px);
+        border-top: 1px solid rgba(0, 255, 102, 0.3);
+        border-radius: 0;
+        box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.5);
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-evenly;
+        padding: 0 8px;
+        box-sizing: border-box;
+    }
+
+    /* 右/左配置モードのmini-infoレイアウト */
+    body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-right #hud-mini-info,
+    body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-left #hud-mini-info {
+        writing-mode: horizontal-tb !important;
+        display: flex;
+        flex-direction: column-reverse;
+        align-items: center;
+        justify-content: space-evenly;
+        gap: 8px;
+        height: 100%;
+        width: 100%;
+    }
+
+    body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-right #hud-mini-info .hud-mini-item,
+    body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-left #hud-mini-info .hud-mini-item {
+        writing-mode: vertical-rl;
+        text-orientation: mixed;
+        transform: rotate(180deg);
+    }
+
+    /* 上/下配置モードのmini-infoレイアウト */
+    body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-top #hud-mini-info,
+    body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-bottom #hud-mini-info {
+        writing-mode: horizontal-tb !important;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-evenly;
+        gap: 8px;
+        height: 100%;
+        width: 100%;
+    }
+
+    body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-top #hud-mini-info .hud-mini-item,
+    body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-bottom #hud-mini-info .hud-mini-item {
+        writing-mode: horizontal-tb !important;
+        text-orientation: initial !important;
+        transform: none !important;
     }
 
     /* -----------------------------------------------------------------
      * 操作パネル（#trackpad-area）の折り畳み
+     * [task15] trackpadは固定サイズを維持し、縮小しない
      * ----------------------------------------------------------------- */
     #trackpad-area {
         flex: 0 0 0;
@@ -1416,6 +1504,10 @@ body.panel-expanded #hud-control-bar,
         z-index: 98; /* [FIX] Step 3: パネルを背面へ移動（ボタン(1000) > オーバーレイ(99) > パネル(98) の階層構造を明確化） */
         background: var(--bg-color);
         box-shadow: -4px 0 20px rgba(0, 0, 0, 0.6);
+        /* [task15] trackpadは固定サイズを維持し、縮小しない */
+        flex-grow: 0;
+        flex-shrink: 0;
+        flex-basis: var(--trackpad-width, 200px);
     }
 
     /* 展開状態（JSによるクラス付与で切り替え） */
@@ -1500,185 +1592,6 @@ body.panel-expanded #hud-control-bar,
 
     /* [FIX] 2026/07/27 半透明オーバーレイ方式をフィルター方式へ変更
      * #trackpad-overlay 関連のCSS定義を削除し、#viewport.overlay-active クラスによるフィルター方式へ置き換え */
-
-    /* -----------------------------------------------------------------
-     * [Version 2.0] 横画面時の #hud-control-bar 固定配置
-     * #hud-control-bar は #trackpad-area の兄弟要素にDOM移動済み。
-     * position: fixed でビューポート右端に常時表示。
-     * body #hud-control-bar を使用し、specificity を (0,1,1) に設定。
-     * 既存の #hud-control-bar.position-right (specificity: 0,2,0) との競合を回避。
-     * z-index: 101 は #hud-container(100)より手前、#click-btn(1000)より奥。
-     * ----------------------------------------------------------------- */
-    /* 右付きモード (position-right) */
-    body:not(.panel-expanded) #hud-control-bar.position-right,
-    body:not(.panel-expanded) #hud-control-bar:not(.position-top):not(.position-left):not(.position-bottom) {
-        display: flex !important;
-        position: fixed;
-        right: 0;
-        top: 0;
-        bottom: 0;
-        left: auto;
-        height: 100%;
-        width: var(--hud-control-bar-width, 30px);
-        z-index: 101; /* #hud-container(100)より手前、#click-btn(1000)より奥 [Version 2.0: 99→101] */
-        background: rgba(0, 255, 102, 0.08); /* 透過ネオングリーン背景 (system-monitor-barと同等) */
-        border: none;
-        border-left: 1px solid rgba(0, 255, 102, 0.3); /* system-monitor-barと同等の枠線 */
-        border-radius: 0;
-        box-shadow: -2px 0 10px rgba(0, 0, 0, 0.5);
-        flex-direction: column;
-        align-items: center;
-        justify-content: space-evenly;
-        padding: 4px 0;
-        box-sizing: border-box;
-        pointer-events: auto;
-        cursor: pointer;
-    }
-
-    body:not(.panel-expanded) #hud-control-bar.position-right #hud-mini-info,
-    body:not(.panel-expanded) #hud-control-bar:not(.position-top):not(.position-left):not(.position-bottom) #hud-mini-info {
-        writing-mode: horizontal-tb !important;
-        display: flex;
-        flex-direction: column-reverse;
-        align-items: center;
-        justify-content: space-evenly;
-        gap: 8px;
-        height: 100%;
-        width: 100%;
-    }
-
-    body:not(.panel-expanded) #hud-control-bar.position-right #hud-mini-info .hud-mini-item,
-    body:not(.panel-expanded) #hud-control-bar:not(.position-top):not(.position-left):not(.position-bottom) #hud-mini-info .hud-mini-item {
-        writing-mode: vertical-rl;
-        text-orientation: mixed;
-        transform: rotate(180deg);
-    }
-
-    /* 左付きモード (position-left) */
-    body:not(.panel-expanded) #hud-control-bar.position-left {
-        display: flex !important;
-        position: fixed;
-        left: 0;
-        top: 0;
-        bottom: 0;
-        right: auto;
-        height: 100%;
-        width: var(--hud-control-bar-width, 30px);
-        z-index: 101;
-        background: rgba(0, 255, 102, 0.08);
-        border: none;
-        border-right: 1px solid rgba(0, 255, 102, 0.3);
-        border-radius: 0;
-        box-shadow: 2px 0 10px rgba(0, 0, 0, 0.5);
-        flex-direction: column;
-        align-items: center;
-        justify-content: space-evenly;
-        padding: 4px 0;
-        box-sizing: border-box;
-        pointer-events: auto;
-        cursor: pointer;
-    }
-
-    body:not(.panel-expanded) #hud-control-bar.position-left #hud-mini-info {
-        writing-mode: horizontal-tb !important;
-        display: flex;
-        flex-direction: column-reverse;
-        align-items: center;
-        justify-content: space-evenly;
-        gap: 8px;
-        height: 100%;
-        width: 100%;
-    }
-
-    body:not(.panel-expanded) #hud-control-bar.position-left #hud-mini-info .hud-mini-item {
-        writing-mode: vertical-rl;
-        text-orientation: mixed;
-        transform: rotate(180deg);
-    }
-
-    /* 上付きモード (position-top) */
-    body:not(.panel-expanded) #hud-control-bar.position-top {
-        display: flex !important;
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: auto;
-        width: 100%;
-        height: var(--hud-control-bar-height, 30px);
-        z-index: 101;
-        background: rgba(0, 255, 102, 0.08);
-        border: none;
-        border-bottom: 1px solid rgba(0, 255, 102, 0.3);
-        border-radius: 0;
-        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
-        flex-direction: row;
-        align-items: center;
-        justify-content: space-evenly;
-        padding: 0 8px;
-        box-sizing: border-box;
-        pointer-events: auto;
-        cursor: pointer;
-    }
-
-    body:not(.panel-expanded) #hud-control-bar.position-top #hud-mini-info {
-        writing-mode: horizontal-tb !important;
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        justify-content: space-evenly;
-        gap: 8px;
-        height: 100%;
-        width: 100%;
-    }
-
-    body:not(.panel-expanded) #hud-control-bar.position-top #hud-mini-info .hud-mini-item {
-        writing-mode: horizontal-tb !important;
-        text-orientation: initial !important;
-        transform: none !important;
-    }
-
-    /* 下付きモード (position-bottom) */
-    body:not(.panel-expanded) #hud-control-bar.position-bottom {
-        display: flex !important;
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        top: auto;
-        width: 100%;
-        height: var(--hud-control-bar-height, 30px);
-        z-index: 101;
-        background: rgba(0, 255, 102, 0.08);
-        border: none;
-        border-top: 1px solid rgba(0, 255, 102, 0.3);
-        border-radius: 0;
-        box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.5);
-        flex-direction: row;
-        align-items: center;
-        justify-content: space-evenly;
-        padding: 0 8px;
-        box-sizing: border-box;
-        pointer-events: auto;
-        cursor: pointer;
-    }
-
-    body:not(.panel-expanded) #hud-control-bar.position-bottom #hud-mini-info {
-        writing-mode: horizontal-tb !important;
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        justify-content: space-evenly;
-        gap: 8px;
-        height: 100%;
-        width: 100%;
-    }
-
-    body:not(.panel-expanded) #hud-control-bar.position-bottom #hud-mini-info .hud-mini-item {
-        writing-mode: horizontal-tb !important;
-        text-orientation: initial !important;
-        transform: none !important;
-    }
 
     /* -----------------------------------------------------------------
      * 横画面時の #click-btn のレイアウト調整

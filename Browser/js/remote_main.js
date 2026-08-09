@@ -37,10 +37,11 @@ function syncViewportToCSSVariables(rectOrImmediate, immediate2 = false) {
     }
 
     const update = () => {
-        const viewport = document.getElementById('viewport');
-        if (!viewport) return;
+        // [task15] 計測対象を #screen-container（ゲーム画面実体）とする
+        const screenContainer = document.getElementById('screen-container');
+        if (!screenContainer) return;
         // rect が渡された場合は再取得せず使用（二重 getBoundingClientRect 防止）
-        const actualRect = rect || viewport.getBoundingClientRect();
+        const actualRect = rect || screenContainer.getBoundingClientRect();
         const style = document.documentElement.style;
         // Math.round() によるピクセル丸め（sub-pixel レイアウトぼやけ防止）
         style.setProperty('--viewport-top', Math.round(actualRect.top) + 'px');

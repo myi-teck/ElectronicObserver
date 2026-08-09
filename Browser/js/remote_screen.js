@@ -283,9 +283,17 @@ function scheduleCursorUpdate() {
 }
 
 function updateCursorDisplay() {
+    // [task15] #screen-container のオフセットを差し引いた相対座標計算
+    const container = document.getElementById('screen-container');
+    const containerRect = container ? container.getBoundingClientRect() : { left: 0, top: 0 };
     const rect = screen.getBoundingClientRect();
-    const x = rect.left + (vCursorX * rect.width);
-    const y = rect.top + (vCursorY * rect.height);
+
+    // #screen-container の左上を基準とした Canvas の相対位置を計算
+    const relativeCanvasLeft = rect.left - containerRect.left;
+    const relativeCanvasTop = rect.top - containerRect.top;
+
+    const x = relativeCanvasLeft + (vCursorX * rect.width);
+    const y = relativeCanvasTop + (vCursorY * rect.height);
     cursor.style.left = x + 'px';
     cursor.style.top = y + 'px';
     debug.textContent = `POS-X: ${Math.round(vCursorX*100)}% POS-Y: ${Math.round(vCursorY*100)}%`;
