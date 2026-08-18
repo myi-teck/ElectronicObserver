@@ -100,12 +100,21 @@ namespace ElectronicObserver.Window
 			{
 				lock (_debugLogLock)
 				{
-					string path = @"c:\PRJ1\_自作\EO\ElectronicObserver\debug_investigation.log";
+					// [task19 不具合3修正] ハードコードパスを AppDomain のベースディレクトリ相対に変更。
+					// 実行ディレクトリ内に debug_investigation.log が生成される（旧実装の
+					// c:\PRJ1\_自作\EO\... は存在せず、catch{} でサイレント失敗していた）。
+					string path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug_investigation.log");
 					string line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [FormBrowserHost] [Thread:{Environment.CurrentManagedThreadId}] {msg}{Environment.NewLine}";
 					System.IO.File.AppendAllText(path, line);
 				}
 			}
-			catch { }
+			catch (Exception ex)
+			{
+				// [task19 不具合3修正] サイレントな例外握りつぶしを禁止（AGENTS.md 準拠）。
+				// 起動時ログ書き込み失敗は Trace に可視化する（File IO 失敗が起動を妨げないよう try-catch は維持）。
+				System.Diagnostics.Trace.WriteLine(
+					$"[FormBrowserHost] DebugLog 書き込みに失敗しました: {ex}");
+			}
 		}
 
 		/// <summary>
@@ -307,6 +316,10 @@ namespace ElectronicObserver.Window
 				config.RemoteControllerAddress = c.RemoteControllerAddress;
 				// 2026/07/23 追記（パスワードの設定コピー）
 				config.RemoteControllerPassword = c.RemoteControllerPassword;
+				// task28: WebCodecs 設定コピー
+				config.WebCodecsEnabled = c.WebCodecsEnabled;
+				config.WebCodecsBitrate = c.WebCodecsBitrate;
+				config.WebCodecsFps = c.WebCodecsFps;
 				return config;
 			}
 		}
@@ -344,6 +357,10 @@ namespace ElectronicObserver.Window
 			c.RemoteControllerAddress = config.RemoteControllerAddress;
 			// 2026/07/23 追記（パスワードの設定書き戻し）
 			c.RemoteControllerPassword = config.RemoteControllerPassword;
+			// task28: WebCodecs 設定書き戻し
+			c.WebCodecsEnabled = config.WebCodecsEnabled;
+			c.WebCodecsBitrate = config.WebCodecsBitrate;
+			c.WebCodecsFps = config.WebCodecsFps;
 			//Utility.Configuration.Config.Debug.EnableDebugMenu = config.EnableDebugMenu;
 
 			// volume

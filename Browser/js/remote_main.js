@@ -361,6 +361,14 @@ initSettingsButtons('sensitivity-group', targetSensitivity, value => {
             buttons.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             ProtocolManager.setMode(mode);
+            // [task19 Bug 1 fix] In the case of WCS mode, call switchToWcsMode() to reset the VideoDecoder state
+            // [Round 7 Major 修正] switchToWcsMode() は VideoDecoder 状態リセットのみを行う（WS 送信は関数内にない）。
+            // setMode('webcodecs') → startConnection() → closeWebSocket() + attemptWebSocket() により
+            // 新 WS は CONNECTING 状態のため、switch_mode webcodecs の実際の送信は接続確立後の
+            // onopen ハンドラ (remote_connection.js) で行われる。
+            if (mode === 'webcodecs' && typeof switchToWcsMode === 'function') {
+                switchToWcsMode();
+            }
         });
     });
 })();
@@ -401,6 +409,11 @@ function setHudBarPosition(mode) {
     }
 
     syncViewportToCSSVariables(true);
+
+    // [task19 不具合2修正] HUD バー位置変更で #game-screen の実寸が変わるため rect キャッシュを無効化
+    if (typeof window.invalidateGameScreenRect === 'function') {
+        window.invalidateGameScreenRect();
+    }
 }
 
 (function initHudPositionButtons() {
@@ -604,6 +617,11 @@ window.isDismissingPanel = false;
 
         // viewport マージン変更を即座にCSS変数へ反映
         syncViewportToCSSVariables(true);
+
+        // [task19 不具合2修正] パネル展開/閉合で #game-screen の実寸が変わるため rect キャッシュを無効化
+        if (typeof window.invalidateGameScreenRect === 'function') {
+            window.invalidateGameScreenRect();
+        }
     }
 
     hudControlBar.addEventListener('click', togglePanel);
@@ -632,6 +650,11 @@ window.isDismissingPanel = false;
 
         // パネルリセットに伴う viewport マージン変更を即座にCSS変数へ反映
         syncViewportToCSSVariables(true);
+
+        // [task19 不具合2修正] パネルリセットに伴い #game-screen の実寸が変わるため rect キャッシュを無効化
+        if (typeof window.invalidateGameScreenRect === 'function') {
+            window.invalidateGameScreenRect();
+        }
     }
 
     /**

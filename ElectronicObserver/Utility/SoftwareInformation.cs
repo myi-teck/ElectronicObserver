@@ -1,4 +1,4 @@
-﻿using ElectronicObserver.Utility.Mathematics;
+using ElectronicObserver.Utility.Mathematics;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -53,7 +53,9 @@ namespace ElectronicObserver.Utility
 				return;
 			}
 
+#pragma warning disable CS0162
 			if (client == null)
+#pragma warning restore CS0162
 			{
 				client = new System.Net.WebClient
 				{

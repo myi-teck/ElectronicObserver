@@ -122,20 +122,44 @@ namespace Browser
 
 		// 2026/07/29 新規作成（WebSocketプロトコルバージョン定数）
 		// バージョン番号は将来の仕様が互換性なく変更される場合にインクリメント
-		private const int WebSocketProtocolVersion = 0;
+		// Version 2: 7Bヘッダー (Version + Type + Flags + Seq)
+		private const int WebSocketProtocolVersion = 2;
 
 		// 2026/07/29 新規作成（最大同時接続数制限）
 		private const int MaxConcurrentClients = 5;
-
+	
 		// 2026/07/29 追記（接続数制限のアトミック管理用）
 		private int _activeConnectionCount; // Interlocked で管理
+	
+		// 2026/08/12 myi 新規作成（認証ガード対象パスリスト）
+		/// <summary>
+		/// 認証が必要で、未認証時に401を返すAPIパスのリスト。
+		/// ハードコードされたif文ではなく静的HashSetで管理し、保守性を向上させる。
+		/// </summary>
+		private static readonly HashSet<string> s_authenticatedApiPaths = new HashSet<string>
+		{
+			"/screen.webp",
+			"/hud",
+			"/control",
+			"/capture-mode",
+			"/capture-config",
+		};
 
 		// 2026/07/29 新規作成（グローバルシーケンス番号：WebSocket/HTTP共通の単調増加int型）
+		// 2026/08/13 修正（【二次レビュー Minor 修正】 seq 型整合性の明文化）
 		/// <summary>
 		/// グローバルシーケンス番号（WebSocket/HTTP共通、単調増加）
 		/// Interlocked.Increment でスレッドセーフなインクリメント
-		/// [二次レビュー修正] int型(32bit)を使用。Interlocked.Incrementはuintを非サポートのため。
-		/// ラップアラウンド対応は差分計算（uintキャスト）で実施し、24日超過時のフレーム配信停止を防止
+		///
+		/// 【設計書整合性: int 型採用の理由】
+		/// 設計書では uint (32bit単調増加) が規定されているが、C# の Interlocked.Increment は uint 型を
+		/// サポートしていないため、int 型 (32bit 符号付き) を使用している。
+		/// ヘッダー書き込み時（BuildWebCodecsHeader）で (uint) キャストを行い、
+		/// Big-Endian バイト列に変換する。これにより設計書の uint 仕様に準拠した通信が行われる。
+		///
+		/// ラップアラウンド対応: 符号付き int として -2147483648 〜 +2147483647 の範囲で単調増加し、
+		/// 差分計算（int 演算）で過去フレームの検出を行う。符号付き整数の差分でラップアラウンド後も
+		/// 過去フレームの検出が正しく機能する（24日超過時のフレーム配信停止を防止）。
 		/// </summary>
 		private int _globalSequenceNumber;
 
@@ -185,12 +209,96 @@ namespace Browser
 		//   _sharedFrameBuffer が更新されず、新規接続クライアントの画面がブラックアウトするのを防ぐ
 		private volatile bool _forceNextKeyFrame = false;
 
+		// task28 Phase 0: クライアントプロトコルバージョン管理
+		// 【ver 2.9 修正】 Critical Review 指摘6 対応: ConcurrentDictionary へ変更
+		// 各WebSocketセッションのクライアントプロトコルバージョンをスレッドセーフに管理
+		// null = バージョン未決状態（接続確立後5秒以内に PROTOCOL_VERSION 応答待ち）
+		private readonly ConcurrentDictionary<string, int?> _clientVersions = new ConcurrentDictionary<string, int?>();
+
+		// task28 Phase 0: バージョン検出タイムアウト（5秒）
+		private const int ProtocolVersionTimeoutMs = 5000;
+
 		// 2026/07/29 新規作成（ゾンビクリーンアップ間隔：5秒）
 		private DateTime _lastZombieCleanupTime = DateTime.MinValue;
 
 		//====================================================================================
 		// IPC 最適化 - スクリプト事前構築
 		//------------------------------------------------------------------------------------
+		// 2026/07/27 新規作成（EvaluateScriptAsync 用スクリプトの事前構築：GC 負荷削減）
+
+		// task28 Phase 0: WebCodecs pull 用スクリプト（ver 2.9 対応: Base64 文字列受信方式）
+		private const string WebCodecsPullScript =
+			"(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.pull_encoded();}})()";
+
+		// task28 Phase 0: WebCodecs エンコーダ停止スクリプト
+		private const string WebCodecsStopScript =
+			"(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.stopEncoder();}})()";
+
+		// [task19_v1 Critical修正] WebCodecs エンコーダ初期化スクリプトテンプレート（固有トークン: __CODEC__ / __BITRATE__ / __FPS__）
+		// string.Format で構築しない理由: string.Format は JS リテラルブレース（{codec:'...'} 等）を
+		// フォーマット項目と解釈し FormatException（「入力文字列の形式が正しくありません」）を投げるため、
+		// JS に到達せず WebCodecs モードが常に WebP にフォールバックしていた。
+		// verbatim 文字列 + トークン置換（string.Replace）で構築するため、ブレースのエスケープが不要で検証しやすい。
+		// [task19_v1 Critical#2修正] EvaluateScriptAsPromiseAsync はスクリプトを (async function(){ <script> })() で
+		// ラップし、Promise.resolve(...).then() で解決値を回収する。async function 内の式文は return しないと
+		// undefined を解決するため、テンプレート先頭に return を付与し initEncoder() の Promise を回収する。
+		private const string WebCodecsInitEncoderTemplate =
+			@"return (function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.initEncoder({codec:'__CODEC__',width:1200,height:720,bitrate:__BITRATE__,framerate:__FPS__});}})();";
+
+		// [task19_v1 Critical#3修正] WebCodecs encodeFrame() 呼び出しスクリプトテンプレート（固有トークン: __IS_KEY_FRAME__）
+		// encodeFrame() は同期関数（Promise ではなくオブジェクトを直接返却）のため、非 Promise 版 EvaluateScriptAsync を使用。
+		// 結果は pull_encoded()（_encodedChunks キュー）で回収されるため、返却値は失敗検知のみに使用。
+		// （AGENTS.md: 空 catch 禁止 — engine 未初期化・例外時は警告ログを出力し、そのフレームをスキップしてループ継続）
+		// canvas はスクリプト内で document.querySelector('canvas') により取得（start() / pull() と同一ソース）。
+		// __IS_KEY_FRAME__ は true/false に置換（string.Replace）。
+		private const string WebCodecsEncodeFrameTemplate =
+			"(function(){if(window._kancolleCaptureEngine){var canvas=document.querySelector('canvas');if(!canvas){return{success:false,error:'Canvas not found'};}return window._kancolleCaptureEngine.encodeFrame(canvas,__IS_KEY_FRAME__);}})();";
+
+		// task28 Phase 1: モード管理
+		public enum CaptureMode { WebP, WebCodecs, HttpPolling }
+
+		private volatile CaptureMode _currentCaptureMode = CaptureMode.WebP;
+		private readonly object _modeLock = new object();
+
+		// task28 Phase 1: WebCodecs 状態管理
+		private volatile bool _isWebCodecsInitialized = false;
+		private volatile int _webCodecsBitrate = 800000; // 800 kbps 標準
+		private volatile int _webCodecsFps = 30;
+		private volatile string _webCodecsCodec = "avc1.42001f"; // H.264 Baseline Level 3.1
+
+		// task28 Phase 1: WebCodecs 中央キャプチャループのタスク参照
+		private volatile Task _webCodecsCaptureTask;
+
+		// task28 Phase 1: WebCodecs キャプチャループの CancellationTokenSource
+		private CancellationTokenSource _webCodecsCaptureCts;
+
+		// [task19 P2/P3] 最終受信した SPS/PPS (description) バイト列のキャッシュ
+		// 新接続クライアント（DescriptionSent=false）への追隨送信、および reinit_decoder 受信時の
+		// 再送信に使用する。JS 側の SPS/PPS は同一セッション内で不変のためキャッシュ再利用が可能
+		// [task19 レビュー指摘 C1] 不変性保証: volatile は参照の可視性のみ保証し byte[] 中身は保証しないため、
+		// キャッシュ登録時に防御コピー（WebCodecsCaptureLoopAsync 内）を行い、登録後は読み取り専用として扱う。
+		// 送信側はローカルスナップショット参照 + BlockCopy コピー送信により、キャッシュ差し替えと無関係に安全
+		private volatile byte[] _lastWebCodecsDescription;
+
+		// task28 Phase 2: WebCodecs キャプチャループのキーフレーム間隔（2秒）
+		private const int WebCodecsKeyFrameIntervalMs = 2000;
+
+		// [task19 レビュー指摘 M1] SPS/PPS 送信バックオフ定数
+		// 連続失敗回数閾値超過後、最終試行から一定期間だけ再送を抑制し、
+		// ネットワーク断続時の無限再送ループ・ログスパイクを防ぐ
+		private const int DescriptionSendBackoffFailThreshold = 5;
+		private const int DescriptionSendBackoffMs = 5000;
+
+		// [task19 レビュー指摘 M2/M2b] 制御メッセージレートリミット定数（reinit_decoder / switch_mode）
+		// クライアント側には 5秒スロット（_clampReinitIntervalMs）が存在するが、
+		// サーバー側もバグ・悪意あるクライアントの連打に対して防御する（帯域浪費・キャプチャループ再起動ストーム防止）
+		private const int ReinitDecoderMinIntervalMs = 5000;
+		private const int SwitchModeMinIntervalMs = 5000;
+
+		// [task19 レビュー指摘 M3] Version 1 クライアント警告ログのダウンスープリング間隔（ms）
+		// 毎フレーム出力するとログスパイクになるため、一定間隔でのみ出力する
+		private const int Version1WarnIntervalMs = 10000;
+
 		// 2026/07/27 新規作成（EvaluateScriptAsync 用スクリプトの事前構築：GC 負荷削減）
 		// 高頻度呼び出し（10FPS）の CaptureCanvasAsync で使用するスクリプトを
 		// 定数として事前定義し、呼び出し毎の文字列生成によるGC負荷および FormatException を排除する。
@@ -595,6 +703,11 @@ namespace Browser
 			public string SessionId { get; }
 			public CancellationTokenSource CancellationToken { get; }
 			public DateTime LastHeartbeat { get; set; }
+			/// <summary>
+			/// WebSocket 接続確立時刻。ProtocolVersionTimeoutMs によるフォールバック判定に使用。
+			/// 2026/08/13 myi 追記（task28 二次レビュー修正：バージョン検出タイムアウト対応）
+			/// </summary>
+			public DateTime ConnectionStartTime { get; }
 
 			/// <summary>
 			/// クライアントが要求するキャプチャ目標間隔（ミリ秒）。
@@ -642,21 +755,31 @@ namespace Browser
 			private bool _frameUpdated;
 	
 			/// <summary>
-			/// フレーム到着シグナル（Channel使用、例外ベースフロー制御排除）
-			/// バウンド容量1のChannelを使用し、最新1フレームのみ保持
+			/// フレームドロップカウント（TryWrite 失敗時にインクリメント、統計・ログに反映）
+			/// 設計書 §5.1.2 規定によるフレームドロップの可視化用
+			/// ※ 設計書 §1740-1731 ではメソッドスコープの droppedCount を規定しているが、
+			///   セッション全体のドロップ回数の累積統計は運用上のデバッグ・監視に有用なため、
+			///   セッションスコープのフィールドとして実装している（設計書整合性の明記）
 			/// </summary>
-			public readonly Channel<int> _frameSignal = Channel.CreateBounded<int>(new BoundedChannelOptions(1)
+			public int _droppedFrameCount;
+	
+			/// <summary>
+			/// フレーム到着シグナル（Channel使用、例外ベースフロー制御排除）
+			/// 【Major修正】 設計書 ver 3.9 §1728-1731 規定: キューサイズ 30 に統一
+			/// 30fps で約1秒分のバッファリング。30フレーム超過で TryWrite 失敗→フレームドロップ
+			/// </summary>
+			public readonly Channel<int> _frameSignal = Channel.CreateBounded<int>(new BoundedChannelOptions(30)
 			{
-				FullMode = BoundedChannelFullMode.DropOldest, // 最新のみ保持
+				FullMode = BoundedChannelFullMode.DropWrite, // キュー超過時は TryWrite が false を返し、ドロップ処理に委譲
 				SingleReader = true,
 			});
 	
 			/// <summary>
-			/// WebSocket送信用の6バイトヘッダーバッファ（事前割り当て、再利用）
-			/// Version 1byte + Flags 1byte + Seq 4bytes
-			/// ループ内で new byte[6] による毎フレームアロケーションを排除
+			/// WebSocket送信用の7バイトヘッダーバッファ（事前割り当て、再利用）
+			/// Version 1byte + Type 1byte + Flags 1byte + Seq 4bytes
+			/// ループ内で new byte[7] による毎フレームアロケーションを排除
 			/// </summary>
-			internal readonly byte[] _headerBuffer = new byte[6];
+			internal readonly byte[] _headerBuffer = new byte[7];
 	
 			//================================================================================
 			// セッション固有のカーソル座標（スレッドセーフ）
@@ -699,14 +822,122 @@ namespace Browser
 				Interlocked.Exchange(ref _cursorYBits, BitConverter.DoubleToInt64Bits(value));
 			}
 
+			/// <summary>
+			/// [task19 P2] このセッションに SPS/PPS (description) を送信済みかどうかのフラグ
+			/// WebCodecs モードでキーフレーム送信前に Type=0x02 の Description フレームを送信済みか管理する
+			/// reinit_decoder 受信時に false にリセットして再送信を行う
+			/// </summary>
+			public volatile bool DescriptionSent;
+
+			// [task19 レビュー指摘 M1] SPS/PPS 送信バックオフ状態（Interlocked/Volatile 管理）
+			// 送信失敗の連続回数が閾値に達した場合、一定期間だけ再送を抑制する（P4a と同様の ticks 管理）
+			private int _descSendFailCount;
+			private long _descLastSendTicks;  // 最終 SPS/PPS 送信試行時刻（DateTime.UtcNow.Ticks）
+			// [task19 レビュー指摘 M2] 最終 reinit_decoder 受信時刻（レートリミット用）
+			private long _lastReinitTicks;
+			// [task19 レビュー指摘 M2b] 最終 switch_mode 受信時刻（レートリミット用）
+			private long _lastSwitchModeTicks;
+			// [task19 レビュー指摘 M3] 最終 Version 1 警告ログ出力時刻（ダウンスープリング用）
+			private long _lastV1WarnTicks;
+
 			public WebSocketSession(System.Net.WebSockets.WebSocket ws, string sessionId)
 			{
 				WebSocket = ws;
 				SessionId = sessionId;
 				CancellationToken = new CancellationTokenSource();
 				LastHeartbeat = DateTime.UtcNow;
+				ConnectionStartTime = DateTime.UtcNow;
 				_latestFrameBuffer = null;
 				_latestFrameLength = 0;
+			}
+
+			/// <summary>
+			/// [task19 レビュー指摘 M1] SPS/PPS 送信成功を記録する（失敗カウントをリセット）
+			/// </summary>
+			public void MarkDescriptionSentSuccess()
+			{
+				Interlocked.Exchange(ref _descSendFailCount, 0);
+				Interlocked.Exchange(ref _descLastSendTicks, DateTime.UtcNow.Ticks);
+			}
+
+			/// <summary>
+			/// [task19 レビュー指摘 M1] SPS/PPS 送信失敗を記録する（失敗カウントをインクリメント）
+			/// </summary>
+			public void MarkDescriptionSentFailure()
+			{
+				Interlocked.Increment(ref _descSendFailCount);
+				Interlocked.Exchange(ref _descLastSendTicks, DateTime.UtcNow.Ticks);
+			}
+
+			/// <summary>
+			/// [task19 レビュー指摘 M1] SPS/PPS の再送を許可しているかを判定する（バックオフ制御）
+			/// 連続失敗が DescriptionSendBackoffFailThreshold 回に達した場合、
+			/// 最終試行から DescriptionSendBackoffMs 経過するまで再送を抑制する
+			/// </summary>
+			public bool CanSendDescription()
+			{
+				int failCount = Volatile.Read(ref _descSendFailCount);
+				if (failCount < DescriptionSendBackoffFailThreshold) return true;
+				long lastTicks = Volatile.Read(ref _descLastSendTicks);
+				return (DateTime.UtcNow.Ticks - lastTicks) >= (long)DescriptionSendBackoffMs * TimeSpan.TicksPerMillisecond;
+			}
+
+			/// <summary>
+			/// [task19 レビュー指摘 M1/M2] SPS/PPS 送信状態（失敗カウント・最終試行時刻）をリセットする
+			/// reinit_decoder / switch_mode(WebCodecs) 受信時に呼び、即時再送を許可する
+			/// </summary>
+			public void ResetDescriptionSendState()
+			{
+				Interlocked.Exchange(ref _descSendFailCount, 0);
+				Interlocked.Exchange(ref _descLastSendTicks, 0);
+			}
+
+			/// <summary>
+			/// [task19 レビュー指摘 M2] reinit_decoder のレートリミット判定（直近 ReinitDecoderMinIntervalMs 以内の連続受信を拒否）
+			/// 許可された場合は時刻を記録して true を返す
+			/// </summary>
+			public bool TryAcceptReinitDecoder()
+			{
+				long nowTicks = DateTime.UtcNow.Ticks;
+				long lastTicks = Volatile.Read(ref _lastReinitTicks);
+				if (lastTicks != 0 && (nowTicks - lastTicks) < (long)ReinitDecoderMinIntervalMs * TimeSpan.TicksPerMillisecond)
+				{
+					return false;
+				}
+				Interlocked.Exchange(ref _lastReinitTicks, nowTicks);
+				return true;
+			}
+
+			/// <summary>
+			/// [task19 レビュー指摘 M2b] switch_mode のレートリミット判定（直近 SwitchModeMinIntervalMs 以内の連続受信を拒否）
+			/// SetCaptureModeAsync がキャプチャループの停止・起動を伴うため、連打時の再起動ストームを防止する
+			/// </summary>
+			public bool TryAcceptSwitchMode()
+			{
+				long nowTicks = DateTime.UtcNow.Ticks;
+				long lastTicks = Volatile.Read(ref _lastSwitchModeTicks);
+				if (lastTicks != 0 && (nowTicks - lastTicks) < (long)SwitchModeMinIntervalMs * TimeSpan.TicksPerMillisecond)
+				{
+					return false;
+				}
+				Interlocked.Exchange(ref _lastSwitchModeTicks, nowTicks);
+				return true;
+			}
+
+			/// <summary>
+			/// [task19 レビュー指摘 M3] Version 1 クライアント警告ログのダウンスープリング判定
+			/// 前回のログ出力から Version1WarnIntervalMs 以上経過した場合のみ true を返して時刻を記録する
+			/// </summary>
+			public bool TryLogVersion1Warning()
+			{
+				long nowTicks = DateTime.UtcNow.Ticks;
+				long lastTicks = Volatile.Read(ref _lastV1WarnTicks);
+				if (lastTicks != 0 && (nowTicks - lastTicks) < (long)Version1WarnIntervalMs * TimeSpan.TicksPerMillisecond)
+				{
+					return false;
+				}
+				Interlocked.Exchange(ref _lastV1WarnTicks, nowTicks);
+				return true;
 			}
 
 			/// <summary>
@@ -886,34 +1117,66 @@ namespace Browser
 		/// WebSocketセッションとは独立して管理
 		/// </summary>
 		private class HttpCursorState
-		{
-			private long _xBits;
-			private long _yBits;
-
-			public double X => BitConverter.Int64BitsToDouble(Volatile.Read(ref _xBits));
-			public double Y => BitConverter.Int64BitsToDouble(Volatile.Read(ref _yBits));
-
-			/// <summary>
-			/// 最終アクセス時刻（エバクションポリシーで使用）
-			/// </summary>
-			public DateTime LastAccessTime { get; private set; } = DateTime.UtcNow;
-
-			public void SetX(double value)
 			{
-				Interlocked.Exchange(ref _xBits, BitConverter.DoubleToInt64Bits(value));
-				LastAccessTime = DateTime.UtcNow;
-			}
-
-			public void SetY(double value)
-			{
-				Interlocked.Exchange(ref _yBits, BitConverter.DoubleToInt64Bits(value));
-				LastAccessTime = DateTime.UtcNow;
-			}
-
-			public void Touch()
-			{
-				LastAccessTime = DateTime.UtcNow;
-			}
+				private long _xBits;
+				private long _yBits;
+				private int _hasValue; // 0: false, 1: true (Interlocked 管理)
+	
+				// [task19 P4] LastAccessTime を long ticks（UTC）として Interlocked/Volatile 管理
+				// DateTime 構造体のプレーン書き込みは 32bit 環境で Torn Read  가능성이あるため、
+				// 64bit 値の原子性を保証する Interlocked.Exchange / Volatile.Read に統一
+				private long _lastAccessTicks = DateTime.UtcNow.Ticks;
+	
+				// [task19 v5] HasValue プロパティ（外部レビュー Major 6 修正: アトミック保護維持）
+				public bool HasValue => Volatile.Read(ref _hasValue) == 1;
+	
+				public double X => BitConverter.Int64BitsToDouble(Volatile.Read(ref _xBits));
+				public double Y => BitConverter.Int64BitsToDouble(Volatile.Read(ref _yBits));
+	
+				/// <summary>
+				/// 最終アクセス時刻（エバクションポリシーで使用）
+				/// [task19 P4] Volatile.Read によるアトミック読み取り
+				/// </summary>
+				public DateTime LastAccessTime => new DateTime(Volatile.Read(ref _lastAccessTicks), DateTimeKind.Utc);
+	
+				// [task19 P4] 最終アクセス時刻をアトミックに更新（内部共通ヘルパ）
+				private void UpdateLastAccessTicks()
+				{
+					Interlocked.Exchange(ref _lastAccessTicks, DateTime.UtcNow.Ticks);
+				}
+	
+				public void SetX(double value)
+				{
+					Interlocked.Exchange(ref _xBits, BitConverter.DoubleToInt64Bits(value));
+					UpdateLastAccessTicks();
+				}
+	
+				public void SetY(double value)
+				{
+					Interlocked.Exchange(ref _yBits, BitConverter.DoubleToInt64Bits(value));
+					UpdateLastAccessTicks();
+				}
+	
+				/// <summary>
+				/// [task19] x, y をセットし HasValue を true にする
+				/// </summary>
+				public void Touch(double x, double y)
+				{
+					Interlocked.Exchange(ref _xBits, BitConverter.DoubleToInt64Bits(x));
+					Interlocked.Exchange(ref _yBits, BitConverter.DoubleToInt64Bits(y));
+					Interlocked.Exchange(ref _hasValue, 1);
+					UpdateLastAccessTicks();
+				}
+	
+				/// <summary>
+				/// [task19] LastAccessTime のみを更新（タイムアウト状態をリセット）
+				/// 命名は Touch(double,double) との紛らわしさを避けるため UpdateLastAccess とした
+				/// [task19 P4] Interlocked によるアトミック更新に変更
+				/// </summary>
+				public void UpdateLastAccess()
+				{
+					UpdateLastAccessTicks();
+				}
 		}
 
 		/// <summary>
@@ -993,9 +1256,11 @@ namespace Browser
 			// 接続数が変更された: 再計算
 			int minInterval = int.MaxValue;
 
-			// .ToArray() によりスレッドセーフなスナップショットを作成してから列挙
-			// 列挙中にセッションが Dispose されて ConcurrentDictionary から削除されても安全
-			foreach (var session in _webSocketSessions.Values.ToArray())
+			// [レビュー修正] .ToArray() による不要なアロケーションを排除
+			// ConcurrentDictionary.Values の列挙はスナップショットではないが、
+			// 列挙中にセッションが Dispose されても TargetIntervalMs の読み取りは安全（volatile）
+			// セッションが破棄された場合はループの次の反復で自然に除外される
+			foreach (var session in _webSocketSessions.Values)
 			{
 				int interval = session.TargetIntervalMs;
 				if (interval <= 0) interval = 16; // 60FPS制限
@@ -1057,6 +1322,30 @@ namespace Browser
 				{
 					Log(2, $"[RemoteController] ゾンビセッション切断 (WebSocket非Open): SessionID={session.SessionId}, State={session.WebSocket.State}");
 					shouldRemove = true;
+				}
+
+				// 3. 【task28 二次レビュー修正】 ProtocolVersionTimeoutMs によるフォールバック
+				// 設計書 §5.3.3 定義: 接続確立後5秒以内に PROTOCOL_VERSION 応答待ち
+				// タイムアウト時は Version 1 (6Bヘッダー) フォールバック
+				//
+				// 【Critical修正】 TOCTOU 競合解消:
+				// 旧実装では GetClientVersion → SetClientVersion の2ステップで TOCTOU (Time-of-Check to Time-of-Use)
+				// 競合が存在し、クライアントが PROTOCOL_VERSION メッセージを送信した直後にフォールバックが
+				// 実行されると Version 2 が Version 1 で上書きされる可能性があった。
+				// 修正案: TrySetClientVersionIfNull による原子操作に置換。null の時のみ Version 1 を設定。
+				if (!shouldRemove)
+				{
+					var elapsed = (DateTime.UtcNow - session.ConnectionStartTime).TotalMilliseconds;
+					if (elapsed >= ProtocolVersionTimeoutMs)
+					{
+						// 原子的にバージョンが未設定（null）の時のみ Version 1 を設定
+						// 既に PROTOCOL_VERSION メッセージを受信済み（値が設定済み）の場合は既存値を維持
+						bool wasNull = TrySetClientVersionIfNull(session.SessionId, 1);
+						if (wasNull)
+						{
+							Log(2, $"[RemoteController] プロトコルバージョン検出タイムアウト → Version 1 フォールバック (SessionID={session.SessionId}, 経過={elapsed}ms)");
+						}
+					}
 				}
 
 				if (shouldRemove)
@@ -1169,8 +1458,9 @@ namespace Browser
 		/// <summary>
 		/// 2026/06/10 myi 新規作成（リッスンアドレスパラメータの追加）
 		/// 2026/07/14 myi 変更（パスワードパラメータの追加）
+		/// 2026/08/12 myi 変更（WebCodecs 設定パラメータの追加）
 		/// </summary>
-		public RemoteController(FormBrowser parent, int port = 8080, string address = "*", string password = "")
+		public RemoteController(FormBrowser parent, int port = 8080, string address = "*", string password = "", int webCodecsBitrate = 800000, int webCodecsFps = 30)
 		{
 			_parent = parent;
 			_port = port;
@@ -1178,6 +1468,10 @@ namespace Browser
 			_password = password;
 			_sharedFrameBuffer = new SharedFrameBuffer(
 				negativeCount => Log(3, $"[RemoteController] 参照カウント不整合: _referenceCount = {negativeCount} (二重解放の可能性があります)"));
+
+			// task28: WebCodecs 設定値をコンストラクタ引数から読み込む
+			_webCodecsBitrate = webCodecsBitrate;
+			_webCodecsFps = webCodecsFps;
 		}
 
 		/// <summary>
@@ -1468,7 +1762,8 @@ namespace Browser
 				if (!IsAuthenticated(req, res))
 				{
 					// APIリクエストには401を返す（クライアントでハンドリングしやすくするため）
-					if (path == "/screen.webp" || path == "/hud" || path == "/control")
+					// 【Minor修正】 ハードコードされたif文を静的HashSet(s_authenticatedApiPaths)で管理
+					if (s_authenticatedApiPaths.Contains(path))
 					{
 						res.StatusCode = 401;
 						res.Close();
@@ -1500,6 +1795,16 @@ namespace Browser
 				{
 					// モバイル端末からのHUD情報要求に対し、実際のゲーム内ステータスをJSONで返します
 					SendHudData(req, res);
+				}
+				// task28: WebCodecs モード管理エンドポイント
+				// 【Major修正】 認証チェックは一元化されたガード（1525行目）で実施済み（重複排除）
+				else if (path == "/capture-mode")
+				{
+					await HandleCaptureModeAsync(req, res);
+				}
+				else if (path == "/capture-config")
+				{
+					SendCaptureConfig(res);
 				}
 				else if (path == "/ws")
 				{
@@ -2129,84 +2434,107 @@ namespace Browser
 		/// </summary>
 		private async Task HandleControlAsync(HttpListenerRequest req, HttpListenerResponse res)
 		{
-			// 2026/07/29 myi 修正（セッション分離対応）
-			// HTTPモードでもセッションIDベースのカーソル状態を使用
-			CleanupExpiredHttpCursorSessionsIfNeeded();
-
-			// セッションIDを取得（Cookieから）
-			string sessionId = GetCookieValue(req, "session_id");
-			if (string.IsNullOrEmpty(sessionId))
+			try
 			{
-				sessionId = Guid.NewGuid().ToString("N");
-			}
+				// 2026/07/29 myi 修正（セッション分離対応）
+				// HTTPモードでもセッションIDベースのカーソル状態を使用
+				CleanupExpiredHttpCursorSessionsIfNeeded();
 
-			var cursorState = GetOrCreateHttpCursorState(sessionId);
-			var action = req.QueryString["action"];
-			var xStr = req.QueryString["x"];
-			var yStr = req.QueryString["y"];
-
-			// 絶対割合座標 (0.0〜1.0) を受け取り、現在のポインタ座標に適用します。
-			if (action == "move" && double.TryParse(xStr, out double x) && double.TryParse(yStr, out double y))
-			{
-				cursorState.SetX(Math.Max(0, Math.Min(1.0, x)));
-				cursorState.SetY(Math.Max(0, Math.Min(1.0, y)));
-
-				await TriggerMouseMoveAsync(cursorState);
-			}
-			else if (action == "click")
-			{
-				await TriggerMouseClickAsync(cursorState);
-			}
-			// 2026/06/11 myi 新規作成（ゲーム画面タッチクリック）
-			// ゲーム画面（viewport）をタップした位置の絶対座標を直接クリックする
-			else if (action == "touch_click" && double.TryParse(xStr, out double tx) && double.TryParse(yStr, out double ty))
-			{
-				cursorState.SetX(Math.Max(0, Math.Min(1.0, tx)));
-				cursorState.SetY(Math.Max(0, Math.Min(1.0, ty)));
-				await TriggerMouseClickAsync(cursorState);
-			}
-				#region "追加アクション処理"
-				// ブラウザをログインページへ移動（確認はHUD側で行うため、ここでは即座に実行）
-				else if (action == "navigate_login")
+				// セッションIDを取得（Cookieから）
+				string sessionId = GetCookieValue(req, "session_id");
+				if (string.IsNullOrEmpty(sessionId))
 				{
-					_parent.NavigateToLoginPage();
+					sessionId = Guid.NewGuid().ToString("N");
 				}
-				// プライバシーフィルターのカラーモードを設定（0=なし, 1=グレースケール, 4=低コントラスト）
-				// 2026/06/01 myi 変更：差分WebP方式に伴い、フィルターはRemoteControllerクライアント側でCSS適用するため
-				//                  サーバー側ではNOP（何もしない）に変更。本家ブラウザ側には影響を与えない。
-				else if (action == "set_filter")
+
+				var cursorState = GetOrCreateHttpCursorState(sessionId);
+				cursorState.UpdateLastAccess();  // [task19] タイムアウトリセット（設計書 §2.2.2）
+				var action = req.QueryString["action"];
+				var xStr = req.QueryString["x"];
+				var yStr = req.QueryString["y"];
+
+				// 絶対割合座標 (0.0〜1.0) を受け取り、現在のポインタ座標に適用します。
+				if (action == "move" && double.TryParse(xStr, out double x) && double.TryParse(yStr, out double y))
 				{
-					// クライアントサイドフィルターのため、サーバーサイドでは何もしない（NOP）
-					// 将来的に状態同期が必要な場合はここを拡張可能
+					// [task19 P1] Touch(x,y) で座標更新と HasValue=true をアトミックに設定
+					// 旧実装は SetX/SetY のみで HasValue が永遠に false のため、
+					// TriggerMouseClickAsync のフォールバックで (0.5, 0.5) が常に優先されていた
+					cursorState.Touch(Math.Max(0, Math.Min(1.0, x)), Math.Max(0, Math.Min(1.0, y)));
+
+					await TriggerMouseMoveAsync(cursorState);
 				}
-				// WebP圧縮品質の動的設定アクションを追加
-				// 2026/06/01 myi 新規作成（品質スライダーとのWebPリアルタイム連動対応）
-				else if (action == "set_quality" && double.TryParse(req.QueryString["q"], out double qVal))
+				else if (action == "click")
 				{
-					// 品質を0.05〜1.0の範囲にスケール変換
-					double qualityScale = Math.Max(0.05, Math.Min(1.0, qVal / 100.0));
-					var kancolleFrame = _parent.GetKanColleFrame();
-					// IPC 最適化: 文字列補間ではなく事前構築された定数 + 連結を使用し、GC負荷を削減
-					var script = QualityScriptPrefix + qualityScale.ToString(System.Globalization.CultureInfo.InvariantCulture) + QualityScriptSuffix;
-					kancolleFrame?.ExecuteJavaScriptAsync(script);
+					await TriggerMouseClickAsync(cursorState);
 				}
-					#endregion
-					// 2026/07/14 myi 新規作成（ドラッグ操作対応）
-					// 2026/07/29 myi 修正（セッション分離対応：async Task化）
-					// マウスダウン（ドラッグ開始）
-					else if (action == "mousedown")
+				// 2026/06/11 myi 新規作成（ゲーム画面タッチクリック）
+				// ゲーム画面（viewport）をタップした位置の絶対座標を直接クリックする
+				else if (action == "touch_click" && double.TryParse(xStr, out double tx) && double.TryParse(yStr, out double ty))
+				{
+					// [task19 P1] Touch(x,y) で座標更新と HasValue=true をアトミックに設定（move と同様）
+					cursorState.Touch(Math.Max(0, Math.Min(1.0, tx)), Math.Max(0, Math.Min(1.0, ty)));
+					await TriggerMouseClickAsync(cursorState);
+				}
+					#region "追加アクション処理"
+					// ブラウザをログインページへ移動（確認はHUD側で行うため、ここでは即座に実行）
+					else if (action == "navigate_login")
 					{
-						await TriggerMouseDownAsync(cursorState);
+						_parent.NavigateToLoginPage();
 					}
-					// マウスアップ（ドラッグ終了）
-					else if (action == "mouseup")
+					// プライバシーフィルターのカラーモードを設定（0=なし, 1=グレースケール, 4=低コントラスト）
+					// 2026/06/01 myi 変更：差分WebP方式に伴い、フィルターはRemoteControllerクライアント側でCSS適用するため
+					//                  サーバー側ではNOP（何もしない）に変更。本家ブラウザ側には影響を与えない。
+					else if (action == "set_filter")
 					{
-						await TriggerMouseUpAsync(cursorState);
+						// クライアントサイドフィルターのため、サーバーサイドでは何もしない（NOP）
+						// 将来的に状態同期が必要な場合はここを拡張可能
 					}
+					// WebP圧縮品質の動的設定アクションを追加
+					// 2026/06/01 myi 新規作成（品質スライダーとのWebPリアルタイム連動対応）
+					else if (action == "set_quality" && double.TryParse(req.QueryString["q"], out double qVal))
+					{
+						// 品質を0.05〜1.0の範囲にスケール変換
+						double qualityScale = Math.Max(0.05, Math.Min(1.0, qVal / 100.0));
+						var kancolleFrame = _parent.GetKanColleFrame();
+						// IPC 最適化: 文字列補間ではなく事前構築された定数 + 連結を使用し、GC負荷を削減
+						var script = QualityScriptPrefix + qualityScale.ToString(System.Globalization.CultureInfo.InvariantCulture) + QualityScriptSuffix;
+						kancolleFrame?.ExecuteJavaScriptAsync(script);
+					}
+						#endregion
+						// 2026/07/14 myi 新規作成（ドラッグ操作対応）
+						// 2026/07/29 myi 修正（セッション分離対応：async Task化）
+						// マウスダウン（ドラッグ開始）
+						else if (action == "mousedown")
+						{
+							await TriggerMouseDownAsync(cursorState);
+						}
+						// マウスアップ（ドラッグ終了）
+						else if (action == "mouseup")
+						{
+							await TriggerMouseUpAsync(cursorState);
+						}
 		
-					res.StatusCode = 200;
+						res.StatusCode = 200;
+						res.Close();
+					}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[RemoteController] HandleControlAsync error: {ex.Message}");
+				try
+				{
+					if (res.StatusCode != 500)
+					{
+						res.StatusCode = 500;
+						var buf = System.Text.Encoding.UTF8.GetBytes($"{{\"error\":\"{ex.Message}\"}}");
+						await res.OutputStream.WriteAsync(buf, 0, buf.Length);
+					}
+				}
+				finally
+				{
 					res.Close();
 				}
+			}
+		}
 
 		//====================================================================================
 		// 処理ブロック名 : GetBrowserCoords
@@ -2215,11 +2543,21 @@ namespace Browser
 		//                  黒い余白（レターボックス）を動的に考慮し、実際のCefブラウザ論理ピクセル座標へ変換します。
 		//                  2026/07/29 myi 修正：セッション固有のカーソル座標を使用するオーバーロードを追加
 		//------------------------------------------------------------------------------------
-		private Point GetBrowserCoords(double cursorX, double cursorY)
+		private Point? GetBrowserCoords(double cursorX, double cursorY)
 		{
 			// CefSharpブラウザコントロール全体の現在の論理サイズを取得
 			double browserWidth = _parent.Browser.Width;
 			double browserHeight = _parent.Browser.Height;
+
+			// [task19 不具合2修正] ブラウザサイズが 0/極小の場合のガード
+			// ブラウザが未ロード/未表示（Width/Height が 0）の場合、browserAspect が Infinity/NaN になり
+			// gameWidth=gameHeight=0 で (0,0) が返る（クリックが常に左上になる原因）。
+			// 座標変換の前提が崩れているため、null を返して呼び出し側でイベント送信をスキップする。
+			if (browserWidth <= 0 || browserHeight <= 0)
+			{
+				Log(3, $"[RemoteController] GetBrowserCoords: ブラウザサイズが不正 (Width={browserWidth}, Height={browserHeight}) のため座標変換をスキップします");
+				return null;
+			}
 
 			// 艦これ標準のゲーム画面領域アスペクト比は 1200:720 (5:3 = 1.6666...)
 			double gameAspect = 5.0 / 3.0;
@@ -2269,9 +2607,10 @@ namespace Browser
 
 			// セッション固有のカーソル座標を使用
 			var coords = GetBrowserCoords(cursorState.X, cursorState.Y);
+			if (coords == null) return Task.CompletedTask;
 
 			// マウス移動イベントオブジェクトを生成して送信します
-			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
+			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 			host.SendMouseMoveEvent(mouseEvent, false);
 
 			return Task.CompletedTask;
@@ -2284,18 +2623,32 @@ namespace Browser
 		//                  2026/07/29 myi 修正：async Task化、セッション固有カーソル対応
 		//------------------------------------------------------------------------------------
 		private async Task TriggerMouseClickAsync(HttpCursorState cursorState)
-		{
-			if (_parent.Browser == null) return;
-
-			var browser = _parent.Browser.GetBrowser();
-			var host = browser?.GetHost();
-			if (host == null) return;
-
-			// セッション固有のカーソル座標を使用
-			var coords = GetBrowserCoords(cursorState.X, cursorState.Y);
+			{
+				if (_parent.Browser == null) return;
+	
+				var browser = _parent.Browser.GetBrowser();
+				var host = browser?.GetHost();
+				if (host == null) return;
+	
+				// [task19 v3] HasValue フラグによるフォールバック（Major 3 修正）
+				// HasValue が false の場合のみデフォルト 0.5, 0.5 を使用
+				double cursorX, cursorY;
+				if (cursorState.HasValue)
+				{
+					cursorX = cursorState.X;
+					cursorY = cursorState.Y;
+				}
+				else
+				{
+					cursorX = 0.5;
+					cursorY = 0.5;
+				}
+	
+				var coords = GetBrowserCoords(cursorX, cursorY);
+				if (coords == null) return;
 
 			// 左クリックのためのマウス座標イベントを生成
-			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
+			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 			
 			// 1. マウスダウンイベント (左ボタン) の送信
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, false, 1);
@@ -2322,11 +2675,12 @@ namespace Browser
 			if (host == null) return Task.CompletedTask;
 
 			var coords = GetBrowserCoords(cursorState.X, cursorState.Y);
+			if (coords == null) return Task.CompletedTask;
 			// CefEventFlags.None を使用（公式推奨）
 			// isUp=false でダウンイベントを指定
-			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
+			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, false, 1);
-			Console.WriteLine($"RemoteController: TriggerMouseDown @ {coords.X},{coords.Y}");
+			Console.WriteLine($"RemoteController: TriggerMouseDown @ {coords.Value.X},{coords.Value.Y}");
 			return Task.CompletedTask;
 		}
 
@@ -2344,11 +2698,12 @@ namespace Browser
 			if (host == null) return Task.CompletedTask;
 
 			var coords = GetBrowserCoords(cursorState.X, cursorState.Y);
+			if (coords == null) return Task.CompletedTask;
 			// CefEventFlags.None を使用（公式推奨）
 			// isUp=true でアップイベントを指定
-			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
+			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, true, 1);
-			Console.WriteLine($"RemoteController: TriggerMouseUp @ {coords.X},{coords.Y}");
+			Console.WriteLine($"RemoteController: TriggerMouseUp @ {coords.Value.X},{coords.Value.Y}");
 			return Task.CompletedTask;
 		}
 
@@ -2365,7 +2720,8 @@ namespace Browser
 			if (host == null) return Task.CompletedTask;
 
 			var coords = GetBrowserCoords(session.CursorX, session.CursorY);
-			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
+			if (coords == null) return Task.CompletedTask;
+			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 			host.SendMouseMoveEvent(mouseEvent, false);
 
 			return Task.CompletedTask;
@@ -2384,7 +2740,8 @@ namespace Browser
 			if (host == null) return;
 
 			var coords = GetBrowserCoords(session.CursorX, session.CursorY);
-			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
+			if (coords == null) return;
+			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, false, 1);
 			await Task.Delay(50, session.CancellationToken.Token);
@@ -2404,9 +2761,10 @@ namespace Browser
 			if (host == null) return Task.CompletedTask;
 
 			var coords = GetBrowserCoords(session.CursorX, session.CursorY);
-			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
+			if (coords == null) return Task.CompletedTask;
+			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, false, 1);
-			Console.WriteLine($"RemoteController: TriggerMouseDown @ {coords.X},{coords.Y}");
+			Console.WriteLine($"RemoteController: TriggerMouseDown @ {coords.Value.X},{coords.Value.Y}");
 
 			return Task.CompletedTask;
 		}
@@ -2424,9 +2782,10 @@ namespace Browser
 			if (host == null) return Task.CompletedTask;
 
 			var coords = GetBrowserCoords(session.CursorX, session.CursorY);
-			var mouseEvent = new MouseEvent(coords.X, coords.Y, CefEventFlags.None);
+			if (coords == null) return Task.CompletedTask;
+			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, true, 1);
-			Console.WriteLine($"RemoteController: TriggerMouseUp @ {coords.X},{coords.Y}");
+			Console.WriteLine($"RemoteController: TriggerMouseUp @ {coords.Value.X},{coords.Value.Y}");
 
 			return Task.CompletedTask;
 		}
@@ -3056,6 +3415,941 @@ namespace Browser
 				}
 			}
 
+		//====================================================================================
+		// 処理ブロック名 : task28 Phase 0/1 — プロトコル拡張・サーバー側制御基盤
+		//------------------------------------------------------------------------------------
+		// task28 設計書 ver 3.0 に対応するプロトコル拡張およびサーバー側制御ロジックを実装
+		//------------------------------------------------------------------------------------
+
+			//------------------------------------------------------------------------------------
+			// 処理ブロック名 : BuildWebCodecsHeader
+		// 概要           : WebCodecs モード用の7バイトヘッダーを構築する。
+		//                  Version(1B)=0x02 + Type(1B)=0x01 + Flags(1B) + Seq(4B)
+		//                  【レビュー修正】 設計書 §4.2.1 対応: version 引数を削除し常に 0x02 固定
+		//------------------------------------------------------------------------------------
+		private byte[] BuildWebCodecsHeader(byte type, byte flags, uint seq)
+		{
+			return new byte[] { 0x02, type, flags, (byte)(seq >> 24), (byte)(seq >> 16), (byte)(seq >> 8), (byte)seq };
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : SendDescriptionAsync
+		// 概要           : [task19 P2] SPS/PPS (description) を Type=0x02 のフレームとして送信する。
+		//                  フォーマット: [0x02, 0x02, 0x00, Seq(4B BE), SPS/PPSデータ]
+		//                  クライアントJS (remote_connection.js) の Type=0x02 受信処理と整合させる
+		//------------------------------------------------------------------------------------
+		private async Task SendDescriptionAsync(WebSocketSession session, byte[] description, CancellationToken token)
+		{
+			if (description == null || description.Length == 0) return;
+			if (session.WebSocket.State != WebSocketState.Open) return;
+
+			// 新クライアントの追隨送信・reinit_decoder 再送信に共通してシーケンス番号を消費する
+			// [task19_v1 Round5 Minor-4 修正] SPS/PPS 送信で seq を消費するため、
+			// レートリミット (CanSendDescription) により再送が抑制されるケースでは seq 空間にギャップが生じる。
+			// これは設計書通りであり、受信側は単調増加検証（int 差分による過去フレーム検出）で適切に処理する。
+			int seq = Interlocked.Increment(ref _globalSequenceNumber);
+			byte[] header = BuildWebCodecsHeader(0x02, 0x00, (uint)seq);
+
+			await session.SendSemaphore.WaitAsync(token);
+			try
+			{
+				if (IsWebSocketOpen(session.WebSocket))
+				{
+					var buffer = ArrayPool<byte>.Shared.Rent(header.Length + description.Length);
+					try
+					{
+						Buffer.BlockCopy(header, 0, buffer, 0, header.Length);
+						Buffer.BlockCopy(description, 0, buffer, header.Length, description.Length);
+
+						var segment = new ArraySegment<byte>(buffer, 0, header.Length + description.Length);
+						await session.WebSocket.SendAsync(
+							segment,
+							System.Net.WebSockets.WebSocketMessageType.Binary,
+							true,
+							token);
+
+						// [task19 レビュー指摘 M1] 送信成功を記録（失敗カウントリセット + 再送バックオフ解除）
+						session.DescriptionSent = true;
+						session.MarkDescriptionSentSuccess();
+						Log(2, $"[RemoteController] SPS/PPS (description) 送信完了 ({description.Length} bytes, seq={seq}, Session: {session.SessionId})");
+					}
+					finally
+					{
+						// ArrayPool バッファの不要領域をゼロクリアし返却
+						var usedLength = header.Length + description.Length;
+						if (usedLength < buffer.Length)
+						{
+							Array.Clear(buffer, usedLength, buffer.Length - usedLength);
+						}
+						ArrayPool<byte>.Shared.Return(buffer);
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				// [task19 レビュー指摘 M1] 送信失敗を記録（DescriptionSent は false のままで次フレーム再試行）。
+				// 連続失敗時は CanSendDescription() のバックオフで再送を抑制し、ログスパイクを防ぐ
+				session.MarkDescriptionSentFailure();
+				Log(3, $"[RemoteController] SPS/PPS (description) 送信失敗 (session={session.SessionId}): {ex.Message}");
+			}
+			finally
+			{
+				session.SendSemaphore.Release();
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : WebCodecsCaptureLoopAsync
+		// 概要           : WebCodecs モード用の中央キャプチャループ。
+		//                  JS 側の VideoEncoder 経由でエンコード済みフレームを取得し、
+		//                  各 WebSocket クライアントに配信する。
+		//                  設計書 ver 3.0 Phase 2 対応
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/08/12
+		// version        : 1.00 (task28 Phase 2)
+		//------------------------------------------------------------------------------------
+		private async Task WebCodecsCaptureLoopAsync(CancellationToken token)
+		{
+			Log(3, "[RemoteController] WebCodecs キャプチャループを開始しました (Debug)");
+
+			var sw = System.Diagnostics.Stopwatch.StartNew();
+			// [task19_v1 Critical#3修正] 2秒毎キーフレーム間隔用の独立ストップウォッチ
+			// sw はアダプティブ FPS 計測（loopStart / loopElapsed）に使用するため、
+			// キーフレーム間隔の sw.Restart() が FPS 計測を破壊する既存問題を回避するため分離する
+			var keyFrameSw = System.Diagnostics.Stopwatch.StartNew();
+			// [task19_v1 Critical#3修正] 初回フレームフラグ（初回はキーフレームを強制）
+			bool isWebCodecsFirstFrame = true;
+			// 【Minor修正】 seq の型整合性の明文字
+			// 設計書 §4.2 では uint (32bit 単調増加) が規定されているが、
+			// C# の Interlocked.Increment は uint 型をサポートしないため int 型を使用。
+			// ヘッダー書き込み時（BuildWebCodecsHeader）で (uint) キャストを行う。
+			// int 型として -2147483648 〜 +2147483647 の範囲で単調増加し、
+			// ラップアラウンド後も差分計算（int 演算）で過去フレームの検出が機能。
+			// 符号付き整数の差分でラップアラウンド後も正しく機能するため、int 型が正当。
+			int seq = 0;
+
+			try
+			{
+				while (!token.IsCancellationRequested)
+				{
+					var loopStart = sw.ElapsedMilliseconds;
+
+					// Kancolle frame チェック
+					var kancolleFrame = _parent.GetKanColleFrame();
+					if (kancolleFrame == null)
+					{
+						await Task.Delay(100, token);
+						continue;
+					}
+
+					// 【レビュー修正】 IPC最適化: isReinitializing チェックを個別EvaluateScriptAsyncから削除
+					// 設計書 §5.3.2 対応: pull_encoded() 内で isReinitializing チェックを行う設計に統一
+					// JS 側 pull_encoded() は isReinitializing=true のとき ['none', null] を返す
+
+					// [task19_v1 Critical#3修正] キーフレーム強制タイミングの判定（設計書 §5.3.2 対応）
+					// ① 初回フレーム ② DescriptionSent 未送信状態（reinit_decoder / switch_mode でリセット後）
+					// ③ 2秒毎のキーフレーム強制（GOP 周期: WebCodecsKeyFrameIntervalMs）
+					// 【レビュー修正】 2秒毎のキーフレーム強制要求（設計書 §5.3.2 対応）
+					// [task19_v1 Critical#3修正] 独立 keyFrameSw を使用（sw.Restart() が FPS 計測を破壊する既存問題を回避）
+					// [task19_v1 Critical#3修正] SPS/PPS (Type=0x02) を受信できる Version 2+ クライアントのみを判定対象にする。
+					// Version 1 クライアントは SPS/PPS を受信できない（送信ループでスキップされる）ため、
+					// その DescriptionSent は永久に false のままだ。V1 みを判定対象にすると毎フレーム
+					// キーフレームを強制し続ける（I フレーム連続生成 = 帯域・CPU 浪費）ため、V1 は除外する。
+					bool anyDescriptionPending = false;
+					foreach (var session in _webSocketSessions.Values)
+					{
+						if (session.DescriptionSent)
+							continue;
+						// SPS/PPS (Type=0x02) は Version 2+ のみ受信可能（Version 1 は 6B ヘッダーで非対応）
+						var clientVer = GetClientVersion(session.SessionId);
+						if (clientVer == null || clientVer < 2)
+							continue;
+						anyDescriptionPending = true;
+						break;
+					}
+					bool isKeyFrame = isWebCodecsFirstFrame
+						|| anyDescriptionPending
+						|| keyFrameSw.ElapsedMilliseconds >= WebCodecsKeyFrameIntervalMs;
+					if (isKeyFrame)
+					{
+						keyFrameSw.Restart();
+					}
+
+					// [task19_v1 Critical#3修正] JS 側 encodeFrame() を呼び出し、_encodedChunks にフレームを生成する
+					// encodeFrame() は同期関数（Promise ではなくオブジェクトを直接返却）のため、
+					// 非 Promise 版 EvaluateScriptAsync を使用（ExecuteJavaScriptAsync 相当）。
+					// 結果は pull_encoded()（_encodedChunks キュー）で回収される。
+					// AGENTS.md: 空 catch 禁止 — engine 未初期化・例外時は警告ログを出力し、そのフレームをスキップしてループ継続
+					try
+					{
+						var encodeScript = WebCodecsEncodeFrameTemplate.Replace("__IS_KEY_FRAME__", isKeyFrame ? "true" : "false");
+						var encodeResult = await kancolleFrame.EvaluateScriptAsync(encodeScript);
+						if (!encodeResult.Success || encodeResult.Result == null)
+						{
+							// engine 未初期化（window._kancolleCaptureEngine が null）または JS 例外
+							// 警告ログを出力し、そのフレームをスキップしてループ継続
+							var encodeFailReason = encodeResult.Success ? "Result null" : encodeResult.Message;
+							Log(3, $"[RemoteController] WebCodecs encodeFrame() 呼び出し失敗 (engine 未初期化または JS 例外): {encodeFailReason}");
+							await Task.Delay(100, token);
+							continue;
+						}
+
+						// JS 側 encodeFrame() 返却値: { success: bool, error?: string, action?: 'reinit', type?: 'encoded' }
+						// CefSharp は JS プレーンオブジェクトを IDictionary<string, object> として受信する
+						var encodeDict = encodeResult.Result as System.Collections.Generic.IDictionary<string, object>;
+						if (encodeDict != null && encodeDict.TryGetValue("action", out var actionVal) && actionVal is string actionStr && actionStr == "reinit")
+						{
+							// エンコーダ状態が closed / unconfigured → 再初期化してループ継続（次イテレーションで初回フレーム=キーフレーム）
+							Log(3, "[RemoteController] WebCodecs encodeFrame() が reinit を返却 (encoder closed/unconfigured)、再初期化します");
+							var reinitOk = await InitializeWebCodecsEncoderAsync(token);
+							if (!reinitOk)
+							{
+								Log(3, "[RemoteController] WebCodecs 再初期化失敗、このフレームをスキップします");
+								await Task.Delay(100, token);
+								continue;
+							}
+							// 再初期化後は次フレームをキーフレームとして強制（SPS/PPS 再生成が必要）
+							isWebCodecsFirstFrame = true;
+							continue;
+						}
+
+						// encodeFrame() 呼び出し失敗（encoder not running 等）→ 警告ログを出力し、そのフレームをスキップしてループ継続
+						if (encodeDict != null && encodeDict.TryGetValue("success", out var encodeSuccessVal) && encodeSuccessVal is bool encodeSuccess && !encodeSuccess)
+						{
+							var encodeError = encodeDict.TryGetValue("error", out var encodeErrVal) ? encodeErrVal as string : null;
+							Log(3, $"[RemoteController] WebCodecs encodeFrame() 失敗（このフレームをスキップ）: {encodeError ?? "unknown"}");
+							await Task.Delay(100, token);
+							continue;
+						}
+
+						// encodeFrame() 成功 → 初回フレームフラグをクリア（初回フレームが実際にエンコードされたことを示す）
+						isWebCodecsFirstFrame = false;
+					}
+					catch (OperationCanceledException)
+					{
+						throw; // キャンセル要求は外側 catch に伝播（正常終了）
+					}
+					catch (Exception ex)
+					{
+						// AGENTS.md: 空 catch 禁止 — 警告ログを出力し、そのフレームをスキップしてループ継続
+						Log(3, $"[RemoteController] WebCodecs encodeFrame() 例外（このフレームをスキップ）: {ex.Message}");
+						await Task.Delay(100, token);
+						continue;
+					}
+
+					// PullEncodedBinaryAsync を呼び出し、エンコード済みデータを取得
+					var pullResult = await PullEncodedBinaryAsync();
+					if (pullResult.data == null || pullResult.data.Length == 0)
+					{
+						// 【レビュー修正】 アダプティブ FPS 制御: 未データ時は短待機
+						await Task.Delay(100, token);
+						continue;
+					}
+
+					// 【レビュー修正】 キーフレームフラグの統合（JS 側と C# 側を統合）
+					bool dataIsKeyFrame = pullResult.isKeyFrame;
+
+					// [task19 P2] SPS/PPS (description) をキャッシュ（reinit_decoder 再送信・新クライアント追隨送信用）
+					// キーフレームに添付された SPS/PPS は AVC セッション内で不変のため、最新値を保持して再利用する
+					// [task19 レビュー指摘 C1] 不変性保証: pullResult.description は CefSharp 経由の新規 byte[] だが、
+					// 将来のバッファ再利用・共有化に備え、キャッシュ登録時に防御コピー（不変配列化）を行う。
+					// 代入先 _lastWebCodecsDescription は volatile 宣言済みのため、プレーン代入でも
+					// フルフェンス付きアトミックな参照交換として他スレッドに可視化される（CS0420 回避）
+					if (pullResult.description != null && pullResult.description.Length > 0)
+					{
+						var cachedDesc = new byte[pullResult.description.Length];
+						Buffer.BlockCopy(pullResult.description, 0, cachedDesc, 0, cachedDesc.Length);
+						_lastWebCodecsDescription = cachedDesc;
+					}
+
+					// Flags: キーフレームかどうか（C# 側のキーフレーム間隔 + JS 側のキーフレームフラグを統合）
+					byte flags = (isKeyFrame || dataIsKeyFrame) ? (byte)0x01 : (byte)0x00;
+
+					// 全 WebSocket セッションに配信
+					foreach (var session in _webSocketSessions.Values)
+					{
+						if (session.WebSocket.State != WebSocketState.Open)
+							continue;
+
+						// クライアントバージョンを確認（null 時は送信抑止）
+						// [task19 P2] SPS/PPS (Type=0x02) は 7B ヘッダーの Version 2 形式のため、
+						// Version 1 クライアント（6B ヘッダー）には送信不可。
+						// バージョンチェックを SPS/PPS 送信ブロックより前に置く
+						var clientVer = GetClientVersion(session.SessionId);
+						if (clientVer == null)
+							continue;
+
+						if (clientVer < 2)
+						{
+							// Version 1: 6B ヘッダー（WebPのみ、WebCodecsは非対応）
+							// 【レビュー修正】 Version 1 クライアントへの警告ログ追加
+							// [task19 レビュー指摘 M3] 毎フレーム出力するとログスパイクになるため、
+							// 10秒間隔でダウンスープリングする（TryLogVersion1Warning）
+							if (session.TryLogVersion1Warning())
+							{
+								Log(3, $"[RemoteController] WebCodecs フレームを Version 1 クライアント (session={session.SessionId}) に送信しない（10秒間隔ログ）");
+							}
+							continue;
+						}
+
+						// [task19 P2] SPS/PPS 送信タイミング保証（設計書 §4.2.2 ステップ3: Critical 3 修正）
+						// description が未送信のセッションには、キーフレーム (Type=0x01) より前に
+						// SPS/PPS (Type=0x02) を必ず送信する。これによりクライアント側は
+						// VideoDecoder.configure() 実行時に description が確実に存在する
+						if (!session.DescriptionSent)
+						{
+							// [task19 レビュー指摘 M1] 連続失敗時はバックオフ期間中のみ再送を抑制する
+							if (session.CanSendDescription())
+							{
+								// [task19 レビュー指摘 C1] volatile 参照はローカル変数へ即スナップショットし、
+								// 送信中に別スレッドで _lastWebCodecsDescription が差し替わっても影響を受けないようにする
+								// （volatile 宣言フィールドのプレーン読み取りはフルフェンス付きで可視性が保証される）
+								// （description 自体は防御コピー済みの不変配列。SendDescriptionAsync 内で BlockCopy して送信）
+								byte[] descToSend = pullResult.description ?? _lastWebCodecsDescription;
+								if (descToSend != null && descToSend.Length > 0)
+								{
+									await SendDescriptionAsync(session, descToSend, token);
+								}
+							}
+						}
+
+						// [task19_v1 Minor-1/Minor-2 修正] フレーム seq 採番を SPS/PPS 送信の後に移動
+						// SPS/PPS (Type=0x02) 送信後にフレーム seq を採番することで、
+						// SPS/PPS seq < フレーム seq が seq 空間・受信順の両方で保証される。
+						// これにより seq 順序逆転（Minor-1）と受信順での単調増加違反（Minor-2）を解消する。
+						// 同一グローバルカウンタ（_globalSequenceNumber）を維持し、heartbeat は seq を消費しない。
+						// [task19_v1 Round5 Minor-3/Minor-5 修正] 同一フレームは全セッションで同一 seq を共有する。
+						// seq 採番はセッションループ外で 1 回のみ実行され、同一フレームが全セッションに
+						// 同一 seq で送信される。受信側は seq で順序保証を行う設計であり、
+						// セッション横断の単調増加（シーケンス空間）が維持される。
+						seq = Interlocked.Increment(ref _globalSequenceNumber);
+
+						// BuildWebCodecsHeader の呼び出し（version 引数削除）
+						// BuildWebCodecsHeader は常に 7B の固定ヘッダーを返し、null を返さないため null チェックは不要
+						byte[] header = BuildWebCodecsHeader(0x01, flags, (uint)seq);
+
+						// バイナリ送信（ヘッダー + データ）
+						// 【Critical修正】 SendSemaphore 取得によりソケットの同時書き込みを防止
+						await session.SendSemaphore.WaitAsync(token);
+						try
+						{
+							if (IsWebSocketOpen(session.WebSocket))
+							{
+								var buffer = ArrayPool<byte>.Shared.Rent(header.Length + pullResult.data.Length);
+								try
+								{
+									Buffer.BlockCopy(header, 0, buffer, 0, header.Length);
+									Buffer.BlockCopy(pullResult.data, 0, buffer, header.Length, pullResult.data.Length);
+
+									var segment = new ArraySegment<byte>(buffer, 0, header.Length + pullResult.data.Length);
+									await session.WebSocket.SendAsync(
+										segment,
+										System.Net.WebSockets.WebSocketMessageType.Binary,
+										true,
+										token);
+								}
+								finally
+								{
+									// 【レビュー修正】 ArrayPool バッファの不要領域をゼロクリア（二次レビュー Major 対応）
+									// Rent() で取得したバッファはゼロクリアされないため、前回の残データを消去
+									var usedLength = header.Length + pullResult.data.Length;
+									if (usedLength < buffer.Length)
+									{
+										Array.Clear(buffer, usedLength, buffer.Length - usedLength);
+									}
+									ArrayPool<byte>.Shared.Return(buffer);
+								}
+							}
+						}
+						catch (Exception ex)
+						{
+							Log(3, $"[RemoteController] WebCodecs フレーム送信失敗 (session={session.SessionId}): {ex.Message}");
+						}
+						finally
+						{
+							session.SendSemaphore.Release();
+						}
+					}
+
+					// 【レビュー修正】 アダプティブ FPS 制御: 実際のループ時間を計測し、目標フレーム間隔に達するまで待機
+					var loopElapsed = sw.ElapsedMilliseconds - loopStart;
+					int intervalMs = 1000 / _webCodecsFps;
+					int waitMs = intervalMs - (int)loopElapsed;
+					if (waitMs > 0)
+					{
+						await Task.Delay(waitMs, token);
+					}
+					// waitMs <= 0 の場合は目標 FPS を達成できず、次フレームへ即時移行
+				}
+			}
+			catch (OperationCanceledException)
+			{
+				// キャンセル要求による正常終了
+			}
+			catch (Exception ex)
+			{
+				Log(3, $"[RemoteController] WebCodecs キャプチャループ例外: {ex.Message}");
+			}
+			finally
+			{
+				// finally ブロックで StopWebCodecsEncoderAsync を await 実行（設計書 §5.3.2 対応）
+				try
+				{
+					await StopWebCodecsEncoderAsync();
+				}
+				catch (Exception ex)
+				{
+					Log(3, $"[RemoteController] WebCodecs キャプチャループ停止時例外: {ex.Message}");
+				}
+
+				lock (_modeLock)
+				{
+					_webCodecsCaptureTask = null;
+				}
+				Log(2, "[RemoteController] WebCodecs キャプチャループが完全に終了しました");
+			}
+		}
+
+		//------------------------------------------------------------------------------------
+		// 処理ブロック名 : InitializeWebCodecsEncoderAsync
+		// 概要           : CefSharp 経由で JS の initEncoder() を呼び出し、WebCodecs エンコーダを初期化する。
+		//                  タイムアウト（5秒）制御付き。
+		//------------------------------------------------------------------------------------
+		private async Task<bool> InitializeWebCodecsEncoderAsync(CancellationToken cancellationToken = default)
+		{
+			// 既に初期化済みなら即座に完了
+			if (_isWebCodecsInitialized) return true;
+
+			try
+			{
+				// CefSharp 経由で JS の initEncoder() を呼び出す
+				var kancolleFrame = _parent.GetKanColleFrame();
+				if (kancolleFrame == null)
+				{
+					Log(3, "[RemoteController] WebCodecs エンコーダ初期化: Kancolle frame not found");
+					return false;
+				}
+
+				// 【レビュー修正】 コーデック値のエスケープ処理を追加（設計書 ver 3.9 Mi1 対応 + 二次レビュー Major S1 対応）
+				// 特殊文字（' , " , \ , 制御文字）が含まれる場合のJavaScript構文エラーを防止
+				// 【レビュー修正】 JS エスケープの完全性向上（一次レビュー Major + 二次レビュー Major 対応）
+				// 制御文字（\u0000-\u001F）を \\uXXXX 形式でエスケープし、JS 構文エラーを防止
+				var escapedCodec = _webCodecsCodec
+					.Replace("\\", "\\\\")
+					.Replace("'", "\\'")
+					.Replace("\"", "\\\"")
+					.Replace("\n", "\\n")
+					.Replace("\r", "\\r")
+					.Replace("\t", "\\t");
+				// 【追加】 残りの制御文字（\u0000-\u001F 除去済み以外）を \\uXXXX 形式でエスケープ
+				var sb = new StringBuilder();
+				foreach (var c in escapedCodec)
+				{
+					if (c >= 0x00 && c <= 0x1F)
+					{
+						sb.AppendFormat("\\u{0:X4}", (int)c);
+					}
+					else
+					{
+						sb.Append(c);
+					}
+				}
+				escapedCodec = sb.ToString();
+				// [task19_v1 Critical修正] string.Format の代わりに固有トークン置換 + string.Replace で構築
+				// 理由: string.Format は JS リテラルブレース（{if...} {return...} {codec...}）をフォーマット項目と解釈し、
+				// FormatException（「入力文字列の形式が正しくありません」）を投げて JS に到達しなかった。
+				// verbatim テンプレートには {0} プレースホルダを含ませないため、ブレースのエスケープが不要で検証しやすい。
+				// 置換順序: __BITRATE__ / __FPS__（整数値）を先に置き、__CODEC__ は最後に置換して、
+				// コーデック値にトークン文字列が含まれる場合の二重置換を防止する。
+				var script = WebCodecsInitEncoderTemplate
+					.Replace("__BITRATE__", _webCodecsBitrate.ToString())
+					.Replace("__FPS__", _webCodecsFps.ToString())
+					.Replace("__CODEC__", escapedCodec);
+	
+				// タイムアウト制御（5秒）
+				// 【ver 3.0 対応】 design doc §5.3.2a: timeoutCts.Cancel() により delayTask を確実にキャンセル
+				// [レビュー修正] 設計書 §5.3.2a 通り 5秒 に統一
+				// 【レビュー修正】 using 句で CancellationTokenSource を確実に破棄（タスクリーク防止）
+				using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+				using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token))
+				{
+					// [task19_v1 Critical#2修正] EvaluateScriptAsPromiseAsync に切替（CefSharp 143 WebBrowserExtensions 拡張メソッド）
+					// initEncoder() は async function で Promise を返却するが、非 Promise 版 EvaluateScriptAsync は
+					// Promise オブジェクト自体（配列ではない）を返却するため、C# 側の IList<object> 解析が失敗していた。
+					// Promise 対応 API はスクリプトを async function でラップし、Promise.resolve(...).then() で解決値を回収する。
+					var evalTask = kancolleFrame.EvaluateScriptAsPromiseAsync(script);
+					var delayTask = Task.Delay(Timeout.InfiniteTimeSpan, linkedCts.Token);
+	
+					var completedTask = await Task.WhenAny(evalTask, delayTask);
+					linkedCts.Cancel();
+	
+					if (completedTask == delayTask)
+					{
+						// タイムアウト
+						Log(3, "[RemoteController] WebCodecs エンコーダ初期化タイムアウト（5秒）");
+						return false;
+					}
+	
+					// 【task19_v1 Critical#2修正】 EvaluateScriptAsPromiseAsync を使用し、initEncoder() の Promise を解決して回収
+					// evalTask が既に完了している場合は await せずに結果を取得
+					// Task.WhenAny 後に evalTask を await すると、evalTask が未完了の状態でブロックするリスクがある
+					// ただし、この場合 completedTask == evalTask なので安全に await 可能
+					var result = await evalTask;
+					// [task19_v1 Critical#2修正] Promise が reject された場合（initEncoder が例外を投げる等）
+					// EvaluateScriptAsPromiseAsync は catch 経路でエラー文字列を Result に格納して Success=false を返す
+					if (!result.Success)
+					{
+						Log(3, $"[RemoteController] WebCodecs エンコーダ初期化失敗 (Promise reject): {result.Result}");
+						return false;
+					}
+
+					// engine 未初期化（window._kancolleCaptureEngine が null）の場合、IIFE が undefined を解決し Result は null
+					if (result.Result == null)
+					{
+						Log(3, "[RemoteController] WebCodecs エンコーダ初期化: 結果が null（engine 未初期化または未解決）");
+						return false;
+					}
+
+					// JS 側 initEncoder() 返却値: { success: bool, codec?: string, error?: string }
+					// CefSharp は JS プレーンオブジェクトを IDictionary<string, object> として受信する
+					var dict = result.Result as System.Collections.Generic.IDictionary<string, object>;
+					if (dict == null)
+					{
+						// 予期しない型（オブジェクト以外）を受信した場合は WebP フォールバック
+						Log(3, $"[RemoteController] WebCodecs エンコーダ初期化: 結果の形式が不正 (type: {result.Result.GetType().Name})");
+						return false;
+					}
+
+					var success = dict.TryGetValue("success", out var successVal) && successVal is bool s && s;
+					if (success)
+					{
+						_isWebCodecsInitialized = true;
+						var codec = dict.TryGetValue("codec", out var codecVal) ? codecVal as string : null;
+						Log(2, $"[RemoteController] WebCodecs エンコーダ初期化成功 (codec: {codec})");
+						return true;
+					}
+					else
+					{
+						var error = dict.TryGetValue("error", out var errorVal) ? errorVal as string : null;
+						var errorMsg = error ?? successVal?.ToString() ?? "unknown";
+						Log(3, $"[RemoteController] WebCodecs エンコーダ初期化失敗: {errorMsg}");
+						return false;
+					}
+				}
+			}
+			catch (OperationCanceledException)
+			{
+				Log(3, "[RemoteController] WebCodecs エンコーダ初期化キャンセル");
+				return false;
+			}
+			catch (Exception ex)
+			{
+				// エラー時のロールバック
+				_isWebCodecsInitialized = false;
+				Log(3, $"[RemoteController] WebCodecs エンコーダ初期化例外: {ex.Message}");
+				return false;
+			}
+		}
+
+		//------------------------------------------------------------------------------------
+		// 処理ブロック名 : StopWebCodecsEncoderAsync
+		// 概要           : CefSharp 経由で JS の stopEncoder() を呼び出し、WebCodecs エンコーダを停止する。
+		//                  WaitForOldLoopCompletionAsync により旧ループの完全停止を待機する。
+		//------------------------------------------------------------------------------------
+		private async Task StopWebCodecsEncoderAsync()
+		{
+			if (!_isWebCodecsInitialized) return;
+
+			try
+			{
+				// JS 側の stopEncoder() を呼び出す
+				var kancolleFrame = _parent.GetKanColleFrame();
+				if (kancolleFrame != null)
+				{
+					var result = await kancolleFrame.EvaluateScriptAsync(WebCodecsStopScript);
+					if (!result.Success)
+					{
+						Log(3, "[RemoteController] stopEncoder() 呼び出し失敗");
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				Log(3, $"[RemoteController] stopEncoder() 例外: {ex.Message}");
+			}
+			finally
+			{
+				_isWebCodecsInitialized = false;
+			}
+		}
+
+		//------------------------------------------------------------------------------------
+		// 処理ブロック名 : SetWebCodecsCodec
+		// 概要           : WebCodecs エンコーダのコーデック値を変更し、再初期化を行う。
+		//                  【Major修正】 設計書 ver 3.9 §5.3.1 対応: コーデック変更経路の実装
+		//------------------------------------------------------------------------------------
+		public async Task<bool> SetWebCodecsCodec(string codec)
+		{
+			if (string.IsNullOrEmpty(codec))
+			{
+				Log(3, "[RemoteController] SetWebCodecsCodec: 空のコーデック値");
+				return false;
+			}
+
+			// 現在使用中のコーデックと変更がなければ何もしない
+			if (_webCodecsCodec == codec)
+			{
+				return true;
+			}
+
+			Log(2, $"[RemoteController] WebCodecs コーデック変更: {_webCodecsCodec} -> {codec}");
+
+			// 旧エンコーダを停止
+			await StopWebCodecsEncoderAsync();
+
+			// コーデック値を更新（volatile 宣言によりスレッド間で即座に可視）
+			_webCodecsCodec = codec;
+
+			// 新コーデックで再初期化
+			return await InitializeWebCodecsEncoderAsync();
+		}
+
+		//------------------------------------------------------------------------------------
+		// 処理ブロック名 : SetWebCodecsBitrate
+		// 概要           : WebCodecs エンコーダのビットレート値を変更し、再初期化を行う。
+		//------------------------------------------------------------------------------------
+		public async Task<bool> SetWebCodecsBitrate(int bitrate)
+		{
+			if (bitrate <= 0)
+			{
+				Log(3, "[RemoteController] SetWebCodecsBitrate: 無効なビットレート値");
+				return false;
+			}
+
+			if (_webCodecsBitrate == bitrate)
+			{
+				return true;
+			}
+
+			Log(2, $"[RemoteController] WebCodecs ビットレート変更: {_webCodecsBitrate} -> {bitrate}");
+
+			await StopWebCodecsEncoderAsync();
+			_webCodecsBitrate = bitrate;
+			return await InitializeWebCodecsEncoderAsync();
+		}
+
+		//------------------------------------------------------------------------------------
+		// 処理ブロック名 : SetWebCodecsFps
+		// 概要           : WebCodecs エンコーダのFPS値を変更する（再初期化不要）。
+		//                  volatile 宣言によりキャプチャループに即座に反映される。
+		//------------------------------------------------------------------------------------
+		public void SetWebCodecsFps(int fps)
+		{
+			if (fps <= 0 || fps > 60)
+			{
+				Log(3, $"[RemoteController] SetWebCodecsFps: 無効なFPS値 ({fps})");
+				return;
+			}
+
+			if (_webCodecsFps == fps)
+			{
+				return;
+			}
+
+			Log(2, $"[RemoteController] WebCodecs FPS変更: {_webCodecsFps} -> {fps}");
+			_webCodecsFps = fps; // volatile によりキャプチャループに即座に可視
+		}
+
+		//------------------------------------------------------------------------------------
+		// 処理ブロック名 : WaitForOldLoopCompletionAsync
+		// 概要           : 旧ループタスクの完了を待機する（タイムアウト付き）。
+		//                  デフォルトタイムアウト: 7000ms
+		//------------------------------------------------------------------------------------
+		private async Task WaitForOldLoopCompletionAsync(CancellationTokenSource oldCts, int timeoutMs = 7000)
+		{
+			// 旧ループのタスクを収集
+			Task[] oldTasks = null;
+			lock (_modeLock)
+			{
+				var list = new List<Task>();
+				if (_webCodecsCaptureTask != null) list.Add(_webCodecsCaptureTask);
+				if (_centralCaptureTask != null) list.Add(_centralCaptureTask);
+				if (list.Count > 0)
+				{
+					oldTasks = list.ToArray();
+				}
+			}
+
+			if (oldTasks == null || oldTasks.Length == 0)
+			{
+				return;
+			}
+
+			var sw = Stopwatch.StartNew();
+			bool timeoutOccurred = false;
+
+			try
+			{
+				// 旧ループタスクの完了を並列に待機（タイムアウト付き）
+				using (var timeoutCts = new CancellationTokenSource())
+				{
+					var allTasks = Task.WhenAll(oldTasks);
+					var delayTask = Task.Delay(timeoutMs);
+
+					var completedTask = await Task.WhenAny(allTasks, delayTask);
+
+					if (completedTask == allTasks)
+					{
+						// Task.WhenAll が完了した場合は正常終了
+						if (allTasks.IsFaulted)
+						{
+							var agg = allTasks.Exception?.Flatten();
+							foreach (var ex in agg?.InnerExceptions ?? Enumerable.Empty<Exception>())
+							{
+								Log(3, $"[RemoteController] 旧ループタスク例外: {ex.GetType().Name}: {ex.Message}");
+							}
+						}
+						Log(2, $"[RemoteController] 旧ループ完了待機完了（{sw.ElapsedMilliseconds}ms / タイムアウト{timeoutMs}ms）");
+						return;
+					}
+
+					// タイムアウト発生
+					timeoutOccurred = true;
+					if (oldCts != null)
+					{
+						try { if (!oldCts.IsCancellationRequested) oldCts.Cancel(); }
+						catch (ObjectDisposedException) { /* 既に破棄済み */ }
+						catch (Exception ex) {
+							Log(3, $"[RemoteController] oldCts.Cancel() 予期せぬ例外: {ex.GetType().Name}: {ex.Message}");
+							throw;
+						}
+					}
+				}
+			}
+			catch (AggregateException agg)
+			{
+				foreach (var ex in agg.InnerExceptions)
+				{
+					if (ex is OperationCanceledException)
+					{
+						// 正常なキャンセル
+					}
+					else
+					{
+						Log(3, $"[RemoteController] 旧ループタスク例外: {ex.GetType().Name}: {ex.Message}");
+					}
+				}
+			}
+			catch (OperationCanceledException)
+			{
+				timeoutOccurred = true;
+			}
+
+			if (timeoutOccurred)
+			{
+				Log(2, $"[RemoteController] 旧ループ待機タイムアウト（{sw.ElapsedMilliseconds}ms / タイムアウト{timeoutMs}ms）。旧ループを強制キャンセルし、新モードを開始します");
+			}
+		}
+
+		//------------------------------------------------------------------------------------
+		// 処理ブロック名 : PullEncodedBinaryAsync
+		// 概要           : CefSharp 経由で pull_encoded() を呼び出し、エンコード済みチャンクのバイナリを取得する。
+		//                  ver 2.9 対応: Base64 文字列受信 → Convert.FromBase64String() 変換
+		//                  【レビュー修正】 pull_encoded() が async に変更されたことに合わせ、
+		//                  キーフレームフラグも返却するように拡張
+		//------------------------------------------------------------------------------------
+		private struct PullEncodedResult
+		{
+			public byte[] data;
+			public bool isKeyFrame;
+			// [task19 P2] SPS/PPS (description) バイト列（AVCDecoderConfigurationRecord / AVCC 形式）
+			// WebCodecs 仕様（W3C AVC 登録仕様に準拠）: avc.format='avc' 時、description は
+			// ISO/IEC 14496-15 §5.3.3.1 の AVCDecoderConfigurationRecord 形式。
+			// JS 側 pull_encoded() の第4要素（Base64）を復号した値。null = 未設定
+			public byte[] description;
+		}
+
+		// 【二次レビュー Major 指摘S1 修正】 連続タイムアウトカウント（PullEncodedBinaryAsync）
+		// JS 側 _acquireLock() タイムアウト（50ms）と C# 側タイムアウト（500ms）の10倍の開きにより、
+		// 連続タイムアウト時に過剰な再試行/ CPU リソース消費を防ぐための保護。
+		// 閾値超過時はループを中断して再初期化トリガーを返す。
+		private int _pullTimeoutCount = 0;
+		private const int MaxPullTimeoutCount = 10;
+
+		private async Task<PullEncodedResult> PullEncodedBinaryAsync()
+		{
+			var result = new PullEncodedResult { data = null, isKeyFrame = false };
+
+			var kancolleFrame = _parent.GetKanColleFrame();
+			if (kancolleFrame == null) return result;
+
+			// 【レビュー修正】 タイムアウト制御（500ms）を追加（設計書 §5.3.2a 対応）
+			// EvaluateScriptAsync のデフォルトタイムアウトは 30秒であり、
+			// JS 側の _acquireLock() でブロックされている場合、ループが永久に待機するリスクがある
+			using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500)))
+			{
+				try
+				{
+					var evalTask = kancolleFrame.EvaluateScriptAsync(WebCodecsPullScript);
+					var delayTask = Task.Delay(500, timeoutCts.Token);
+
+					var completed = await Task.WhenAny(evalTask, delayTask);
+					if (completed == delayTask)
+					{
+						// 【二次レビュー Major 指摘S1 修正】 連続タイムアウトカウントインクリメント
+						// 【二次レビュー Minor 修正】 Interlocked に原子化（将来的な並列化に備える）
+						int currentCount = System.Threading.Interlocked.Increment(ref _pullTimeoutCount);
+						if (currentCount >= MaxPullTimeoutCount)
+						{
+							Log(3, $"[RemoteController] PullEncodedBinaryAsync 連続タイムアウト {_pullTimeoutCount} 回 (最大 {MaxPullTimeoutCount} 回に達)、再初期化をトリガーします");
+							// 【二次レビュー Minor 修正】 Interlocked.Exchange でリセット
+							System.Threading.Interlocked.Exchange(ref _pullTimeoutCount, 0);
+						}
+						else
+						{
+							Log(3, $"[RemoteController] PullEncodedBinaryAsync タイムアウト ( {_pullTimeoutCount}/{MaxPullTimeoutCount} 回) — 再試行を続行");
+						}
+						// タイムアウト時はフレームをドロップ
+						return result;
+					}
+
+					// 【二次レビュー Major 指摘S1 修正】 成功時は連続タイムアウトカウントをリセット
+					// 【二次レビュー Minor 修正】 Interlocked.Exchange でリセット
+					System.Threading.Interlocked.Exchange(ref _pullTimeoutCount, 0);
+
+					var scriptResult = await evalTask;
+					if (!scriptResult.Success || scriptResult.Result == null) return result;
+
+					// CefSharp は JS 配列を IList<object> として返す
+					var list = scriptResult.Result as System.Collections.Generic.IList<object>;
+					if (list == null || list.Count < 2) return result;
+
+					string type = list[0] as string;
+					if (type != "encoded") return result;
+
+					// Base64 文字列を受信し、直ちに byte[] 化（ver 2.9 対応: GC ガベージゼロ）
+					string base64 = list[1] as string;
+					if (string.IsNullOrEmpty(base64)) return result;
+					result.data = Convert.FromBase64String(base64);
+
+					// 【レビュー修正】 キーフレームフラグの取得（第3要素）
+					if (list.Count >= 3)
+					{
+						string keyFlag = list[2] as string;
+						result.isKeyFrame = keyFlag == "1";
+					}
+
+					// [task19 P2] SPS/PPS (description) の取得（第4要素: Base64 文字列または null）
+					// JS 側 pull_encoded() はキーフレーム時に metadata.decoderConfig.description を
+					// Base64 文字列として添付する（設計書 §4.2.2 ステップ2）。
+					// null / 空文字列 / 不正な Base64 の場合は description を null のままにする
+					if (list.Count >= 4 && list[3] is string descriptionB64 && !string.IsNullOrEmpty(descriptionB64))
+					{
+						try
+						{
+							result.description = Convert.FromBase64String(descriptionB64);
+						}
+						catch (FormatException ex)
+						{
+							// 不正な Base64 は破棄（例外の握りつぶし禁止のためログ出力）
+							Log(3, $"[RemoteController] PullEncodedBinaryAsync: SPS/PPS Base64 復号失敗: {ex.Message}");
+						}
+					}
+
+					// 【Minor修正 指摘6】 成功時に明示的にキャンセル（タイマー稼働防止）
+					timeoutCts.Cancel();
+					return result;
+				}
+				catch (OperationCanceledException)
+				{
+					// タイムアウトによるキャンセル
+					return result;
+				}
+				catch (Exception ex)
+				{
+					Log(3, $"[RemoteController] PullEncodedBinaryAsync 例外: {ex.Message}");
+					return result;
+				}
+			}
+		}
+
+		//------------------------------------------------------------------------------------
+		// 処理ブロック名 : SetClientVersion
+		// 概要           : クライアントのプロトコルバージョンを設定する。
+		//------------------------------------------------------------------------------------
+		private void SetClientVersion(string sessionId, int version)
+		{
+			_clientVersions[sessionId] = version;
+		}
+
+		//------------------------------------------------------------------------------------
+		// 処理ブロック名 : GetClientVersion
+		// 概要           : クライアントのプロトコルバージョンを取得する（null = 未決）。
+		//------------------------------------------------------------------------------------
+		private int? GetClientVersion(string sessionId)
+		{
+			_clientVersions.TryGetValue(sessionId, out int? version);
+			return version;
+		}
+
+		//------------------------------------------------------------------------------------
+		// 処理ブロック名 : RemoveClientVersion
+		// 概要           : クライアントのプロトコルバージョンエントリを削除する。
+		//                  WebSocket 切断時（OnClose/OnError）に呼び出す。
+		//------------------------------------------------------------------------------------
+		private void RemoveClientVersion(string sessionId)
+		{
+			_clientVersions.TryRemove(sessionId, out int? _);
+		}
+
+		//------------------------------------------------------------------------------------
+		// 処理ブロック名 : TrySetClientVersionIfNull
+		// 概要           : バージョンが未設定（null）の時のみ、指定されたバージョンを原子的に設定する。
+		//                  【Critical修正】 CleanupZombieSessions と SetClientVersion 間の TOCTOU
+		//                  (Time-of-Check to Time-of-Use) 競合を解消するため、Get→Set の2ステップ
+		//                  を ConcurrentDictionary.AddOrUpdate による単一原子操作に置換。
+		//                  設計書 §5.3.3 定義: フォールバック時のトランザクション保護
+		//------------------------------------------------------------------------------------
+		/// <summary>
+		/// セッションのバージョンが null の時のみ、指定されたバージョンを原子的に設定する。
+		/// 既にバージョンが設定されている場合は既存値を維持する。
+		/// </summary>
+		/// <param name="sessionId">セッションID</param>
+		/// <param name="version">設定するバージョン（null 時のフォールバック値）</param>
+		/// <returns>バージョンが設定された（true = 未設定だったため更新、false = 既に設定済み）</returns>
+		private bool TrySetClientVersionIfNull(string sessionId, int version)
+		{
+			// AddOrUpdate による原子操作：
+			//   1. エントリが存在しない → version を設定 (addValue)
+			//      ※ 接続直後のエントリは null 初期化されているため、
+			//        実際にはこのパスは通らない（既にエントリが存在するため）。
+			//        安全のため、null ではなく version を設定する（フォールバック値として機能）。
+			//   2. エントリが存在する → 既存値が null の場合のみ version に更新、既に値ありは維持 (updateValueFactory)
+			//
+			// 【バグ修正】 旧実装: return result != null;
+			//   AddOrUpdate の戻り値は「設定された新しい値」であり、更新が成功したかどうかっていうわけではない。
+			//   version は int 型（null ではない）なので、result != null は常に true になってしまい、
+			//   既にバージョンが設定されていた場合でも true を返してしまう不具合があった。
+			//   修正案: TryUpdate と同じロジックを使用し、既存値が null だったかを確認する。
+			
+			// 既存値を取得（null かどうかを確認）
+			int? existingVersion = GetClientVersion(sessionId);
+			if (existingVersion != null)
+			{
+				// 既にバージョンが設定されている場合は何もしない
+				return false;
+			}
+			
+			// 既存値が null の場合のみ、AddOrUpdate でバージョンを設定
+			_clientVersions.AddOrUpdate(
+				sessionId,
+				addValue: version,
+				updateValueFactory: (key, existing) => existing == null ? version : existing
+			);
+			return true;
+		}
+
 		public void Dispose()
 		{
 			_isRunning = false;
@@ -3071,6 +4365,13 @@ namespace Browser
 			{
 				_centralCaptureCts.Cancel();
 				_centralCaptureCts.Dispose();
+			}
+
+			// WebCodecs キャプチャループのキャンセル（task28 Phase 1）
+			if (_webCodecsCaptureCts != null && !_webCodecsCaptureCts.IsCancellationRequested)
+			{
+				_webCodecsCaptureCts.Cancel();
+				_webCodecsCaptureCts.Dispose();
 			}
 
 			// [二次レビュー Minor 指摘3 / CriticalReview 指摘3] タスク参照をローカル変数にキャプチャしてから監視
@@ -3105,6 +4406,38 @@ namespace Browser
 				});
 			}
 
+			// 【Critical修正 指摘5】 _webCodecsCaptureTask の終了監視を追加
+			// _centralCaptureTask と同様に 5秒以内に完了するのを非同期で確認
+			var webCodecsTask = _webCodecsCaptureTask;
+			if (webCodecsTask != null)
+			{
+				var webCodecsCompletionCheck = Task.Run(async () =>
+				{
+					try
+					{
+						if (await Task.WhenAny(webCodecsTask, Task.Delay(5000)) == webCodecsTask)
+						{
+							if (webCodecsTask.IsFaulted && webCodecsTask.Exception != null)
+							{
+								Log(3, $"[RemoteController] WebCodecs キャプチャループが異常終了しました: {webCodecsTask.Exception.InnerException?.Message}");
+							}
+							else
+							{
+								Log(2, "[RemoteController] WebCodecs キャプチャループが正常に終了しました");
+							}
+						}
+						else
+						{
+							Log(2, "[RemoteController] WebCodecs キャプチャループの終了がタイムアウトしました（プロセス終了により解放される）");
+						}
+					}
+					catch (Exception ex)
+					{
+						Log(3, $"[RemoteController] WebCodecs タスク終了確認中の例外: {ex.Message}");
+					}
+				});
+			}
+
 			// WebSocket セッションのクリーンアップ
 			// .ToList() でスレッドセーフなコピーを作成してから処理
 			foreach (var kvp in _webSocketSessions.ToList())
@@ -3121,6 +4454,180 @@ namespace Browser
 
 			// _webSocketSessions は RemoveWebSocketSession で既に空になっていることを確認
 			_webSocketSessions.Clear();
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : HandleCaptureModeAsync
+		// 概要           : WebCodecs モード切替リクエストを処理する（POST）。
+		//                  body に JSON { mode: "webp" | "webcodecs" | "http" } を期待。
+		//------------------------------------------------------------------------------------
+		private async Task HandleCaptureModeAsync(HttpListenerRequest req, HttpListenerResponse res)
+		{
+			if (req.HttpMethod != "POST")
+			{
+				res.StatusCode = 405;
+				res.Close();
+				return;
+			}
+
+			try
+			{
+				using (var reader = new StreamReader(req.InputStream))
+				{
+					var body = await reader.ReadToEndAsync();
+					// 【Minor修正】 正規表現による堅牢なJSONパース
+					// 単純なReplaceチェーンでは {"mode":"webcodecs","quality":100} → "webcodecsquality100" 等と誤認識
+					// Trim() + LowerInvariant() による大文字小文字・空白の正規化を適用
+					var match = System.Text.RegularExpressions.Regex.Match(body, @"""mode""\s*:\s*""([^""]+)""");
+					var modeStr = match.Success ? match.Groups[1].Value.Trim().ToLowerInvariant() : "";
+
+					CaptureMode newMode;
+					switch (modeStr)
+					{
+						case "webcodecs": newMode = CaptureMode.WebCodecs; break;
+						case "http": newMode = CaptureMode.HttpPolling; break;
+						case "webp": newMode = CaptureMode.WebP; break;
+						default:
+							// [Minor修正] 想定外の文字列時はデフォルトモードにフォールバックし警告ログを出力
+							Log(2, $"[RemoteController] 無効なキャプチャモード文字列 \"{modeStr}\"、デフォルト(WebP)にフォールバック");
+							newMode = CaptureMode.WebP;
+							break;
+					}
+
+					await SetCaptureModeAsync(newMode);
+
+					Log(2, $"[RemoteController] キャプチャモード切替完了: {newMode}");
+
+					res.StatusCode = 200;
+					res.ContentType = "application/json";
+					var bytes = Encoding.UTF8.GetBytes($"{{\"mode\":\"{newMode.ToString().ToLower()}\"}}");
+					res.ContentLength64 = bytes.Length;
+					res.OutputStream.Write(bytes, 0, bytes.Length);
+				}
+			}
+			catch (Exception ex)
+			{
+				Log(3, $"[RemoteController] HandleCaptureModeAsync エラー: {ex.Message}");
+				res.StatusCode = 500;
+			}
+			finally
+			{
+				res.Close();
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : SetCaptureModeAsync
+		// 概要           : キャプチャモードを切替える（設計書 §5.3.3 対応）。
+		//                  旧ループの停止・待機 → 新ループの起動を行う。
+		//------------------------------------------------------------------------------------
+		private async Task SetCaptureModeAsync(CaptureMode newMode)
+		{
+			CancellationTokenSource oldCts = null;
+			CaptureMode oldMode;
+
+			lock (_modeLock)
+			{
+				oldMode = _currentCaptureMode;
+				if (oldMode == newMode) return;
+
+				Log(2, $"[RemoteController] キャプチャモード切替開始: {oldMode} → {newMode}");
+
+				// 旧ループのキャンセル
+				switch (oldMode)
+				{
+					case CaptureMode.WebP:
+						oldCts = _centralCaptureCts;
+						if (oldCts != null && !oldCts.IsCancellationRequested)
+							oldCts.Cancel();
+						break;
+					case CaptureMode.WebCodecs:
+						oldCts = _webCodecsCaptureCts;
+						if (oldCts != null && !oldCts.IsCancellationRequested)
+							oldCts.Cancel();
+						break;
+				}
+
+				_currentCaptureMode = newMode;
+			}
+
+			// 旧ループの完了待機（デフォルト 7000ms）
+			if (oldCts != null)
+			{
+				await WaitForOldLoopCompletionAsync(oldCts);
+			}
+
+			// 新ループの起動
+			switch (newMode)
+			{
+				case CaptureMode.WebCodecs:
+					{
+						var initResult = await InitializeWebCodecsEncoderAsync();
+						if (initResult)
+						{
+							var cts = new CancellationTokenSource();
+							lock (_modeLock)
+							{
+								_webCodecsCaptureCts = cts;
+								_webCodecsCaptureTask = Task.Run(
+									() => WebCodecsCaptureLoopAsync(cts.Token));
+							}
+							Log(2, "[RemoteController] WebCodecs キャプチャループを起動しました");
+						}
+						else
+						{
+							Log(3, "[RemoteController] WebCodecs 初期化失敗、WebP にフォールバック");
+							// 【Major修正】 初期化失敗時はWebPループを再起動（モード切替のみの旧実装は配信停止を発生）
+							await SetCaptureModeAsync(CaptureMode.WebP);
+						}
+					}
+					break;
+				case CaptureMode.WebP:
+					{
+						// WebP ループの起動（中央キャプチャループは接続時に自動起動）
+						// 既に接続クライアントがいる場合は明示的に起動
+						if (_centralCaptureCts == null || _centralCaptureCts.IsCancellationRequested)
+						{
+							var cts = new CancellationTokenSource();
+							lock (_modeLock)
+							{
+								_centralCaptureCts = cts;
+							}
+							_forceNextKeyFrame = true;
+							_centralCaptureTask = Task.Run(() => CentralCaptureLoopAsync(cts.Token));
+							Log(2, "[RemoteController] 中央キャプチャループ(WebP)を起動しました");
+						}
+					}
+					break;
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : SendCaptureConfig
+		// 概要           : WebCodecs 設定情報を JSON で返却する。
+		//------------------------------------------------------------------------------------
+		private void SendCaptureConfig(HttpListenerResponse res)
+		{
+			try
+			{
+				lock (_modeLock)
+				{
+					var json = $"{{\"mode\":\"{_currentCaptureMode.ToString().ToLower()}\",\"bitrate\":{_webCodecsBitrate},\"fps\":{_webCodecsFps}}}";
+					res.ContentType = "application/json";
+					var bytes = Encoding.UTF8.GetBytes(json);
+					res.ContentLength64 = bytes.Length;
+					res.OutputStream.Write(bytes, 0, bytes.Length);
+				}
+			}
+			catch (Exception ex)
+			{
+				Log(3, $"[RemoteController] SendCaptureConfig エラー: {ex.Message}");
+				res.StatusCode = 500;
+			}
+			finally
+			{
+				res.Close();
+			}
 		}
 
 		//====================================================================================
@@ -3155,7 +4662,11 @@ namespace Browser
 				// 2. 接続カウントをデクリメント
 				Interlocked.Decrement(ref _activeConnectionCount);
 
-				// 3. セッションの Dispose（SemaphoreSlim, CancellationTokenSource, バッファ返却等）
+				// 3. 【二次レビュー Major 修正】 クライアントバージョンエントリを削除
+				// 設計書 §5.3.3 定義: WebSocket 切断時に _clientVersions からエントリを削除
+				RemoveClientVersion(sessionId);
+
+				// 4. セッションの Dispose（SemaphoreSlim, CancellationTokenSource, バッファ返却等）
 				session.Dispose();
 
 				Log(2, $"[RemoteController] WebSocket セッション削除完了: SessionID={sessionId}, 接続数={Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0)}/{MaxConcurrentClients}");
@@ -3239,26 +4750,35 @@ namespace Browser
 
 				_webSocketSessions.TryAdd(sessionId, session);
 
+				// 【二次レビュー Major 修正】 クライアントバージョンの初期化（null = 未決状態）
+				// 設計書 §5.3.3 定義: 接続確立時に _clientVersions に null エントリを追加
+				// クライアントから PROTOCOL_VERSION メッセージを受信するまでバージョン未決状態を保持
+				_clientVersions[sessionId] = null;
+
 				Log(2, $"[RemoteController] WebSocket 接続確立: SessionID={sessionId}, IP={req.RemoteEndPoint}, 接続数={count}/{MaxConcurrentClients}");
 
 				// 中央キャプチャループが起動していない場合は起動（フェーズ5）
 				// [Task05-対策1] タスク完了状態も判定条件に追加（自動停止後の再起動を確実に検知）
 				// [外部レビュー 指摘2] _centralCaptureTask == null を含める（TOCTOU 競合対策）
-				if (_centralCaptureCts == null || _centralCaptureCts.IsCancellationRequested ||
-					_centralCaptureTask == null || _centralCaptureTask.IsCompleted)
+				// 【Critical修正】 WebP モード時のみ中央キャプチャループ(WebP)を起動
+				// WebCodecs モード中は WebP ループが二重起動するのを防止
+				if (_currentCaptureMode == CaptureMode.WebP &&
+					(_centralCaptureCts == null || _centralCaptureCts.IsCancellationRequested ||
+					 _centralCaptureTask == null || _centralCaptureTask.IsCompleted))
 				{
 					lock (_captureStartLock)
 					{
 						// 再チェック（ダブルチェックロックパターン）
-						if (_centralCaptureCts == null || _centralCaptureCts.IsCancellationRequested ||
-							_centralCaptureTask == null || _centralCaptureTask.IsCompleted)
+						if (_currentCaptureMode == CaptureMode.WebP &&
+							(_centralCaptureCts == null || _centralCaptureCts.IsCancellationRequested ||
+							 _centralCaptureTask == null || _centralCaptureTask.IsCompleted))
 						{
 							_centralCaptureCts?.Dispose();
 							_centralCaptureCts = new CancellationTokenSource();
 							// [外部レビュー 指摘1] 再起動時は必ずフルキーフレームを要求
 							_forceNextKeyFrame = true;
 							_centralCaptureTask = Task.Run(() => CentralCaptureLoopAsync(_centralCaptureCts.Token));
-							Log(2, "[RemoteController] 中央キャプチャループを起動しました (フェーズ5)");
+							Log(2, "[RemoteController] 中央キャプチャループ(WebP)を起動しました (フェーズ5)");
 						}
 					}
 				}
@@ -3376,7 +4896,17 @@ namespace Browser
 								{
 									// フレーム到着シグナル（Channelを使用し、例外発生を防止）
 									// TryWrite はチャンネルが一杯でも例外を投げず、false を返す
-									session._frameSignal.Writer.TryWrite(seq);
+									// [Critical修正] 設計書 §5.1.2 規定: TryWrite 失敗時はフレームドロップとして処理
+									if (!session._frameSignal.Writer.TryWrite(seq))
+									{
+										// 【Minor修正】 session._droppedFrameCount を使用（設計書 §1740-1731 の規定：メソッドスコープではなくセッションスコープ）
+										// 設計書 §1740-1731 ではメソッドスコープの droppedCount を規定しているが、
+										// セッション全体のドロップ回数の累積統計は運用上のデバッグ・監視に有用なため、
+										// セッションスコープのフィールドとして実装している（設計書整合性の明記）
+										session._droppedFrameCount++;
+										// 【Critical修正】 設計書 §5.3.2 規定: キュー溢れ警告ログ出力（M1対応）
+										Log(3, $"[RemoteController] _frameSignal queue full, dropping frame {seq} (session={session.SessionId}, dropped={session._droppedFrameCount})");
+									}
 								}
 							}
 						}
@@ -3557,22 +5087,24 @@ namespace Browser
 										{
 											if (IsWebSocketOpen(ws))
 											{
-												byte[] combined = _bufferPool.Rent(6 + dataLength);
+												// [ver 3.0修正] ヘッダーを7バイトに拡張 (Version+Type+Flags+Seq)
+												byte[] combined = _bufferPool.Rent(7 + dataLength);
 												try
 												{
 													var header = session._headerBuffer;
 													header[0] = (byte)WebSocketProtocolVersion;
-													header[1] = 0;
-													header[2] = (byte)(seq >> 24);
-													header[3] = (byte)(seq >> 16);
-													header[4] = (byte)(seq >> 8);
-													header[5] = (byte)seq;
+													header[1] = 0;  // Type
+													header[2] = 0;  // Flags
+													header[3] = (byte)(seq >> 24);
+													header[4] = (byte)(seq >> 16);
+													header[5] = (byte)(seq >> 8);
+													header[6] = (byte)seq;
 		
 													header.CopyTo(combined, 0);
-													Buffer.BlockCopy(data, 0, combined, 6, dataLength);
+													Buffer.BlockCopy(data, 0, combined, 7, dataLength);
 		
 													await ws.SendAsync(
-														new ArraySegment<byte>(combined, 0, 6 + dataLength),
+														new ArraySegment<byte>(combined, 0, 7 + dataLength),
 														WebSocketMessageType.Binary, true, token);
 		
 													lastSentSequenceNumber = seq;
@@ -3928,7 +5460,26 @@ namespace Browser
 				string action = ExtractJsonString(message, "action");
 				string xStr = ExtractJsonString(message, "x");
 				string yStr = ExtractJsonString(message, "y");
-
+	
+				// 【二次レビュー Major 修正】 PROTOCOL_VERSION: クライアントのプロトコルバージョンを受信
+				// 設計書 §5.3.3 定義: クライアント接続時に PROTOCOL_VERSION を送信し、サーバーがセッションごとにバージョンを記録
+				// バージョン番号は将来の仕様が互換性なく変更される場合にインクリメント
+				// Version 2: 7Bヘッダー (Version + Type + Flags + Seq)
+				if (action == "PROTOCOL_VERSION")
+				{
+					string versionStr = ExtractJsonString(message, "version");
+					if (int.TryParse(versionStr, out int version))
+					{
+						SetClientVersion(session.SessionId, version);
+						Log(2, $"[RemoteController] PROTOCOL_VERSION 受信: version={version} (Session: {session.SessionId})");
+					}
+					else
+					{
+						Log(3, $"[RemoteController] PROTOCOL_VERSION 無効なバージョン値: '{versionStr}' (Session: {session.SessionId})");
+					}
+					return;
+				}
+	
 				if (action == "init")
 				{
 					Log(2, $"[RemoteController] WebSocket init 要求を受領: 初期化フルフレームを生成します (Session: {session.SessionId})");
@@ -3958,14 +5509,16 @@ namespace Browser
 							int seq = Interlocked.Increment(ref _globalSequenceNumber);
 
 							// [二次レビュー修正] 既存の _headerBuffer を流用（毎回の new byte[6] によるアロケーションを排除）
+							// [ver 3.0修正] 7Bヘッダー対応
 							var header = session._headerBuffer;
 							header[0] = (byte)WebSocketProtocolVersion;
-							header[1] = 0; // Flags = 0
+							header[1] = 0; // Type
+							header[2] = 0x01; // Flags: initフレームはキーフレーム (Bit 0 = isKeyFrame)
 							// Big-Endian シーケンス番号を直接書き込み（BitConverter+BlockCopyの中間配列を排除）
-							header[2] = (byte)(seq >> 24);
-							header[3] = (byte)(seq >> 16);
-							header[4] = (byte)(seq >> 8);
-							header[5] = (byte)seq;
+							header[3] = (byte)(seq >> 24);
+							header[4] = (byte)(seq >> 16);
+							header[5] = (byte)(seq >> 8);
+							header[6] = (byte)seq;
 
 							// [FPS Fix] セマフォ待機時間を測定
 							var swWait = System.Diagnostics.Stopwatch.StartNew();
@@ -3977,23 +5530,25 @@ namespace Browser
 								if (session.WebSocket.State == WebSocketState.Open)
 								{
 									// [FPS Fix] WebSocketフラグメント化を排除: ヘッダーとデータを単一メッセージとして送信
-									byte[] combined = _bufferPool.Rent(6 + actualDataLength);
+									// [ver 3.0修正] 7Bヘッダー対応
+									byte[] combined = _bufferPool.Rent(7 + actualDataLength);
 									try
 									{
 										// ヘッダーを結合バッファに書き込み
 										combined[0] = (byte)WebSocketProtocolVersion;
-										combined[1] = 0; // Flags = 0
-										combined[2] = (byte)(seq >> 24);
-										combined[3] = (byte)(seq >> 16);
-										combined[4] = (byte)(seq >> 8);
-										combined[5] = (byte)seq;
+										combined[1] = 0; // Type
+										combined[2] = 0x01; // Flags: initフレームはキーフレーム (Bit 0 = isKeyFrame)
+										combined[3] = (byte)(seq >> 24);
+										combined[4] = (byte)(seq >> 16);
+										combined[5] = (byte)(seq >> 8);
+										combined[6] = (byte)seq;
 										// データをコピー
-										Buffer.BlockCopy(webpData, 0, combined, 6, actualDataLength);
+										Buffer.BlockCopy(webpData, 0, combined, 7, actualDataLength);
 										
 										// [FPS Fix] 単一メッセージとして送信 (endOfMessage = true)
 										var swSend = System.Diagnostics.Stopwatch.StartNew();
 										await session.WebSocket.SendAsync(
-											new ArraySegment<byte>(combined, 0, 6 + actualDataLength),
+											new ArraySegment<byte>(combined, 0, 7 + actualDataLength),
 											WebSocketMessageType.Binary, true, session.CancellationToken.Token);
 										long sendMs = swSend.ElapsedMilliseconds;
 										
@@ -4077,6 +5632,80 @@ namespace Browser
 				else if (action == "mouseup")
 				{
 					await TriggerMouseUpAsync(session);
+				}
+				// [task19 P3] WCS モード切替（クライアント switchToWcsMode() → { action: 'switch_mode', mode: 'webcodecs' }）
+				// 設計書 §5.2 整合: クライアントは既存 WebSocket 接続を維持したまま
+				// sendWsControl を用いてモード切替を要求し、サーバーが SetCaptureModeAsync を実行する
+				else if (action == "switch_mode")
+				{
+					// [task19 レビュー指摘 M2b] レートリミット: SetCaptureModeAsync はキャプチャループの停止・起動を伴うため、
+					// 5秒以内の連続要求は拒否して再起動ストームを防止する（クライアント側 sendWsControl にはスロットリングがない）
+					if (!session.TryAcceptSwitchMode())
+					{
+						Log(3, $"[RemoteController] switch_mode レートリミットで拒否 (Session: {session.SessionId})");
+						return;
+					}
+
+					// [task19 レビュー指摘 m1] 厳格な入力バリデーション:
+					// JSON の "mode" 欠損（null）と無効値（想定外文字列）を区別してログし、
+					// いずれも安全側（WebP）へフォールバックする（例外の握りつぶし禁止のためログ出力）
+					string modeStr = ExtractJsonString(message, "mode");
+					CaptureMode targetMode;
+					if (modeStr == null)
+					{
+						Log(3, $"[RemoteController] switch_mode: \"mode\" フィールド欠損のため WebP にフォールバック (Session: {session.SessionId})");
+						targetMode = CaptureMode.WebP;
+					}
+					else
+					{
+						switch (modeStr.Trim().ToLowerInvariant())
+						{
+							case "webp": targetMode = CaptureMode.WebP; break;
+							case "webcodecs": targetMode = CaptureMode.WebCodecs; break;
+							default:
+								Log(3, $"[RemoteController] switch_mode: 無効なモード値 \"{modeStr}\"、WebP にフォールバック (Session: {session.SessionId})");
+								targetMode = CaptureMode.WebP;
+								break;
+						}
+					}
+					Log(2, $"[RemoteController] WebSocket switch_mode 受信: {targetMode} (Session: {session.SessionId})");
+					await SetCaptureModeAsync(targetMode);
+
+					// [task19 P3] edge case 対策: サーバーが既に WebCodecs モードの場合、
+					// SetCaptureModeAsync は早期リターン（旧=新モード）するため SPS/PPS 再送信されない。
+					// 一方、クライアント switchToWcsMode() はデコーダ状態をリセット済み（_videoDecoderDescription=null）
+					// であるため、DescriptionSent をリセットし、次フレームで SPS/PPS を再送信させる
+					if (targetMode == CaptureMode.WebCodecs)
+					{
+						session.DescriptionSent = false;
+						// [task19 レビュー指摘 M1] バックオフ状態もリセットし、即座に再送を許可する
+						session.ResetDescriptionSendState();
+						Log(2, $"[RemoteController] switch_mode(WebCodecs) で SPS/PPS 再送トリガー (Session: {session.SessionId})");
+					}
+				}
+				// [task19 P3] SPS/PPS 再送信要求（クライアントがデコードエラー上限到達時に送信、設計書 §4.2.3 Major 4）
+				// DescriptionSent をリセットすると WebCodecsCaptureLoopAsync が
+				// 次フレームより前に Type=0x02 の SPS/PPS フレームを再送信する
+				else if (action == "reinit_decoder")
+				{
+					// [task19 レビュー指摘 M2] レートリミット: クライアントの 5秒スロットリング（_clampReinitIntervalMs）と整合させ、
+					// 5秒以内の連続受信を拒否して SPS/PPS の無限再送（帯域浪費・サーバー負荷増大）を防ぐ
+					if (!session.TryAcceptReinitDecoder())
+					{
+						Log(3, $"[RemoteController] reinit_decoder レートリミットで拒否 (Session: {session.SessionId})");
+						return;
+					}
+
+					// [task19 レビュー指摘 M2] キャッシュ未保持時は SPS/PPS を再送できないため、
+					// フラグリセットのみ行っても再送信が起きない状態になる。警告ログで可視化する
+					if (_lastWebCodecsDescription == null)
+					{
+						Log(3, $"[RemoteController] reinit_decoder 受信: SPS/PPS キャッシュが存在しないため再送信できません (Session: {session.SessionId})");
+					}
+					session.DescriptionSent = false;
+					// [task19 レビュー指摘 M1] バックオフ状態もリセットし、即座に再送を許可する
+					session.ResetDescriptionSendState();
+					Log(2, $"[RemoteController] reinit_decoder 受信: SPS/PPS を再送信します (Session: {session.SessionId}, cached={(_lastWebCodecsDescription?.Length.ToString() ?? "null")} bytes)");
 				}
 			}
 			catch (Exception ex)

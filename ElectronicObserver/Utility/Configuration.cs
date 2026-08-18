@@ -1093,6 +1093,22 @@ namespace ElectronicObserver.Utility
 				/// </summary>
 				public string RemoteControllerPassword { get; set; }
 
+				/// <summary>
+				/// 【task28】WebCodecs モードを有効にするか
+				/// </summary>
+				public bool WebCodecsEnabled { get; set; }
+
+				/// <summary>
+				/// 【task28】WebCodecs エンコーダのビットレート（bps, ビット/秒）
+				/// 例: 800000 = 800 kbps
+				/// </summary>
+				public int WebCodecsBitrate { get; set; }
+
+				/// <summary>
+				/// 【task28】WebCodecs エンコーダの FPS
+				/// </summary>
+				public double WebCodecsFps { get; set; }
+
 				public ConfigFormBrowser()
 				{
 					ZoomRate = 1;
@@ -1124,6 +1140,10 @@ namespace ElectronicObserver.Utility
 					RemoteControllerAddress = "*";
 					// 2026/07/14 myi 新規作成（リモート操作用パスワードの初期値設定）
 					RemoteControllerPassword = "";
+					// task28: WebCodecs 設定のデフォルト値
+					WebCodecsEnabled = true;
+					WebCodecsBitrate = 800000;  // 800 kbps
+					WebCodecsFps = 30;          // 30 fps
 				}
 			}
 			/// <summary>[ブラウザ]ウィンドウ</summary>

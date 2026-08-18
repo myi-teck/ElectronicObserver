@@ -69,15 +69,15 @@ window._showFleetEquipment = false;
 window._showQuestProgress = false;
 window._lastQuestsKey = null;
 
-// クライアント側で現在適用されている各HUDブロックの最新バージョン
-let hudVersions = {
-    material: -1,
-    fleets: -1,
-    battle: -1,
-    combat: -1,
-    quests: -1,
-    logs: -1
-};
+ // クライアント側で現在適用されている各HUDブロックの最新バージョン
+ window.hudVersions = {
+     material: -1,
+     fleets: -1,
+     battle: -1,
+     combat: -1,
+     quests: -1,
+     logs: -1
+ };
 
 // 移動制御通信の最適化用フラグ
 let isMoveSending = false;

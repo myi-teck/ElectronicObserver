@@ -30,7 +30,8 @@ function activateViewportFpsControl() {
 }
 
 function handleViewportMove(clientX, clientY) {
-    const rect = screen.getBoundingClientRect();
+    // [task19 v5] remote_screen.js に定義された window.getCachedGameScreenRect() を呼び出す
+    const rect = window.getCachedGameScreenRect();
     // [Task17] ゼロサイズ保護ガード: rect.width または rect.height が 0 の場合は処理をスキップ
     if (rect.width === 0 || rect.height === 0) return;
     const x = Math.max(0, Math.min(1.0, (clientX - rect.left) / rect.width));
@@ -103,7 +104,8 @@ viewport.addEventListener('touchend', (e) => {
     if (isDraggingOnViewport) {
         sendControlAction('mouseup');
     } else if (elapsed <= tapTimeout) {
-        const rect = screen.getBoundingClientRect();
+        // [task19 v5] touchend 座標計算を #game-screen 基準に統一（handleViewportMove と同じ）
+        const rect = window.getCachedGameScreenRect();
         const x = Math.max(0, Math.min(1.0, (viewportTouchStartX - rect.left) / rect.width));
         const y = Math.max(0, Math.min(1.0, (viewportTouchStartY - rect.top) / rect.height));
         sendControlAction('touch_click', x, y);

@@ -346,6 +346,16 @@ async function updateHud() {
         }
 
         if (response.status === 204) {
+            // [task19 v6] 204 No Content 時もセーフティネット適用
+            // 204 は「変更なし」の成功レスポンスであり、HTTP 通信自体は正常に完了している
+            // 3回リトライ失敗後にサーバー復旧し 204 を返す場合、_hudInitialized を立てる
+            if (window.ProtocolManager && !window.ProtocolManager._hudInitialized) {
+                window.ProtocolManager._hudInitialized = true;
+                // [task19 P4] 可観測性向上（レビュー Minor 対応）:
+                // _hudInitialized の復旧イベントは運用上重要な異常復旧シグナルであり、
+                // console.log では見落としやすいため console.warn にレベルを向上させる
+                console.warn('[remote_hud] _hudInitialized restored via 204 response (safety net)');
+            }
             if (typeof updateDataUsage === 'function') {
                 updateDataUsage(getResponseHeaderBytes(response));
             }
@@ -753,6 +763,12 @@ function updateHudData(data) {
         if (data.logs) {
             window._logData = data.logs;
             renderLogHud(data.logs);
+        }
+
+        // [task19 v5] 初回リトライ失敗後にサーバー復旧した場合のセーフティネット
+        if (window.ProtocolManager && !window.ProtocolManager._hudInitialized) {
+            window.ProtocolManager._hudInitialized = true;
+            console.log('[remote_hud] _hudInitialized validated via updateHud polling');
         }
 
         console.log('[HUD] HUD data updated via WebSocket');

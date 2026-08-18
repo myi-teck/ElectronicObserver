@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.Serialization;
@@ -81,7 +81,6 @@ namespace ElectronicObserver.Data.Quest
 			var memberstype = members.Select(s => s?.MasterShip?.ShipType ?? Empty).ToArray();
 
 			string[] membernames;
-			bool[] fleetmember;
 			bool isFlagship = false;
 			var membercount = 0;
 

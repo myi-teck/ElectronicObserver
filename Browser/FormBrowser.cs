@@ -271,11 +271,179 @@ namespace Browser
 			(function() {
 				// 二重登録の防止
 				if (window._kancolleCaptureEngine) return;
-
+	
+				// WebCodecs 用エンコードチャンクキュー（リングバッファ）
+				var _encodedChunks = [];
+				// 【task28 ver 3.9】 設計書 §5.1.1 対応: 最大エンコードチャンク数（30エントリ）
+				// 目標FPS 30-60FPS において許容遅延を約0.5〜1秒に抑えるための値
+				// （30エントリ × 1/30秒 ≒ 1秒: 30FPS時） / （30エントリ × 1/60秒 ≒ 0.5秒: 60FPS時）
+				// 低帯域環境では遅延要因となるため、必要に応じて値を調整すること
+				const MAX_ENCODED_CHUNKS = 30; // 【二次レビュー Minor 修正】 var→const 定数化（設計書 §5.1.1: 30エントリ）
+				// 【二次レビュー Minor 指摘S3 修正】 stopEncoder の flush タイムアウト値を定数化
+				const STOP_ENCODER_FLUSH_TIMEOUT_MS = 2000;
+				// 【二次レビュー Minor 修正】 btoa() チャンク分割サイズの定数化
+				// V8 の String.fromCharCode.apply の引数制限（スタックサイズ）の安全域として 8192 を選択
+				// Chunks サイズを大きくするとスタックオーバーフロー、小さすぎると文字列連結の GC 負荷増大
+				const BASE64_ENCODE_CHUNK_SIZE = 8192;
+	
+				// 【task28 ver 3.9 + レビュー修正】 設計書 §5.1.2 対応: Promise ベースの排他ロック
+				// 設計書定義通り _encodedChunksLock 構造体 + キュー方式 + タイムアウト 50ms に修正
+				// 【Minor修正】 意図しない再代入を防止するため var→const 定数化
+				const _encodedChunksLock = { locked: false, waiters: [] };
+			
+				// 【Minor修正】 意図しない再代入を防止するため var→const 定数化
+				// 【Minor修正】 _acquireLock をより堅牢な形式にリファクタリング
+				// - 内部関数の変数宣言を const/let に統一（var の関数スコープによる予期せぬ変数汚染を防止）
+				// - タイムアウト定数化（50ms: 設計書 §5.1.2 ver 3.9 対応: 30FPSで約1.5フレーム分）
+				const _acquireLockTimeoutMs = 50;
+				const _acquireLock = async function() {
+						return await new Promise(function(resolve, reject) {
+							if (!_encodedChunksLock.locked) {
+								_encodedChunksLock.locked = true;
+								resolve();
+							} else {
+								// 50ms タイムアウト（設計書 §5.1.2 ver 3.9 対応: 30FPSで約1.5フレーム分）
+								const thisWaiter = { resolve: resolve, reject: reject, timer: null };
+								// 【レビュー修正】 setTimeout コールバックをアロー関数に変更（一次レビュー Minor 対応）
+								// クロージャ変数 thisWaiter を安全に参照可能
+								const timer = setTimeout(() => {
+									const idx = _encodedChunksLock.waiters.indexOf(thisWaiter);
+									if (idx !== -1) {
+										_encodedChunksLock.waiters.splice(idx, 1);
+									}
+									reject(new Error('Lock acquisition timeout (' + _acquireLockTimeoutMs + 'ms)'));
+								}, _acquireLockTimeoutMs);
+								thisWaiter.timer = timer;
+								_encodedChunksLock.waiters.push(thisWaiter);
+							}
+						});
+					};
+			
+				// 【Minor修正】 意図しない再代入を防止するため var→const 定数化
+				const _releaseLock = function() {
+					if (_encodedChunksLock.waiters.length > 0) {
+						const waiter = _encodedChunksLock.waiters.shift();
+						if (waiter.timer) clearTimeout(waiter.timer);
+						waiter.resolve(); // ロック所有権を直ちに解凍対象に引き継ぐ（locked は true のまま維持）
+					} else {
+						_encodedChunksLock.locked = false; // 待機者がいない場合のみ解放
+					}
+				};
+	
+				// [task19_v1 Critical#5 修正] SPS/PPS 抽出・AVCDecoderConfigurationRecord (AVCC) 変換
+				// 根本原因: Chromium 143 の H.264 エンコーダは onoutput の
+				// metadata.decoderConfig.description を populate しない（常に null）。
+				// W3C WebCodecs 仕様の decoderConfig 初期化アルゴリズムも codec/codedWidth/
+				// codedHeight のみコピーし description を設定しないため、既存の
+				// metadata.decoderConfig.description キャプチャ経路は機能しなかった。
+				// 対策（候補B・確実）: 最初のキーフレームチャンクの byte 列から SPS/PPS NALU を
+				// 抽出し、AVCDecoderConfigurationRecord (AVCC / ISO/IEC 14496-15 §5.3.3.1) へ
+				// 変換して description として返す。annex-b（start code）と AVCC（length-prefixed）
+				// の両形式に対応する。NALU type: 7 = SPS, 8 = PPS
+				function _parseAnnexBNalus(bytes) {
+					var n = bytes.length;
+					var startPositions = [];
+					var i = 0;
+					while (i + 2 < n) {
+						// [task19_v1 Round5 Minor-2 修正] 4-byte start code (00 00 00 01) を明示的に検出
+						// 3-byte start code (00 00 01) の位置 (i+1) を記録し 4 バイトスキップすることで、
+						// NALU 開始位置 (startPositions[k] + 3) が 01 バイトの直後 (i+4) となることを保証する
+						if (bytes[i] === 0 && bytes[i + 1] === 0 && bytes[i + 2] === 0 && i + 3 < n && bytes[i + 3] === 1) {
+							startPositions.push(i + 1);
+							i += 4;
+						} else if (bytes[i] === 0 && bytes[i + 1] === 0 && bytes[i + 2] === 1) {
+							startPositions.push(i);
+							i += 3;
+						} else {
+							i++;
+						}
+					}
+					var nalus = [];
+					for (var k = 0; k < startPositions.length; k++) {
+						var nalStart = startPositions[k] + 3; // 00 00 01 の直後（4byte start code 00 00 00 01 も 00 00 01 として検出）
+						if (nalStart >= n) continue;
+						var nalEnd = (k + 1 < startPositions.length) ? startPositions[k + 1] : n;
+						// trailing zero bytes を除去
+						while (nalEnd > nalStart && bytes[nalEnd - 1] === 0) nalEnd--;
+						if (nalEnd <= nalStart) continue;
+						var nalUnit = bytes.subarray(nalStart, nalEnd);
+						nalus.push({ type: nalUnit[0] & 0x1F, data: nalUnit });
+					}
+					return nalus;
+				}
+	
+				function _parseAvccNalus(bytes) {
+					var n = bytes.length;
+					var nalus = [];
+					var p = 0;
+					while (p + 4 <= n) {
+						// [task19_v1 Round5 Minor-1 修正] ビットシフト演算で 4 バイト大端長を復元
+						// >>> 0 で unsigned 化し、符号拡張による負値を防止する
+						var len = ((bytes[p] << 24) | (bytes[p + 1] << 16) | (bytes[p + 2] << 8) | bytes[p + 3]) >>> 0;
+						if (len <= 0 || p + 4 + len > n) break;
+						var nalUnit = bytes.subarray(p + 4, p + 4 + len);
+						nalus.push({ type: nalUnit[0] & 0x1F, data: nalUnit });
+						p += 4 + len;
+					}
+					return nalus;
+				}
+	
+				function _buildAvcc(sps, pps) {
+					// SPS NALU: [NAL header][profile_idc][constraint_flags][level_idc][...]
+					var profileIdc = sps[1];
+					var constraint = sps[2];
+					var levelIdc = sps[3];
+					var out = [];
+					out.push(1);            // configurationVersion = 1
+					out.push(profileIdc);   // AVCProfileIndication
+					out.push(constraint);   // profile_compatibility
+					out.push(levelIdc);     // AVCLevelIndication
+					out.push(0xFF);         // reserved(6)=111111 + lengthSizeMinusOne(2)=11
+					out.push(0xE0 | 1);     // numOfSequenceParameterSets = 1
+					out.push((sps.length >> 8) & 0xFF);
+					out.push(sps.length & 0xFF);
+					for (var i = 0; i < sps.length; i++) out.push(sps[i]);
+					out.push(1);            // numOfPictureParameterSets = 1
+					out.push((pps.length >> 8) & 0xFF);
+					out.push(pps.length & 0xFF);
+					for (var j = 0; j < pps.length; j++) out.push(pps[j]);
+					return new Uint8Array(out);
+				}
+	
+				function _extractSpsPpsDescription(bytes) {
+					var n = bytes.length;
+					var isAnnexB = (n >= 4 && bytes[0] === 0 && bytes[1] === 0 && bytes[2] === 0 && bytes[3] === 1)
+						|| (n >= 3 && bytes[0] === 0 && bytes[1] === 0 && bytes[2] === 1);
+					var nalus = isAnnexB ? _parseAnnexBNalus(bytes) : _parseAvccNalus(bytes);
+					var sps = null, pps = null;
+					for (var i = 0; i < nalus.length; i++) {
+						if (nalus[i].type === 7 && !sps) sps = nalus[i].data;
+						else if (nalus[i].type === 8 && !pps) pps = nalus[i].data;
+					}
+					if (!sps || !pps) return null;
+					return _buildAvcc(sps, pps);
+				}
+	
+				var _requestKeyFrame = false;
+	
 				window._kancolleCaptureEngine = {
 					webpQuality: 0.6,      // WebP圧縮品質
 					lastWebp: null,        // バックグラウンド生成済みWebPキャッシュ
 					isEncoding: false,     // 排他フラグ
+	
+					// WebCodecs 状態管理（設計書 ver 3.9 §5.1.1 対応）
+					videoEncoder: null,
+					isReinitializing: false,
+					encoderConfig: {
+						codec: 'avc1.42001f',
+						width: 1200,
+						height: 720,
+						bitrate: 800000,
+						framerate: 30,
+						avc: { format: 'avc' }
+					},
+					encoderOutputCallback: null,
+					encoderRunning: false,
 
 					start: function() {
 						const canvas = document.querySelector('canvas');
@@ -348,6 +516,364 @@ namespace Browser
 							}
 						}
 						return ['none', ''];
+					},
+
+					//================================================================================
+					// WebCodecs エンコーダ機能（task28 Phase 2）
+					//--------------------------------------------------------------------------------
+
+					// initEncoder(): VideoEncoder の構築・configure()・encoderOutputCallback 設定
+					// 【レビュー修正】 設計書 ver 3.9 §5.1.1 対応: ロック保護付きの encoderOutputCallback 退避・キュークリア
+					initEncoder: async function(config) {
+						// 再入防止（設計書 S7 対応）
+						if (this.isReinitializing) {
+							return { success: false, error: 'Already reinitializing' };
+						}
+						this.isReinitializing = true;
+						this.encoderRunning = false;
+
+						if (!('VideoEncoder' in window)) {
+							this.isReinitializing = false;
+							return { success: false, error: 'VideoEncoder not supported' };
+						}
+
+						// Secure Context 確認
+						if (window.isSecureContext === false) {
+							this.isReinitializing = false;
+							return { success: false, error: 'Not a Secure Context' };
+						}
+
+						// 【レビュー修正】 設計書 ver 3.9 §5.1.1 対応: 旧 encoderOutputCallback 退避（ロック取得前）
+						var encoderOutputCallbackBeforeLock = this.encoderOutputCallback;
+
+						try {
+							// 【レビュー修正】 ロック取得 → encoderOutputCallback null 化 → キュークリアの順序
+							await _acquireLock();
+							try {
+								// ロック取得成功後に encoderOutputCallback を null 化
+								this.encoderOutputCallback = null;
+								// キュークリア（ロック保護下で安全）
+								// 【Major修正】 設計書 §5.1.1 対応: splice方式で配列参照を維持
+								_encodedChunks.splice(0, _encodedChunks.length);
+							} finally {
+								_releaseLock();
+							}
+
+							if (this.videoEncoder) {
+								await this.stopEncoder();
+								this.videoEncoder = null;
+							}
+
+							// コーデックサポート確認
+							var supported = await VideoEncoder.isConfigSupported({
+								codec: config.codec,
+								width: config.width,
+								height: config.height,
+								bitrate: config.bitrate
+							});
+
+							if (!supported.supported) {
+								this.isReinitializing = false;
+								// 【Minor修正】 エラーメッセージを具体化: codec/width/height/bitrate/reason を含めて出力
+								// supported.reason には 'unsupported' / 'not-efficient' 等の詳細理由が含まれる
+								var errorMsg = 'Config unsupported: codec=' + config.codec
+									+ ', width=' + config.width
+									+ ', height=' + config.height
+									+ ', bitrate=' + config.bitrate
+									+ ', reason=' + (supported.reason || 'unknown');
+								return { success: false, error: errorMsg };
+							}
+
+							// VideoEncoder 構築
+							this.videoEncoder = new VideoEncoder({
+								output: (chunk, metadata) => {
+									if (this.encoderOutputCallback) {
+										this.encoderOutputCallback(chunk, metadata);
+									}
+								},
+								error: (e) => {
+									console.error('[CaptureEngine] VideoEncoder error:', e);
+									this.encoderRunning = false;
+								}
+							});
+
+							// configure() 実行
+							this.videoEncoder.configure(config);
+							this.encoderConfig = config;
+							// [task19_v1 Critical#5 修正] SPS/PPS 抽出フラグをリセット（再初期化時に新しい SPS/PPS を再抽出）
+							this._spsPpsExtracted = false;
+
+							// 【レビュー修正】 設計書 ver 3.9 §5.1.1 対応: encoderOutputCallback 内のロック保護
+							var self = this;
+							this.encoderOutputCallback = async function(chunk, metadata) {
+								var view = new Uint8Array(chunk.byteLength);
+								chunk.copyTo(view);
+
+								// [task19_v1 Critical#5 修正] SPS/PPS (description) キャプチャ（候補B・確実）
+								// 根本原因: Chromium 143 の H.264 エンコーダは onoutput の
+								// metadata.decoderConfig.description を populate しない（常に null）。
+								// W3C WebCodecs 仕様の decoderConfig 初期化アルゴリズムも codec/codedWidth/
+								// codedHeight のみコピーし description を設定しないため、既存の
+								// metadata.decoderConfig.description キャプチャ経路は機能しなかった。
+								// 対策: 最初のキーフレームチャンクの byte 列から SPS/PPS NALU を抽出し、
+								// AVCDecoderConfigurationRecord (AVCC / ISO/IEC 14496-15 §5.3.3.1) へ変換する。
+								// annex-b（start code）と AVCC（length-prefixed）の両形式に対応。
+								// 抽出は 1 回だけ（_spsPpsExtracted フラグで管理）。initEncoder() でフラグをリセットするため、
+								// reinit（再初期化）後は新しい SPS/PPS を再抽出する。
+								var description = null;
+								if (chunk.type === 'key') {
+									// ① 仕様準拠経路: 将来 Chromium が decoderConfig.description を populate した場合に備え
+									//    最優先で利用する（現行 Chromium 143 では常に null であるため ② にフォールバック）
+									if (metadata && metadata.decoderConfig && metadata.decoderConfig.description) {
+										// [task19 レビュー指摘 M4/Minor] バッファコピー安全性:
+										// Uint8Array.from() は常に独立した新 ArrayBuffer を生成するため、参照共有を排除する
+										description = Uint8Array.from(metadata.decoderConfig.description);
+										this._spsPpsExtracted = true;
+									}
+									// ② [task19_v1 Critical#5] チャンク byte 列から SPS/PPS を抽出（候補B・確実）
+									//    SPS/PPS は AVC セッション内で不変なため、初回キーフレームのみ抽出（1 回だけ）
+									else if (!this._spsPpsExtracted) {
+										var extracted = _extractSpsPpsDescription(view);
+										if (extracted) {
+											description = extracted;
+											this._spsPpsExtracted = true;
+											console.log('[CaptureEngine] SPS/PPS extracted from first keyframe, AVCC length=' + extracted.length);
+										} else {
+											console.warn('[CaptureEngine] SPS/PPS extraction failed from keyframe (no SPS/PPS NALU found)');
+										}
+									}
+								}
+
+								try {
+									await _acquireLock();
+									try {
+										_encodedChunks.push({
+											data: view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength),
+											isKeyFrame: chunk.type === 'key',
+											timestamp: chunk.timestamp,
+											description: description,
+											enqueueTime: performance.now()
+										});
+										// リングバッファ上限（MAX_ENCODED_CHUNKS エントリ）
+										if (_encodedChunks.length > MAX_ENCODED_CHUNKS) {
+											_encodedChunks.shift();
+										}
+									} finally {
+										_releaseLock();
+									}
+								} catch (e) {
+									// ロック取得タイムアウト時はそのフレームをドロップ
+									console.warn('[CaptureEngine] encoderOutputCallback lock timeout, dropping frame:', e.message);
+								}
+							};
+
+							this.isReinitializing = false;
+							this.encoderRunning = true;
+							return { success: true, codec: config.codec };
+
+						} catch (e) {
+							// 【レビュー修正】 タイムアウト時は旧 encoderOutputCallback を復元
+							this.encoderOutputCallback = encoderOutputCallbackBeforeLock;
+							this.isReinitializing = false;
+							this.videoEncoder = null;
+							this.encoderRunning = false;
+							return { success: false, error: 'configure failed: ' + e.message };
+						}
+					},
+
+					// encodeFrame(): VideoFrame をエンコーダに投入し、close() で解放
+					// 【Critical修正】 try-finally で frame.close() を確実に実行し、VRAMリークを防止
+					// 【二次レビュー Minor 指摘S2 修正】 _encodeErrorCount のスレッド安全性確保
+					// 将来的な並列化に備え、_encodeErrorCount の読み書きは _acquireLock() / _releaseLock() で保護すること
+					// 現状は単一スレッド（WebCodecsキャプチャループ内逐次実行）であり競合は発生しないが、
+					// 将来マルチスレッド化された場合はこの関数を async 化し、await _acquireLock() で保護すること
+					encodeFrame: function(canvas, isKeyFrame) {
+							if (!this.encoderRunning || !this.videoEncoder) {
+								return { success: false, error: 'Encoder not running' };
+							}
+	
+							// state チェック
+							if (this.videoEncoder.state === 'closed') {
+								this.encoderRunning = false;
+								return { action: 'reinit' };
+							}
+							if (this.videoEncoder.state === 'unconfigured') {
+								this.encoderRunning = false;
+								return { action: 'reinit' };
+							}
+	
+							// 【レビュー修正】 VideoFrame 生成エラーカウント（二次レビュー Minor 対応）
+							// 連続失敗時に自動再初期化をトリガー（閾値: 10回）
+							// 【二次レビュー Minor 指摘S3 修正】
+							// 将来並列化時は Atomics または _acquireLock() / _releaseLock() で保護が必要
+							// 現状は単一スレッド実行であり、JavaScript の非同期コンテキストで競合しない
+							if (!this._encodeErrorCount) this._encodeErrorCount = 0;
+	
+							var frame = null;
+							try {
+								// 【レビュー修正】 WebGL Canvas の場合、ブラウザ実装依存の制限がある
+								// Chromium 143 では new VideoFrame(canvas, { alpha: 'discard' }) は正常動作確認済み
+								// ただし、一部のブラウザ実装では WebGL 内部テクスチャのコピーが正しく行われない可能性あり
+								// 代替案: canvas.captureStream() を経由する方法も検討可能
+								// 【Critical修正】 duration を明示的に指定（設計書 §5.1.1 整合性）
+								// duration 省略時はブラウザ実装依存でフレームレートが不整合になり、
+								// キーフレーム間隔計算誤差が発生する
+								// [task19_v1 Critical#4 修正] VideoFrameInit に timestamp（μs・単調増加）を追加
+								// W3C WebCodecs 仕様に従い、canvas ソースからの VideoFrame 生成時は
+								// VideoFrameInit.timestamp が必須（Chromium は欠如時に
+								// VideoFrameInit must provide timestamp で全フレームを拒否する）。
+								// FPS 変動で非単調になり得る performance.now() の単純使用を避け、
+								// 独立カウンタ（_frameTimestampCounter）で単調増加を保証する（設計書 §4.2.1 整合）。
+								// カウンタは this に保持し、initEncoder() でリセットしないため、
+								// reinit（再初期化）後も単調増加が維持される。
+								var fps = (this.encoderConfig && this.encoderConfig.framerate) || 30;
+								if (!this._frameTimestampCounter) this._frameTimestampCounter = 0;
+								this._frameTimestampCounter += Math.floor(1000000 / fps);
+								var frameTimestamp = this._frameTimestampCounter;
+								frame = new VideoFrame(canvas, {
+									alpha: 'discard',
+									duration: 1000000 / this.encoderConfig.framerate,
+									timestamp: frameTimestamp
+								});
+	
+								this.videoEncoder.encode(frame, {
+									keyFrame: isKeyFrame || false
+								});
+	
+								// 成功時はエラーカウントをリセット
+								this._encodeErrorCount = 0;
+								return { type: 'encoded' };
+							} catch (e) {
+								this._encodeErrorCount++;
+								console.warn('[CaptureEngine] VideoFrame encode failed: ' + e.message + ' (count=' + this._encodeErrorCount + ')');
+								// 【レビュー修正】 連続エラー閾値超過時は自動再初期化をトリガー
+								if (this._encodeErrorCount >= 10) {
+									this._encodeErrorCount = 0;
+									console.warn('[CaptureEngine] encode error count exceeded, triggering reinit');
+									return { action: 'reinit' };
+								}
+								return { success: false, error: 'encode failed: ' + e.message };
+							} finally {
+								// 【Critical修正】 エラー経路を含め frame.close() を確実に実行（VRAMリーク防止）
+								if (frame) {
+									frame.close();
+								}
+							}
+						},
+
+					// pull_encoded(): _encodedChunks キューから EncodedVideoChunk を取り出し、Base64 として返却
+					// 【レビュー修正】 設計書 ver 3.9 §5.1.2 対応: _encodedChunks アクセスをロックで保護
+					// 【レビュー修正】 isReinitializing チェックをロック取得前に移動（設計書 §5.1.2 定義順）
+					pull_encoded: async function() {
+						// isReinitializing チェック（ロック取得前: ロック中に reinitializing 変更時に無駄な処理を防ぐ）
+						if (this.isReinitializing) {
+							return ['none', null];
+						}
+
+						await _acquireLock();
+						try {
+
+							if (_encodedChunks.length === 0) {
+								return ['none', null];
+							}
+
+							var entry = _encodedChunks.shift();
+							if (!entry || !entry.data) {
+								return ['none', null];
+							}
+
+							// 【Critical修正】 Base64 チャンク分割バグ修正: btoa() を全体に対して1回だけ呼び出す
+							// 旧実装ではチャンク単位でbtoa()を呼び出し結合していたが、
+							// 3バイト境界でパディングが挿入されるため中間パディングを含む不正なBase64が生成される
+							// 修正案: チャンク単位で文字列を構築し、結合後の文字列全体に対してbtoa()を1回だけ呼び出す
+							//
+							// 【Critical修正】 String.fromCharCode.apply のパフォーマンス改善:
+							// V8 の引数展開制限（65536 引数）と文字列連結の O(n²) コストを回避。
+							// チャンク単位で String.fromCharCode.apply を呼び出し、Array.join('') で O(n) 連結。
+							// binary += String.fromCharCode.apply(...) の文字列連結が O(n²) となる問題を解消。
+							//
+							// 【二次レビュー Minor 修正】 btoa() 実行負荷について:
+							// 毎フレーム btoa() を呼び出すことによる GC 負荷の懸念があるが、
+							// チャンク単位(8192バイト)で文字列を構築し、btoa() は1回/フレームで実行するため、
+							// 中間の一時文字列は 1フレーム × 1回 のみ。エンコードデータ量 ≒ 100KB の場合、
+							// btoa() は約 133KB の文字列を処理する。
+							// 再利用可能なバッファによる最適化は機能の正し性を損なうリスクがあるため、
+							// 現行の簡潔な実装を維持する（V8のbtoaは内部で高速なネイティブ実装を使用）。
+							var bytes = new Uint8Array(entry.data);
+							var chunkSize = BASE64_ENCODE_CHUNK_SIZE;  // V8 apply 引数制限の安全域 8192
+							var chunks = [];
+							for (var i = 0; i < bytes.length; i += chunkSize) {
+								var end = Math.min(i + chunkSize, bytes.length);
+								chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, end)));
+							}
+							var binary = chunks.join('');  // O(n) 連結（O(n²) の binary += を回避）
+							var base64 = btoa(binary);
+	
+							// [task19 P2] SPS/PPS (description) を第4要素として返却（設計書 §4.2.2 ステップ1-2）
+							// description がある場合のみ Base64 文字列、なければ null
+							// C# 側が Convert.ToBase64String() 相当で復号し、Type=0x02 フレームでクライアントへ送信する
+							var descriptionBase64 = null;
+							if (entry.description && entry.description.length > 0) {
+								var descBytes = entry.description;
+								var descChunks = [];
+								for (var j = 0; j < descBytes.length; j += chunkSize) {
+									var descEnd = Math.min(j + chunkSize, descBytes.length);
+									descChunks.push(String.fromCharCode.apply(null, descBytes.subarray(j, descEnd)));
+								}
+								descriptionBase64 = btoa(descChunks.join(''));
+							}
+	
+							return ['encoded', base64, entry.isKeyFrame ? '1' : '0', descriptionBase64];
+						} catch (e) {
+							console.error('[CaptureEngine] pull_encoded error:', e);
+							return ['none', null];
+						} finally {
+							_releaseLock();
+						}
+					},
+
+					// stopEncoder(): encoder.flush() の待機および encoder.close() の実行
+					// 【レビュー修正】 Promise.race による flush タイムアウト処理（デッドロック防止）
+					stopEncoder: async function() {
+						if (!this.videoEncoder) {
+							return;
+						}
+
+						try {
+							// 【レビュー修正】 Promise.race で flush() タイムアウト処理
+							// flush() 正常完了 vs 2秒タイムアウトの競争
+							var flushPromise = this.videoEncoder.flush();
+							// 【二次レビュー Minor 指摘S3 修正】 setTimeout コールバックをアロー関数化 + 定数化
+							var timeoutPromise = new Promise(resolve => {
+								setTimeout(() => resolve('timeout'), STOP_ENCODER_FLUSH_TIMEOUT_MS);
+							});
+
+							var result = await Promise.race([flushPromise, timeoutPromise]);
+
+							if (result === 'timeout') {
+								console.warn('[CaptureEngine] flush() timeout, forcing reset()');
+								// タイムアウト時は reset() で強制リセット
+								if (this.videoEncoder && this.videoEncoder.state !== 'closed') {
+									this.videoEncoder.reset();
+								}
+							}
+
+							// close() 実行
+							if (this.videoEncoder && this.videoEncoder.state !== 'closed') {
+								this.videoEncoder.close();
+							}
+						} catch (e) {
+								console.error('[CaptureEngine] stopEncoder error:', e);
+								if (this.videoEncoder && this.videoEncoder.state !== 'closed') {
+									try { this.videoEncoder.reset(); } catch (e2) {
+										// 【レビュー修正】 reset() 失敗時の console.error 出力（二次レビュー Minor 対応）
+										console.error('[CaptureEngine] reset() failed after stopEncoder error:', e2);
+									}
+								}
+						} finally {
+							this.videoEncoder = null;
+							this.encoderRunning = false;
+						}
 					}
 				};
 
@@ -388,6 +914,12 @@ namespace Browser
 		private readonly object _hudBufferLock = new object();
 
 		private string ProxySettings = null;
+
+		// [task19 不具合3修正] APIObserver 下流プロキシの既定値
+		// （SetProxy がホストから届く前・ProxySettings が null/未パースの場合のフォールバック）
+		// Program.cs が Application.Run 以前に CefSharpSettings.Proxy を既定値で早期設定するのにも使用
+		public const string DefaultApiObserverHost = "127.0.0.1";
+		public const string DefaultApiObserverPort = "40620";
 	
 		// InitializeBrowser 呼び出しの排他ロック用オブジェクト
 		private readonly object _initBrowserLock = new object();
@@ -559,8 +1091,16 @@ namespace Browser
 			if (Browser != null)
 				return;
 
-			if (ProxySettings == null)
-				return;
+			// [task19 不具合3修正 / Round 7 Minor 修正] 公式機構 CefSharpSettings.Proxy の設定は単一責務に集約する:
+			// - Program.cs が Application.Run 以前に既定値（127.0.0.1:40620）を早期設定済み。
+			// - ここで再適用するのは、ProxySettings が到着済み（SetProxy 経由で設定済み）かつ
+			//   Cef.Initialize 実行前（= CefSharpSettings.Proxy の変更が有効な唯一のタイミング）の場合のみ。
+			// - ProxySettings が未到着（null/空）の場合は既定値が既に Program.cs で設定済みのため再設定しない
+			//   （同一値の重複設定を排除）。
+			// - Cef.Initialize が既に実行済みの場合は変更が無効なためここで再適用しても意味がなく、
+			//   後続の Cef.IsInitialized == true 分岐で警告ログを出力する。
+			if (Cef.IsInitialized == false && !string.IsNullOrEmpty(ProxySettings))
+				ApplyCefSharpProxy(ProxySettings);
 
 			// Cef.Initialize はプロセス内で一度しか呼べないので、既に初期化済みか確認する
 			if (Cef.IsInitialized == false)
@@ -581,9 +1121,19 @@ namespace Browser
 				};
 
 				if (!Configuration.HardwareAccelerationEnabled)
-					settings.DisableGpuAcceleration();
+						settings.DisableGpuAcceleration();
+					else
+					{
+						// task28: WebCodecs API 用の GPU ハードウェアエンコード有効化
+						// Intel QSV / NVENC 等の GPU ハードウェアエンコーダに処理をオフロードするため
+						// 設計書 §5.2 対応: AcceleratedVideoEncoder,AcceleratedVideoDecoder (Chromium 143 以降の公式フラグ)
+						// 【レビュー修正】 GPU無効時はフラグ追加をスキップ（一次レビュー Major 対応）
+						settings.CefCommandLineArgs.Add("enable-features", "AcceleratedVideoEncoder,AcceleratedVideoDecoder");
+					}
 
-				settings.CefCommandLineArgs.Add("proxy-server", ProxySettings);
+				// [task19 不具合3修正] proxy-server は公式機構 CefSharpSettings.Proxy により適用する。
+				// ApplyCefSharpProxy（Cef.Initialize 前）が --proxy-server をコマンドラインに反映する。
+				// 手動の settings.CefCommandLineArgs.Add("proxy-server") は削除する（重複キー例外の回避）。
 				if (Configuration.ForceColorProfile)
 					settings.CefCommandLineArgs.Add("force-color-profile", "srgb");
 
@@ -599,6 +1149,15 @@ namespace Browser
 
 				CefSharpSettings.SubprocessExitIfParentProcessClosed = true;
 				Cef.Initialize(settings, false, (IBrowserProcessHandler)null);
+			}
+			else
+			{
+				// [task19 不具合3修正] CefSharp が既に初期化済み（Cef.IsInitialized == true）の場合の検知
+				// この場合、Cef.Initialize が呼ばれないため proxy-server が適用されず、
+				// ゲーム API トラフィックが APIObserver プロキシ（ポート40620）に到達しない。
+				// 自動再起動は行わない（ユーザーの進行中のセッションを壊さない）。
+				// 警告ログを出力し、ユーザーに EOBrowser 再起動が必要であることを伝える。
+				AddLog(2, "[FormBrowser] CefSharp が既に初期化済みです (Cef.IsInitialized == true)。proxy-server が適用されていないため、ゲーム API トラフィックが APIObserver プロキシ（ポート40620）に到達しない可能性があります。EOBrowser を再起動してください。");
 			}
 
 
@@ -630,11 +1189,17 @@ namespace Browser
 					string address = string.IsNullOrEmpty(Configuration.RemoteControllerAddress) ? "*" : Configuration.RemoteControllerAddress;
 					string password = Configuration.RemoteControllerPassword;
 
+					// task28: WebCodecs 設定値を取得
+					int webCodecsBitrate = (int)Configuration.WebCodecsBitrate;
+					if (webCodecsBitrate <= 0) webCodecsBitrate = 800000;
+					int webCodecsFps = (int)Configuration.WebCodecsFps;
+					if (webCodecsFps <= 0) webCodecsFps = 30;
+
 					AddLog(2, $"[FormBrowser] RemoteController の初期化を開始します (Address: {address}, Port: {port})");
 
 					lock (_hudBufferLock)
 					{
-						_remoteController = new RemoteController(this, port, address, password);
+						_remoteController = new RemoteController(this, port, address, password, webCodecsBitrate, webCodecsFps);
 						_remoteController.Start();
 
 						if (_bufferedHudJson != null)
@@ -649,6 +1214,104 @@ namespace Browser
 					AddLog(3, $"[FormBrowser] RemoteController 初期化エラー: {ex.Message}");
 				}
 			}
+		}
+
+
+		/// <summary>
+		/// [task19 不具合3修正] 公式機構 <c>CefSharpSettings.Proxy</c> によるプロキシ設定を行う。
+		/// </summary>
+		/// <remarks>
+		/// <c>CefSharpSettings.Proxy</c> は静的プロパティで、<c>Cef.Initialize</c> 前に設定すると
+		/// CefSharp がコマンドライン引数 <c>--proxy-server</c> を自動生成し、
+		/// Chromium のネットワークスタック（utility-network / renderer サブプロセス）へ反映する。
+		/// <c>Cef.Initialize</c> 実行後の変更は無効なため、本メソッドは初期化前に呼ぶこと。
+		/// 冪等性：同一値で繰り返し設定しても安全（静的プロパティの上書き）。
+		/// [Round 7 Minor 修正]
+		/// - IPv6 リテラルに対応（例 "[::1]:40620"、 "::1:40620"）。ホストはブラケット付きで
+		///   保持し、Chromium の "--proxy-server=[::1]:40620" 標準形式になるよう生成する。
+		/// - ポート番号は 1〜65535 の範囲を検証する（無効値・未パース時は既定値にフォールバックしログ記録）。
+		/// </remarks>
+		/// <param name="proxy">"host:port" 形式（例 "127.0.0.1:40620"、"[::1]:40620"）のプロキシアドレス。
+		/// null / 空 / 未パース / ポート範囲無効の場合は既定値 127.0.0.1:40620 にフォールバックする。</param>
+		public static void ApplyCefSharpProxy(string proxy)
+		{
+			string host = DefaultApiObserverHost;
+			string port = DefaultApiObserverPort;
+
+			// "host:port" 形式を host / port に分解（ProxyOptions は IP/Port とも string 型）
+			if (!string.IsNullOrEmpty(proxy))
+			{
+				var trimmed = proxy.Trim();
+				string parsedHost = null;
+				string parsedPort = null;
+
+				// [Round 7 Minor 修正] IPv6 対応パース:
+				//  - ブラケット付き IPv6 リテラル "[::1]:40620"（ホストはブラケット付きで保持）
+				//  - IPv4 / ホスト名 "127.0.0.1:40620"（ホストにコロンを含まない通常形式）
+				var m = System.Text.RegularExpressions.Regex.Match(trimmed, @"^(?:\[(?<b6>[0-9A-Fa-f:.]+)\]|(?<h>[^:\]]+)):(?<p>\d+)$");
+				if (m.Success)
+				{
+					parsedHost = m.Groups["b6"].Success ? ("[" + m.Groups["b6"].Value + "]") : m.Groups["h"].Value;
+					parsedPort = m.Groups["p"].Value;
+				}
+				else if (trimmed.Contains("::"))
+				{
+					// ブラケットなし IPv6 リテラル "::1:40620"（ホストにコロンを含む場合）:
+					// 最後の ':' をポート区切りとして分割し、ホストはブラケット付きで保持する
+					int idx = trimmed.LastIndexOf(':');
+					if (idx > 0)
+					{
+						var h = trimmed.Substring(0, idx);
+						var p = trimmed.Substring(idx + 1);
+						if (!string.IsNullOrEmpty(h) && p.All(char.IsDigit))
+						{
+							parsedHost = "[" + h + "]";
+							parsedPort = p;
+						}
+					}
+				}
+
+				if (parsedHost != null)
+				{
+					int portVal;
+					// [Round 7 Minor 修正] ポート番号を 1〜65535 の範囲で検証する
+					// （従来の p.All(char.IsDigit) は数値範囲を検証せず、port=0 や 65535 超過が受け入れられていた）
+					if (int.TryParse(parsedPort, out portVal) && portVal >= 1 && portVal <= 65535)
+					{
+						host = parsedHost;
+						port = portVal.ToString();
+					}
+					else
+					{
+						// ポート範囲無効（0 または 65535 超過）: 既定値へフォールバックしログ記録
+						System.Diagnostics.Trace.WriteLine($"[FormBrowser] ApplyCefSharpProxy: \"{trimmed}\" のポートが範囲外(1-65535)のため、既定値 {DefaultApiObserverHost}:{DefaultApiObserverPort} を使用します。");
+					}
+				}
+				else if (trimmed.All(char.IsDigit))
+				{
+					// ポート番号のみ（例 "40620"）
+					int portVal;
+					if (int.TryParse(trimmed, out portVal) && portVal >= 1 && portVal <= 65535)
+					{
+						port = portVal.ToString();
+					}
+					else
+					{
+						// ポート範囲無効: 既定値を維持しログ記録
+						System.Diagnostics.Trace.WriteLine($"[FormBrowser] ApplyCefSharpProxy: \"{trimmed}\" のポートが範囲外(1-65535)のため、既定値 {DefaultApiObserverHost}:{DefaultApiObserverPort} を使用します。");
+					}
+				}
+				else if (!trimmed.Contains(":"))
+				{
+					// ホスト名のみ（稀）: 既定のポートを維持
+					host = trimmed;
+				}
+				// それ以外（例 ":40620" のような未パース形式）: 既定値を維持
+			}
+
+			// Cef.Initialize 前に設定する必要がある（公式機構）。
+			// 冪等に設定（同一値の上書きは安全）。
+			CefSharpSettings.Proxy = new ProxyOptions(host, port);
 		}
 
 

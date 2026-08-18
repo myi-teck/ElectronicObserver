@@ -6,6 +6,36 @@
 
 // DOM要素の取得（ページ読み込み時に実行される）
 const screen = document.getElementById('game-screen');
+
+// [task19 v5] Critical 4 修正: screen 変数が宣言されている remote_screen.js 側で rect キャッシュを定義・公開
+// script 読み込み順: remote_screen.js → remote_input.js → remote_connection.js
+// remote_screen.js が screen 変数を所有し、remote_input.js が getCachedGameScreenRect() を呼び出す
+let _cachedGameScreenRect = null;
+let _gameScreenRectCacheValid = false;
+
+function getCachedGameScreenRect() {
+    if (!_gameScreenRectCacheValid || _cachedGameScreenRect === null) {
+        _cachedGameScreenRect = screen.getBoundingClientRect();
+        _gameScreenRectCacheValid = true;
+    }
+    return _cachedGameScreenRect;
+}
+
+// remote_input.js および他のモジュールから参照可能に window に公開
+window.getCachedGameScreenRect = getCachedGameScreenRect;
+
+// [task19 不具合2修正] レイアウト変更時に rect キャッシュを無効化する公開関数
+// resize イベントだけでなく、HUD バー表示/非表示・パネル展開等で #game-screen の実寸が変わる
+// 場合にもキャッシュを無効化し、stale な rect による座標ズレを防止する
+function invalidateGameScreenRect() {
+    _gameScreenRectCacheValid = false;
+}
+window.invalidateGameScreenRect = invalidateGameScreenRect;
+
+// [task19 v3] resize イベントでキャッシュを無効化
+if (typeof window.addEventListener === 'function') {
+    window.addEventListener('resize', () => { invalidateGameScreenRect(); });
+}
 let gameCtx = screen.getContext('2d');
 const viewport = document.getElementById('viewport');
 const status = document.getElementById('conn-status');
@@ -283,20 +313,17 @@ function scheduleCursorUpdate() {
 }
 
 function updateCursorDisplay() {
-    // [task15] #screen-container のオフセットを差し引いた相対座標計算
-    const container = document.getElementById('screen-container');
-    const containerRect = container ? container.getBoundingClientRect() : { left: 0, top: 0 };
-    const rect = screen.getBoundingClientRect();
-
-    // #screen-container の左上を基準とした Canvas の相対位置を計算
-    const relativeCanvasLeft = rect.left - containerRect.left;
-    const relativeCanvasTop = rect.top - containerRect.top;
-
-    const x = relativeCanvasLeft + (vCursorX * rect.width);
-    const y = relativeCanvasTop + (vCursorY * rect.height);
+    // [task19 v5] #game-screen 基準に統一: containerRect のオフセット計算を削除
+    // 入力正規化と描画逆変換が同一 rect を使用することで整合性を保証
+    const rect = getCachedGameScreenRect();
+    // 入力正規化: x = (clientX - rect.left) / rect.width
+    // 描画逆変換: px = rect.left + vCursorX * rect.width
+    // 両者は互いに逆関数であり、整合性が数学的に保証される
+    const x = rect.left + (vCursorX * rect.width);
+    const y = rect.top + (vCursorY * rect.height);
     cursor.style.left = x + 'px';
     cursor.style.top = y + 'px';
-    debug.textContent = `POS-X: ${Math.round(vCursorX*100)}% POS-Y: ${Math.round(vCursorY*100)}%`;
+    debug.textContent = `POS-X: ${Math.round(vCursorX * 100)}% POS-Y: ${Math.round(vCursorY * 100)}%`;
     drawMagnifier();
 }
 
@@ -306,7 +333,7 @@ function updateCursorDisplay() {
 function applyClientFilter(mode) {
     const gameScreen = document.getElementById('game-screen');
     gameScreen.classList.remove('filter-grayscale', 'filter-lowcontrast', 'filter-greenscale-night', 'filter-greenscale-military', 'filter-greenscale-phosphor');
-    switch(mode) {
+    switch (mode) {
         case 1:
             gameScreen.classList.add('filter-grayscale');
             break;

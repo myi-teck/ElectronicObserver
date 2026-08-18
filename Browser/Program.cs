@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -25,6 +25,17 @@ namespace Browser
 			Application.EnableVisualStyles();
 			Application.SetCompatibleTextRenderingDefault(false);
 			AppDomain.CurrentDomain.AssemblyResolve += CurrentDomain_AssemblyResolve;
+
+			// [task19 不具合3修正 / Round 7 Minor 修正] CefSharpSettings.Proxy の既定値設定は本箇所に集約する。
+			// Application.Run（FormBrowser コンストラクタ・型ロード）より前にプロキシを早期設定するため、
+			// FormBrowser が CefSharp の自動初期化をトリガーする前に、
+			// APIObserver の既定プロキシ（127.0.0.1:40620）を反映させる。
+			// 後続の FormBrowser.InitializeBrowser では、ProxySettings が到着済み（SetProxy 経由）かつ
+			// Cef.Initialize 実行前の場合のみ再適用される（同一値の重複設定を排除）。
+			// Cef.Initialize が既に実行済みの場合、CefSharpSettings.Proxy の変更は無効なため
+			// 上書きは行われない（この場合は FormBrowser 側で警告ログを出力）。
+			FormBrowser.ApplyCefSharpProxy(FormBrowser.DefaultApiObserverHost + ":" + FormBrowser.DefaultApiObserverPort);
+
 			Application.Run(new FormBrowser(args[0]));
 		}
 

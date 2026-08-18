@@ -243,5 +243,23 @@ namespace BrowserLib
 		/// </summary>
 		[DataMember]
 		public string RemoteControllerPassword { get; set; }
+
+		/// <summary>
+		/// 【task28】WebCodecs モードを有効にするか
+		/// </summary>
+		[DataMember]
+		public bool WebCodecsEnabled { get; set; }
+
+		/// <summary>
+		/// 【task28】WebCodecs エンコーダのビットレート（bps）
+		/// </summary>
+		[DataMember]
+		public int WebCodecsBitrate { get; set; }
+
+		/// <summary>
+		/// 【task28】WebCodecs エンコーダの FPS
+		/// </summary>
+		[DataMember]
+		public double WebCodecsFps { get; set; }
 	}
 }
