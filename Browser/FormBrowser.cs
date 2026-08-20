@@ -1322,6 +1322,9 @@ namespace Browser
 				BrowserHost.Close();
 				HeartbeatTimer.Stop();
 				_remoteController?.Dispose();
+				// [task21] 空白ページ配信用 static ストアの全エントリを解放（一次 Major 2 / S-1 対応）。
+				// Cef.Shutdown() は同期停止のため直前呼び出しで安全（設計書 §4.1 注記）。
+				CustomResourceRequestHandler.ClearLogoutHtmlStore();
 				Cef.Shutdown();
 				Application.Exit();
 			}
@@ -1382,7 +1385,20 @@ namespace Browser
 		/// </summary>
 		public void NavigateToLoginPage()
 		{
-			Navigate(Configuration.LogInPageURL);
+			// [task20] WinForms クロススレッド対策（r3 指摘3 対応）。
+			// HandleControlAsync（HTTP リスナーワーカースレッド）から直接呼ばれるため、
+			// InvokeRequired チェックで UI スレッドへディスパッチする（RefreshBrowser と同パターン）。
+			// 従来はチェックなしで Navigate → StyleSheetApplied setter（UI スレッド制約）が
+			// HTTP スレッド上実行され InvalidOperationException のリスクがあった。
+			if (this.InvokeRequired)
+			{
+				this.BeginInvoke((Action)(() => NavigateToLoginPage()));
+				return;
+			}
+
+			// [task20] null・空文字列・スキーム防御を ResolveLogInPageURL() で統一
+			//（従来は Configuration.LogInPageURL の裸参照。正常時の遷移 URL は不変）
+			Navigate(ResolveLogInPageURL());
 		}
 
 		/// <summary>
@@ -1780,14 +1796,47 @@ namespace Browser
 		// その場合ロードに失敗してブラウザが白画面でスタートしてしまう（手動でログインページを開けば続行は可能だが）
 		// 応急処置として失敗したとき後で再試行するようにしてみる
 		private string navigateCache = null;
+		// [task20] ログアウト（空白ページ）の保留フラグ
+		// volatile 修飾子を付与（一次レビュー Critical 3 / 二次レビューで Major に降格・推奨）。
+		// 書き込み・読み出しは原則 UI スレッド上のみ（LogoutToBlankPage は InvokeRequired チェックで
+		// UI スレッドディスパッチ済み、クリアは Browser_IsBrowserInitializedChanged = UI スレッド）だが、
+		// 将来の呼び出し経路増強に対する可視性保証として volatile を付与する。
+		private volatile bool _pendingLogoutBlank = false;
 		private void Browser_IsBrowserInitializedChanged(object sender, EventArgs e)
 		{
-			if (IsBrowserInitialized && navigateCache != null)
+			if (IsBrowserInitialized)
 			{
-				// ロードが完了したので再試行
-				string url = navigateCache;            // 非同期コールするのでコピーを取っておく必要がある
-				BeginInvoke((Action)(() => Navigate(url)));
-				navigateCache = null;
+				// [task20] 保留機構の優先順位（一次レビュー Major 2 対応）:
+				// 両方保留されている場合は navigateCache（Navigate）を先に実行し、
+				// 続いて _pendingLogoutBlank（LogoutToBlankPage）を実行する。
+				// 相互キャンセル（r3 指摘2 対応）:
+				//  - LogoutToBlankPage の未初期化保留分岐で navigateCache = null を実行するため、
+				//    ここに navigateCache が残存するのは「Logout 保留の後に Navigate が設定」された場合のみ。
+				//    その場合も navigateCache を先に実行 → その後 Logout が実行され、結果は空白ページになる。
+				//    （ユーザーが最後に望んだ操作は Logout なので、この優先順位はユーザー意図に整合）
+				//  - Navigate 側で _pendingLogoutBlank = false を実行するため、
+				//    ここに _pendingLogoutBlank が残存するのは「Logout 保留の後に Navigate が
+				//    呼び出されなかった」場合のみ（Navigate が呼び出された場合はキャンセル済み）。
+				if (navigateCache != null)
+				{
+					// ロードが完了したので再試行
+					string url = navigateCache;            // 非同期コールなのでコピーを取っておく必要がある
+					// [task20] フラグクリアは BeginInvoke **前**に統一（一次/二次 Major 3 / r3 指摘5 対応）。
+					// 従来は BeginInvoke 後クリアだった。両フラグ（navigateCache / _pendingLogoutBlank）の
+					// クリア順序を統一し、BeginInvoke とクリアの間の再評価リスクを排除する
+					// （同一UIスレッド上の同期実行のため動作は等価）。
+					navigateCache = null;
+					BeginInvoke((Action)(() => Navigate(url)));
+				}
+
+				// [task20] ログアウト（空白ページ）の保留処理
+				// フラグクリアは BeginInvoke **前**に行う（一次レビュー Major 3 / 二次レビュー Major 3 対応）。
+				// 多重リクエストや再帰的ディスパッチによる再実行・積み上がりを防止する。
+				if (_pendingLogoutBlank)
+				{
+					_pendingLogoutBlank = false;
+					BeginInvoke((Action)(() => LogoutToBlankPage()));
+				}
 			}
 		}
 
@@ -1796,6 +1845,14 @@ namespace Browser
 		/// </summary>
 		public void Navigate(string url)
 		{
+			// [task20] 相互キャンセル（r3 指摘2 対応、変更 D）:
+			// 明示的な Navigate が実行された場合、保留中のログアウト（空白ページ）要求をキャンセルする。
+			// 「後から実行した方が、相手の保留状態をキャンセルする」原則（設計書 §4.2）による。
+			// 呼び出し元はすべて UI スレッド（メニュー / NavigateToLoginPage /
+			// Browser_IsBrowserInitializedChanged）のため、_pendingLogoutBlank の書き込みは
+			// UI スレッド上で実行されスレッド安全（volatile 修飾により可視性も保証）。
+			_pendingLogoutBlank = false;
+
 			if (url != Configuration.LogInPageURL || !Configuration.AppliesStyleSheet)
 				StyleSheetApplied = false;
 			Browser.Load(url);
@@ -1805,6 +1862,170 @@ namespace Browser
 				// 大方ロードできないのであとで再試行する
 				navigateCache = url;
 			}
+		}
+
+		// [task20] LogInPageURL の既定値（Configuration.cs の既定値と同一）
+		private const string DefaultLogInPageURL = "https://play.games.dmm.com/game/kancolle";
+
+		/// <summary>
+		/// [task20] ログインページ URL を取得する。
+		/// Configuration が null、または LogInPageURL が null・空文字列の場合は
+		/// 既定値にフォールバックする（二次レビュー Major 1 対応: 空文字列のまま
+		/// href に埋め込むと about:blank への自己参照リンク（リンク切れ）になるため）。
+		/// NavigateToLoginPage とも共通利用し null 防御を統一する（二次レビュー Major 2 対応）。
+		/// URL スキーム検証（r3 指摘4 対応）: Uri.TryCreate で http/https スキーム以外
+		/// （javascript: 等の不正スキーム・絶対URLとして解析できない値）は既定値へフォールバックする。
+		/// </summary>
+		private string ResolveLogInPageURL()
+		{
+			string url = Configuration?.LogInPageURL;
+			if (string.IsNullOrEmpty(url))
+				return DefaultLogInPageURL;
+
+			// [task20] URL スキーム検証（r3 指摘4 対応）。
+			// javascript: 等の不正スキームが設定された場合、そのまま HTML 埋め込みされるのを防ぐため、
+			// http/https 以外・解析不能値は既定値にフォールバックする。
+			// Uri.TryCreate は .NET Framework 4.8 標準 API（新規パッケージ追加なし）。
+			if (Uri.TryCreate(url, UriKind.Absolute, out Uri uriResult) &&
+				(uriResult.Scheme == Uri.UriSchemeHttp || uriResult.Scheme == Uri.UriSchemeHttps))
+			{
+				return url;
+			}
+			return DefaultLogInPageURL;
+		}
+
+		// [task21] 空白ページ配信用 URL 基底（v1.1: ホスト 127.0.0.1 + 実在しないポート 65535 を明示）。
+		// 実在しないポート（65535）を明示することで、意図しないネットワーク接続試行のリスクを排除する
+		// （RemoteController は 8080、APIObserver プロキシは 40620 で 65535 とは別）。
+		// 不変の URL 文字列のため const（コンパイル時に解決される定数）。
+		private const string LogoutBlankUrlBase = "http://127.0.0.1:65535/task20-logout-blank";
+
+		// [task21 v1.1] ts トークンのシーケンスカウンタ（Interlocked.Increment で単調増加・スレッド安全）。
+		// プロセス内で単調増加する共有カウンタであるため static フィールド。
+		private static long _logoutBlankSeq;
+
+		// [task21 v1.1] ts トークン生成（一次 Minor 1 対応: DateTime.Now.Ticks の衝突可能性を排除）。
+		// Ticks（約 100ns 分解能）+ Interlocked.Increment（プロセス内で単調増加・スレッド安全）を結合し、
+		// 同一プロセス内で ts 値が重複することを排除する。
+		// static フィールドのみを参照しインスタンス状態を参照しないため static メソッド。
+		// [task21 v1.3 注記] using System.Threading; を追加すると本ファイル 896 行目の既存
+		// System.Windows.Forms.Timer（HeartbeatTimer）参照が System.Threading.Timer とあいまい化
+		// （CS0104）するため、設計書 §4.1 注記（v1.3・FS-m1 対応）で許容される完全修飾名
+		// System.Threading.Interlocked.Increment を呼び出す方式で実装する（動作・スレッドセーフティ不変）。
+		private static string GenerateLogoutBlankToken()
+		{
+			return string.Format("{0}:{1}", DateTime.Now.Ticks, System.Threading.Interlocked.Increment(ref _logoutBlankSeq));
+		}
+
+		/// <summary>
+		/// [task20] 本体ブラウザを空白ページへ移動する（2重起動時のログアウト用）。
+		/// Cookie は削除しない（DMMセッション維持）。空白ページ上のボタンから
+		/// ログインページに戻れば自動ログインとなる。
+		/// </summary>
+		public void LogoutToBlankPage()
+		{
+			// UIスレッドで実行する（RemoteController のHTTPスレッド等から呼ばれる可能性に対応）
+			if (this.InvokeRequired)
+			{
+				this.BeginInvoke((Action)(() => LogoutToBlankPage()));
+				return;
+			}
+
+			// [task20] Browser == null（未生成）時も保留（一次レビュー Critical 2 対応）。
+			// 「Browser == null なら return」だとリクエストが完全に失われるため、
+			// 未生成・未初期化のいずれも _pendingLogoutBlank で保留し、
+			// Browser_IsBrowserInitializedChanged で再実行する。
+			if (Browser == null || !Browser.IsBrowserInitialized)
+			{
+				// [task20] 相互キャンセル（r3 指摘2 対応）:
+				// 保留中の Logout は既存の Navigate 要求（navigateCache）をキャンセルする。
+				// この分岐で navigateCache をクリアしないと「未初期化時に Logout 保留 →
+				// Navigate が navigateCache を設定 → 初期化完了時に両フラグが残存して
+				// Navigate が Logout により上書きされる」という TOCTOU 競合が生じる。
+				navigateCache = null;
+				if (!_pendingLogoutBlank)
+				{
+					// AddLog(0, ...) は情報ログ相当（r3 指摘7 注記）。
+					// 既存パターン（AddLog(1, ...) = 警告）と整合。
+					AddLog(0, "[task20] ブラウザ未生成/未初期化のためログアウト（空白ページ）を保留");
+				}
+				_pendingLogoutBlank = true;
+				return;
+			}
+
+			// [task20] 実行直前に navigateCache をクリア（一次レビュー Major 2 / r3 指摘2 対応）。
+			// 残存する navigateCache による後続 Navigate が空白ページを上書きするのを防ぐ。
+			navigateCache = null;
+
+			// StyleSheetApplied = false は UI スレッド上で実行（本メソッドは InvokeRequired チェック済み）。
+			// setter は SizeAdjuster.SuspendLayout() 等 UI スレッド制約の操作を行う
+			// ため、ここでの代入はスレッド安全（二次レビュー Major 3 注記）。
+			StyleSheetApplied = false;
+
+			// [task20] null・空文字列チェック付きでログイン URL を解決（二次レビュー Major 1）
+			string loginUrl = ResolveLogInPageURL();
+
+			// [task21] 修正: about:blank は LoadHtml 第2引数として無効（CefSharp 公式:
+			// "other uri's such as about:blank are invalid"）のため、LoadHtml(html, "about:blank")
+			// は Uri.TryCreate(Absolute) で失敗し browser.Load が呼ばれず真っ黒になる（task20 項目7 FAIL）。
+			// 有効スキーム URL（127.0.0.1:65535、実在しないポート・メモリ配信専用）+
+			// CustomResourceRequestHandler 経由のメモリ配信で表示する（task21 §3.4）。
+			string blankUrl = string.Format("{0}?ts={1}", LogoutBlankUrlBase, GenerateLogoutBlankToken());
+			byte[] blankHtml = Encoding.UTF8.GetBytes(BuildLogoutBlankHtml(loginUrl));
+			// CustomResourceRequestHandler は catch-all（CustomRequestHandler が全リクエストで返す）のため
+			// 必ず呼ばれる。配信はメモリ内（実ネットワーク接続なし、§3.4.1）。
+			// メモリ解放: RegisterLogoutHtml はエントリ上限（8）超過時に最旧エントリを削除し、
+			// Exit() 時に ClearLogoutHtmlStore() で全エントリを解放する（§3.4.2、一次 Major 2 / S-1 対応）。
+			CustomResourceRequestHandler.RegisterLogoutHtml(blankUrl, blankHtml);
+			Browser.Load(blankUrl);
+			// AddLog(0, ...) は情報ログ相当（r3 指摘7 注記）。既存パターンと整合。
+			// [task21 v1.1] 配信 URL をログに含める（一次 Minor 2: 配信失敗時のデバッグ性向上・可観測性）。
+			AddLog(0, string.Format("[task20] ログアウト（空白ページ）を実行: {0}", blankUrl));
+		}
+
+		/// <summary>
+		/// [task20] ログアウト用の空白ページ HTML を生成する（「ログインページへ」ボタン付き）。
+		/// ボタンは location.replace でログインページへ遷移する（履歴には残さない）。
+		/// Cookie は削除しない（DMMセッション維持）。
+		/// </summary>
+		private static string BuildLogoutBlankHtml(string loginUrl)
+		{
+			// HTML属性（onclick 内 JS 文字列）に埋め込むため HTML エンティティ化（一次レビュー Critical 1 / Major 1 対応）。
+			// WebUtility.HtmlEncode は &・<・>・" 等の特殊文字を HTML エンティティに変換する。
+			// 旧案の Replace 連打（無意味置換・クォートを空文字に置換して URL を破壊）は廃止。
+			// 既定値（https://play.games.dmm.com/game/kancolle）は特殊文字を含まないため、
+			// HtmlEncode 後も同一文字列となり、正常時の挙動は不変。
+			string safeUrl = System.Net.WebUtility.HtmlEncode(loginUrl);
+			// [r3 指摘1 対応] C# 逐語的補間文字列 $@"..." 内では HTML 属性のダブルクォート " は
+			// 必ず "" にエスケープする（C# 言語仕様: 逐語文字列内の " は "" でエスケープ）。
+			// 単一 " のままだと CS1003 / CS1010 のコンパイルエラーになるため注意。
+			// 下方の body 側（<div class=""wrap""> 等）は "" 済み。
+			// [r3 指摘6 注記] HTML タグ <br/> はクォート文字を含まないため、
+			// C# 逐語文字列内でのエスケープは不要（"" 変換対象ではない）。
+			return $@"<!DOCTYPE html>
+<html>
+<head>
+<meta charset=""utf-8"" />
+<style>
+html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; color:#fff;
+		font-family:'Segoe UI',sans-serif; box-sizing:border-box; }}
+.wrap {{ width:100%; height:100%; display:flex; flex-direction:column;
+		align-items:center; justify-content:center; gap:24px; }}
+.title {{ font-size:28px; letter-spacing:4px; opacity:.85; }}
+.btn {{ display:inline-block; padding:14px 40px; font-size:18px; text-decoration:none;
+		background:#1e88e5; color:#fff; border-radius:4px; }}
+.btn:hover {{ background:#42a5f5; }}
+.hint {{ font-size:12px; color:#888; text-align:center; }}
+</style>
+</head>
+<body>
+<div class=""wrap"">
+		<div class=""title"">LOGGED OUT</div>
+		<button type=""button"" class=""btn"" onclick=""location.replace('{safeUrl}')"" >ログインページへ</button>
+		<div class=""hint"">Cookieは保持されています。<br/>ログインページに戻れば自動ログインされます。</div>
+</div>
+</body>
+</html>";
 		}
 
 		/// <summary>

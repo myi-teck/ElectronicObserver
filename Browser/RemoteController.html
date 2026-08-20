@@ -1,4 +1,4 @@
-<!--
+﻿<!--
   [AI IMPORTANT INSTRUCTION]
   This file MUST be saved in "UTF-8 with BOM" (UTF-8 signature) encoding to prevent Japanese character corruption (all characters turning into '?').
   Ensure that you preserve the UTF-8 BOM when saving. After editing, verify that no '?' replacements occurred.
@@ -50,7 +50,8 @@
         <div id='settings-panel' class='settings-closed'>
             <!-- 左側: スクロール可能な設定項目リスト -->
             <div id='settings-master-list'>
-                <div class='master-item active' data-target='fps-group'>目標FPS</div>
+                <div class='master-item active' data-target='browser-nav-group'>ブラウザ操作</div>
+                <div class='master-item' data-target='fps-group'>目標FPS</div>
                 <div class='master-item' data-target='quality-group'>配信画質</div>
                 <div class='master-item' data-target='auto-fps-group'>自動FPS制御</div>
                 <div class='master-item' data-target='sensitivity-group'>操作感度</div>
@@ -59,7 +60,6 @@
                 <div class='master-item' data-target='tap-timeout-group'>タップ時間</div>
                 <div class='master-item' data-target='hud-position-group'>HUDバー位置</div>
                 <div class='master-item' data-target='protocol-group'>PROTOCOL</div>
-                <div class='master-item' data-target='browser-nav-group'>ブラウザ操作</div>
                 <div class='master-item' data-target='filter-group'>プライバシーフィルター</div>
                 <div class='master-item' data-target='nightvision-group'>暗視</div>
             </div>
@@ -73,8 +73,19 @@
             <!-- 右側: 選択した項目の設定内容 -->
             <div id='settings-detail-area'>
 
-                <!-- 目標FPS (初期表示パネル) -->
-                <div class='detail-panel active' id='detail-fps-group'>
+                <!-- ブラウザ操作設定（先頭に移動・初期表示 [task20]） -->
+                <div class='detail-panel active' id='detail-browser-nav-group'>
+                    <div class='setting-group'>
+                        <label>ブラウザ操作</label>
+                        <div class='btn-group' id='browser-nav-group'>
+                            <button class='settings-btn' id='btn-navigate-login'>ログインページ</button>
+                            <button class='settings-btn' id='btn-logout-blank'>ログアウト（空白）</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 目標FPS -->
+                <div class='detail-panel' id='detail-fps-group'>
                     <div class='setting-group'>
                         <label>目標FPS</label>
                         <div class='btn-group' id='fps-group'>
@@ -191,16 +202,6 @@
                             <button class='settings-btn' data-protocol='websocket'>WS</button>
                             <button class='settings-btn' data-protocol='webcodecs'>WCS</button>
                             <button class='settings-btn' data-protocol='http'>HTTP</button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- ブラウザ操作設定 -->
-                <div class='detail-panel' id='detail-browser-nav-group'>
-                    <div class='setting-group'>
-                        <label>ブラウザ操作</label>
-                        <div class='btn-group' id='browser-nav-group'>
-                            <button class='settings-btn' id='btn-navigate-login'>ログインページ</button>
                         </div>
                     </div>
                 </div>

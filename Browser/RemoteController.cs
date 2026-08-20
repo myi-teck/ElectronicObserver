@@ -50,6 +50,9 @@
 //                  2026/06/02 myi C#側のGDI+差分判定を完全廃止し、ブラウザJS側のオンデマンドキャプチャおよび軽量ピクセル差分判定へ移行。
 //                  2026/06/10 myi 遠隔操作サーバー起動時のポート自動登録機能 (UAC昇格対応) の追加。
 //                  2026/06/11 myi ゲーム画面（viewport）をタップした位置の絶対座標を直接クリックする機能（touch_clickアクション）を追加。
+//                  2026/08/18 myi /control APIに logout_blank アクションを追加。
+//                                           ブラウザ操作セクションから本体ブラウザを空白ページへ
+//                                           ログアウト（Cookie維持）する機能を追加。
 #endregion
 // Copyright 2026 myi
 //============================================================================================
@@ -390,289 +393,289 @@ namespace Browser
 		// author         : myi
 		// creation date  : 2026/07/29
 		// version        : 3.00 (Use-After-Free修正, ダブルフリー防止, ペンディングフレーム追跡)
-	//------------------------------------------------------------------------------------
-			/// <summary>
-			/// フレームバッファの情報を保持する内部クラス。
-			/// 各フレームは独立した参照カウントを持ち、SetFrame で旧フレームが置き換えられた後も
-			/// 参照カウントが0になるまでペンディングリストに保持される。
-			/// </summary>
-			private class FrameInfo
-			{
-				public byte[] Data;
-				public int DataLength;  // 実際のデータ長（ArrayPoolのバッファサイズとは異なる）
-				public int Sequence;
-				public volatile int ReferenceCount;
+		//------------------------------------------------------------------------------------
+		/// <summary>
+		/// フレームバッファの情報を保持する内部クラス。
+		/// 各フレームは独立した参照カウントを持ち、SetFrame で旧フレームが置き換えられた後も
+		/// 参照カウントが0になるまでペンディングリストに保持される。
+		/// </summary>
+		private class FrameInfo
+		{
+			public byte[] Data;
+			public int DataLength;  // 実際のデータ長（ArrayPoolのバッファサイズとは異なる）
+			public int Sequence;
+			public volatile int ReferenceCount;
 	
-				public FrameInfo(byte[] data, int dataLength, int sequence)
+			public FrameInfo(byte[] data, int dataLength, int sequence)
+			{
+				Data = data;
+				DataLength = dataLength;
+				Sequence = sequence;
+				ReferenceCount = 0;
+			}
+		}
+	
+		/// <summary>
+		/// 中央キャプチャからの共有フレームバッファ（最新の1フレームのみ保持）
+		/// 参照カウント付きで、全セッションが送信完了後にメモリを解放
+		/// ArrayPool<byte> からレンタルされたバッファを管理し、
+		/// 参照カウントが0になった瞬間に ArrayPool へ返却する
+		/// </summary>
+		private class SharedFrameBuffer
+		{
+			private readonly object _lock = new object();
+			private FrameInfo _current;
+			// 旧フレームのリスト（参照カウントが0になるまで保持）
+			private readonly List<FrameInfo> _pending = new List<FrameInfo>();
+			private readonly Action<int> _onReferenceCountNegative;
+			// SharedFrameBuffer 専用 ArrayPool（WebSocket送信用バッファとのメモリ領域を分離）
+			private static readonly ArrayPool<byte> _framePool = ArrayPool<byte>.Create();
+	
+			/// <summary>
+			/// SharedFrameBuffer を初期化します。
+			/// </summary>
+			/// <param name="onReferenceCountNegative">参照カウントが負の値になった際に呼び出されるコールバック（デバッグ用）。</param>
+			public SharedFrameBuffer(Action<int> onReferenceCountNegative)
+			{
+				_onReferenceCountNegative = onReferenceCountNegative;
+			}
+	
+			/// <summary>
+			/// 最新のフレームデータを取得し、参照カウントを +1 します（読み取り専用）。
+			/// </summary>
+			/// <remarks>
+			/// <para><b>役割:</b> 中央キャプチャが <see cref="SetFrame"/> で設定した最新のフレームデータをファンアウトセッションが読み取る。
+			/// 中央キャプチャループは <see cref="SetFrame"/> によりフレームを設定し、本メソッドは各ファンアウトセッションがそのフレームを取得してクライアントへ送信するために使用する。</para>
+			/// <para><b>スレッドセーフ性:</b> <c>lock (_lock)</c> で排他制御されており、中央キャプチャスレッドからの <see cref="SetFrame"/> と複数のファンアウトセッションからの同時呼び出し間で競合は発生しない。</para>
+			/// <para><b>参照カウントの管理責任:</b> 本メソッドが参照カウントを +1 する（インクリメント側）。
+			/// 呼び出し側は取得したフレームの使用完了後、必ず <see cref="ReleaseFrame(byte[])"/> を呼び出して参照カウントを -1 しなければならない（デクリメント側）。
+			/// 未解放のまま <see cref="SetFrame"/> が呼ばれると、旧フレームの参照カウントが0にならずメモリーリークの原因となる。</para>
+			/// <para>フレームが設定されていない場合は (null, 0) を返し、参照カウントはインクリメントしない。</para>
+			/// </remarks>
+			/// <returns>フレームデータ配列とシーケンス番号のタプル。</returns>
+			public (byte[] Data, int DataLength, int Sequence) GetFrame()
+			{
+				lock (_lock)
 				{
-					Data = data;
-					DataLength = dataLength;
-					Sequence = sequence;
-					ReferenceCount = 0;
+					if (_current != null)
+					{
+						Interlocked.Increment(ref _current.ReferenceCount);
+					}
+					return (_current?.Data, _current?.DataLength ?? 0, _current != null ? _current.Sequence : 0);
 				}
 			}
 	
 			/// <summary>
-			/// 中央キャプチャからの共有フレームバッファ（最新の1フレームのみ保持）
-			/// 参照カウント付きで、全セッションが送信完了後にメモリを解放
-			/// ArrayPool<byte> からレンタルされたバッファを管理し、
-			/// 参照カウントが0になった瞬間に ArrayPool へ返却する
+			/// 新しいフレームデータを設定し、旧フレームの参照カウントをデクリメントします。
+			/// 旧フレームの参照カウントが0になった場合のみ ArrayPool へ返却する。
+			/// 参照カウントが0より大きい場合は、旧フレームをペンディングリストに保持する。
 			/// </summary>
-			private class SharedFrameBuffer
+			/// <remarks>
+			/// <para><b>役割:</b> 中央キャプチャループが新規キャプチャを取得した際、共有バッファにフレームを設定する。
+			/// 旧フレームがまだファンアウトセッションに使用されている場合は、ペンディングリストに保持して安全に参照カウントが0になるまで待つ。</para>
+			/// <para><b>スレッドセーフ性:</b> <c>lock (_lock)</c> で排他制御されており、<see cref="GetFrame"/> や <see cref="ReleaseFrame(byte[])"/> との競合は発生しない。</para>
+			/// <para><b>Use-After-Free 防止:</b> 旧フレームは即座に ArrayPool へ返却せず、
+			/// 参照カウントが0になるまでペンディングリストに保持する。これにより、<see cref="GetFrame"/> で旧フレームを取得している
+			/// セッションが安全に使用完了するまで待ち、解放済みメモリへのアクセスを防ぐ。</para>
+			/// <para><b>参照カウントの管理責任:</b> 新フレームの参照カウントは 0 に初期化する。
+			/// 参照カウントのインクリメントは <see cref="GetFrame"/> 側が担当する。
+			/// 旧フレームの参照カウントは変更しない（既存セッションがそのまま使用する）。</para>
+			/// <para><b>ArrayPoolバッファの独立性保証:</b> 渡されたdataをBuffer.BlockCopyで内部バッファにコピーし、
+			/// 渡されたバッファを直接参照してはならない。これにより、呼び出し側はSetFrame完了後直ちに
+			/// ArrayPoolへバッファを返却可能となり、ファンアウトセッションとのバッファ競合を防止する。</para>
+			/// </remarks>
+			/// <param name="data">ArrayPoolからレンタルされたフレームデータ</param>
+			/// <param name="dataLength">実際のデータ長（dataの配列サイズより小さい可能性がある）</param>
+			/// <param name="sequence">グローバルシーケンス番号</param>
+			/// <returns>診断情報（SetFrame直後の内部バッファ状態）。呼び出し側が出力頻度を制御する。</returns>
+			/// 返値: (hex, dataLength, bufferLength, sequence, riffOk)
+			public void SetFrame(byte[] data, int dataLength, int sequence)
 			{
-				private readonly object _lock = new object();
-				private FrameInfo _current;
-				// 旧フレームのリスト（参照カウントが0になるまで保持）
-				private readonly List<FrameInfo> _pending = new List<FrameInfo>();
-				private readonly Action<int> _onReferenceCountNegative;
-				// SharedFrameBuffer 専用 ArrayPool（WebSocket送信用バッファとのメモリ領域を分離）
-				private static readonly ArrayPool<byte> _framePool = ArrayPool<byte>.Create();
-	
-				/// <summary>
-				/// SharedFrameBuffer を初期化します。
-				/// </summary>
-				/// <param name="onReferenceCountNegative">参照カウントが負の値になった際に呼び出されるコールバック（デバッグ用）。</param>
-				public SharedFrameBuffer(Action<int> onReferenceCountNegative)
+				lock (_lock)
 				{
-					_onReferenceCountNegative = onReferenceCountNegative;
-				}
-	
-				/// <summary>
-				/// 最新のフレームデータを取得し、参照カウントを +1 します（読み取り専用）。
-				/// </summary>
-				/// <remarks>
-				/// <para><b>役割:</b> 中央キャプチャが <see cref="SetFrame"/> で設定した最新のフレームデータをファンアウトセッションが読み取る。
-				/// 中央キャプチャループは <see cref="SetFrame"/> によりフレームを設定し、本メソッドは各ファンアウトセッションがそのフレームを取得してクライアントへ送信するために使用する。</para>
-				/// <para><b>スレッドセーフ性:</b> <c>lock (_lock)</c> で排他制御されており、中央キャプチャスレッドからの <see cref="SetFrame"/> と複数のファンアウトセッションからの同時呼び出し間で競合は発生しない。</para>
-				/// <para><b>参照カウントの管理責任:</b> 本メソッドが参照カウントを +1 する（インクリメント側）。
-				/// 呼び出し側は取得したフレームの使用完了後、必ず <see cref="ReleaseFrame(byte[])"/> を呼び出して参照カウントを -1 しなければならない（デクリメント側）。
-				/// 未解放のまま <see cref="SetFrame"/> が呼ばれると、旧フレームの参照カウントが0にならずメモリーリークの原因となる。</para>
-				/// <para>フレームが設定されていない場合は (null, 0) を返し、参照カウントはインクリメントしない。</para>
-				/// </remarks>
-				/// <returns>フレームデータ配列とシーケンス番号のタプル。</returns>
-				public (byte[] Data, int DataLength, int Sequence) GetFrame()
-				{
-					lock (_lock)
-					{
-						if (_current != null)
-						{
-							Interlocked.Increment(ref _current.ReferenceCount);
-						}
-						return (_current?.Data, _current?.DataLength ?? 0, _current != null ? _current.Sequence : 0);
-					}
-				}
-	
-				/// <summary>
-					/// 新しいフレームデータを設定し、旧フレームの参照カウントをデクリメントします。
-					/// 旧フレームの参照カウントが0になった場合のみ ArrayPool へ返却する。
-					/// 参照カウントが0より大きい場合は、旧フレームをペンディングリストに保持する。
-					/// </summary>
-					/// <remarks>
-					/// <para><b>役割:</b> 中央キャプチャループが新規キャプチャを取得した際、共有バッファにフレームを設定する。
-					/// 旧フレームがまだファンアウトセッションに使用されている場合は、ペンディングリストに保持して安全に参照カウントが0になるまで待つ。</para>
-					/// <para><b>スレッドセーフ性:</b> <c>lock (_lock)</c> で排他制御されており、<see cref="GetFrame"/> や <see cref="ReleaseFrame(byte[])"/> との競合は発生しない。</para>
-					/// <para><b>Use-After-Free 防止:</b> 旧フレームは即座に ArrayPool へ返却せず、
-					/// 参照カウントが0になるまでペンディングリストに保持する。これにより、<see cref="GetFrame"/> で旧フレームを取得している
-					/// セッションが安全に使用完了するまで待ち、解放済みメモリへのアクセスを防ぐ。</para>
-					/// <para><b>参照カウントの管理責任:</b> 新フレームの参照カウントは 0 に初期化する。
-					/// 参照カウントのインクリメントは <see cref="GetFrame"/> 側が担当する。
-					/// 旧フレームの参照カウントは変更しない（既存セッションがそのまま使用する）。</para>
-					/// <para><b>ArrayPoolバッファの独立性保証:</b> 渡されたdataをBuffer.BlockCopyで内部バッファにコピーし、
-					/// 渡されたバッファを直接参照してはならない。これにより、呼び出し側はSetFrame完了後直ちに
-					/// ArrayPoolへバッファを返却可能となり、ファンアウトセッションとのバッファ競合を防止する。</para>
-					/// </remarks>
-					/// <param name="data">ArrayPoolからレンタルされたフレームデータ</param>
-					/// <param name="dataLength">実際のデータ長（dataの配列サイズより小さい可能性がある）</param>
-					/// <param name="sequence">グローバルシーケンス番号</param>
-					/// <returns>診断情報（SetFrame直後の内部バッファ状態）。呼び出し側が出力頻度を制御する。</returns>
-					/// 返値: (hex, dataLength, bufferLength, sequence, riffOk)
-					public void SetFrame(byte[] data, int dataLength, int sequence)
-					{
-						lock (_lock)
-						{
-							var oldFrame = _current;
+					var oldFrame = _current;
 				
-							// 専用 ArrayPool (_framePool) からレンタルし、Buffer.BlockCopy で高速コピー
-							// ArrayPoolから独立したメモリ領域を確保し、直接参照を排除
-							// これにより呼び出し側はSetFrame完了後直ちにArrayPoolへ返却可能
-							byte[] internalBuffer = _framePool.Rent(dataLength);
-							Buffer.BlockCopy(data, 0, internalBuffer, 0, dataLength);
+					// 専用 ArrayPool (_framePool) からレンタルし、Buffer.BlockCopy で高速コピー
+					// ArrayPoolから独立したメモリ領域を確保し、直接参照を排除
+					// これにより呼び出し側はSetFrame完了後直ちにArrayPoolへ返却可能
+					byte[] internalBuffer = _framePool.Rent(dataLength);
+					Buffer.BlockCopy(data, 0, internalBuffer, 0, dataLength);
 		
-							// 新フレームを設定（コピーされた独立バッファを使用）
-							_current = new FrameInfo(internalBuffer, dataLength, sequence);
+					// 新フレームを設定（コピーされた独立バッファを使用）
+					_current = new FrameInfo(internalBuffer, dataLength, sequence);
 		
-	#if DEBUG
-							// [整合性チェック] RIFF ヘッダー検証（デバッグ用常設）
-							if (dataLength >= 4 && (internalBuffer[0]!='R' || internalBuffer[1]!='I' || internalBuffer[2]!='F' || internalBuffer[3]!='F'))
-							{
-								Debug.WriteLine($"[SharedFrameBuffer] RIFF header corrupted: {internalBuffer[0]:X2}{internalBuffer[1]:X2}{internalBuffer[2]:X2}{internalBuffer[3]:X2}, seq={sequence}, dataLength={dataLength}");
-							}
-	#endif
-				
-							// 旧フレームの処理
-							if (oldFrame != null)
-							{
-								// 旧フレームの参照カウントが0より大きい = まだ使用中のセッションが存在
-								// ペンディングリストに保持（ReleaseFrame で count==0 になったら返却）
-								if (oldFrame.ReferenceCount > 0)
-								{
-									// 重複追加防止：既に _pending に存在する場合は追加しない
-									if (!_pending.Contains(oldFrame))
-									{
-										_pending.Add(oldFrame);
-									}
-								}
-								else
-								{
-									// 参照カウントが0 = 使用中のセッションが存在しない
-									// 安全に専用 ArrayPool へ返却できる（clearArray: false）
-									_framePool.Return(oldFrame.Data);
-								}
-							}
-						}
-					}
-	
-				/// <summary>
-				/// フレーム使用完了後、指定されたデータ参照のフレームの参照カウントを -1 します（スレッドセーフ）。
-				/// 参照カウントが0になった場合のみ ArrayPool へバッファを返却する。
-				/// </summary>
-				/// <remarks>
-				/// <para><b>役割:</b> <see cref="GetFrame"/> で取得したフレームの使用完了を通知し、参照カウントを減らす。
-				/// 参照カウントが0になった瞬間に ArrayPool へバッファを返却し、メモリーリークを防止する。</para>
-				/// <para><b>スレッドセーフ性:</b> <c>lock (_lock)</c> で排他制御されており、<see cref="SetFrame"/> や <see cref="GetFrame"/> との競合は発生しない。</para>
-				/// <para><b>参照カウントの管理責任:</b> 本メソッドが参照カウントを -1 する（デクリメント側）。
-				/// <see cref="GetFrame"/> が +1 する（インクリメント側）ので、ペアとして使用される。</para>
-				/// <para><b>Use-After-Free 防止:</b> 解放対象のフレームをデータ参照で特定する。これにより、<see cref="GetFrame"/> で取得したフレームが
-				/// <see cref="SetFrame"/> で置き換えられた後も、正しいフレームの参照カウントがデクリメントされる。</para>
-				/// <para><b>ダブルフリー防止:</b> 参照カウントが 0 に正確に等しい場合のみ ArrayPool へ返却する。
-				/// 参照カウントが負の値になった場合は警告ログの出力のみとし、ArrayPool.Return を呼び出さない。</para>
-				/// </remarks>
-				/// <param name="data">GetFrameで取得したフレームデータ。null の場合は何もしない。</param>
-				public void ReleaseFrame(byte[] data)
-				{
-					if (data == null)
-						return;
-	
-					lock (_lock)
+#if DEBUG
+					// [整合性チェック] RIFF ヘッダー検証（デバッグ用常設）
+					if (dataLength >= 4 && (internalBuffer[0]!='R' || internalBuffer[1]!='I' || internalBuffer[2]!='F' || internalBuffer[3]!='F'))
 					{
-						FrameInfo frame = null;
-						bool isPending = false;
-	
-						// 現在のフレームと一致するかチェック
-						if (_current != null && _current.Data == data)
+						Debug.WriteLine($"[SharedFrameBuffer] RIFF header corrupted: {internalBuffer[0]:X2}{internalBuffer[1]:X2}{internalBuffer[2]:X2}{internalBuffer[3]:X2}, seq={sequence}, dataLength={dataLength}");
+					}
+#endif
+				
+					// 旧フレームの処理
+					if (oldFrame != null)
+					{
+						// 旧フレームの参照カウントが0より大きい = まだ使用中のセッションが存在
+						// ペンディングリストに保持（ReleaseFrame で count==0 になったら返却）
+						if (oldFrame.ReferenceCount > 0)
 						{
-							frame = _current;
+							// 重複追加防止：既に _pending に存在する場合は追加しない
+							if (!_pending.Contains(oldFrame))
+							{
+								_pending.Add(oldFrame);
+							}
 						}
 						else
 						{
-							// ペンディングリストから検索（旧フレーム）
-							for (int i = 0; i < _pending.Count; i++)
-							{
-								if (_pending[i].Data == data)
-								{
-									frame = _pending[i];
-									isPending = true;
-									break;
-								}
-							}
+							// 参照カウントが0 = 使用中のセッションが存在しない
+							// 安全に専用 ArrayPool へ返却できる（clearArray: false）
+							_framePool.Return(oldFrame.Data);
 						}
-	
-						if (frame != null)
-						{
-							// 参照カウントをデクリメント
-							int count = Interlocked.Decrement(ref frame.ReferenceCount);
-	
-							if (count < 0)
-							{
-								// 参照カウントが負 = 二重解放などの不整合
-								// 警告ログのみ出力し、ArrayPool.Return は呼び出さない（ダブルフリー防止）
-								// コールバックの例外をロック保護下で吸収
-								try { _onReferenceCountNegative?.Invoke(count); } catch { /* ログ出力のみ。ロック解放を妨害しない */ }
-							}
-							else if (count == 0)
-							{
-								// 参照カウントが正確に0 = 安全に ArrayPool へ返却できる
-								_framePool.Return(frame.Data);
-	
-								// ペンディングリストから削除
-								if (isPending)
-								{
-									_pending.Remove(frame);
-								}
-							}
-						}
-	
-						// ペンディングリストのクリーンアップ
-						CleanupPending();
-					}
-				}
-	
-				/// <summary>
-				/// ペンディングリストから参照カウントが0になった（または異常な負値の）フレームを ArrayPool へ返却する。
-				/// </summary>
-				/// <remarks>
-				/// <para><b>役割:</b> ペンディングリストに保持された旧フレームのうち、
-				/// 参照カウントが0になったものを ArrayPool へ返却する。</para>
-				/// <para><b>呼び出し元:</b> <see cref="ReleaseFrame(byte[])"/> の末尾（lock 保護下の内部メソッド）から呼び出される。
-				/// <see cref="SetFrame"/> からは直接呼び出されない。</para>
-				/// <para><b>ReleaseFrame との連携:</b> <see cref="ReleaseFrame(byte[])"/> がペンディングリスト上のフレームの参照カウントを -1 した際、
-				/// count == 0 ならそのフレームを即時 ArrayPool へ返却し _pending から削除する。
-				/// <see cref="CleanupPending"/> は、これとは別に残存する _pending リストのフレームをスキャンし、
-				/// 参照カウントが0または負の値のフレームを ArrayPool へ返却する。</para>
-				/// <para><b>負値の処理:</b> 参照カウントが負の値になった場合は、二重解放などの不整合を示す。
-				/// 警告ログを出力しつつ、ArrayPool へ返却してメモリを回収し、状態を正常化する。</para>
-				/// </remarks>
-				private void CleanupPending()
-				{
-					for (int i = _pending.Count - 1; i >= 0; i--)
-					{
-						var frame = _pending[i];
-						int count = frame.ReferenceCount;
-						if (count <= 0)
-						{
-							if (count < 0)
-							{
-								// 参照カウントが負 = 二重解放などの不整合状態
-								// 警告ログを出力しつつ、ArrayPool へ返却してメモリを回収し状態を正常化する
-								// コールバックの例外をロック保護下で吸収
-								try { _onReferenceCountNegative?.Invoke(count); } catch { /* ログ出力のみ。ロック解放を妨害しない */ }
-							}
-							_framePool.Return(frame.Data);
-							_pending.RemoveAt(i);
-						}
-					}
-				}
-	
-				/// <summary>
-				/// 現在のフレームとペンディングリストの全フレームを ArrayPool へ返却する。
-				/// Dispose 時に呼び出され、メモリリークを確実に防止する。
-				/// </summary>
-				/// <remarks>
-				/// <para><b>役割:</b> RemoteController.Dispose() 時に呼ばれ、
-				/// 参照カウントが0になっていないフレームも含めて強制的に ArrayPool へ返却する。</para>
-				/// <para><b>注意:</b> 本メソッドは最後にのみ呼び出すべきであり、
-				/// 呼び出し後は本 SharedFrameBuffer の使用は不可能となる。</para>
-				/// </remarks>
-				public void Dispose()
-				{
-					lock (_lock)
-					{
-						// 現在のフレームを返却
-						if (_current != null)
-						{
-							_framePool.Return(_current.Data);
-							_current = null;
-						}
-	
-						// ペンディングリストの全フレームを返却
-						foreach (var frame in _pending)
-						{
-							_framePool.Return(frame.Data);
-						}
-						_pending.Clear();
 					}
 				}
 			}
+	
+			/// <summary>
+			/// フレーム使用完了後、指定されたデータ参照のフレームの参照カウントを -1 します（スレッドセーフ）。
+			/// 参照カウントが0になった場合のみ ArrayPool へバッファを返却する。
+			/// </summary>
+			/// <remarks>
+			/// <para><b>役割:</b> <see cref="GetFrame"/> で取得したフレームの使用完了を通知し、参照カウントを減らす。
+			/// 参照カウントが0になった瞬間に ArrayPool へバッファを返却し、メモリーリークを防止する。</para>
+			/// <para><b>スレッドセーフ性:</b> <c>lock (_lock)</c> で排他制御されており、<see cref="SetFrame"/> や <see cref="GetFrame"/> との競合は発生しない。</para>
+			/// <para><b>参照カウントの管理責任:</b> 本メソッドが参照カウントを -1 する（デクリメント側）。
+			/// <see cref="GetFrame"/> が +1 する（インクリメント側）ので、ペアとして使用される。</para>
+			/// <para><b>Use-After-Free 防止:</b> 解放対象のフレームをデータ参照で特定する。これにより、<see cref="GetFrame"/> で取得したフレームが
+			/// <see cref="SetFrame"/> で置き換えられた後も、正しいフレームの参照カウントがデクリメントされる。</para>
+			/// <para><b>ダブルフリー防止:</b> 参照カウントが 0 に正確に等しい場合のみ ArrayPool へ返却する。
+			/// 参照カウントが負の値になった場合は警告ログの出力のみとし、ArrayPool.Return を呼び出さない。</para>
+			/// </remarks>
+			/// <param name="data">GetFrameで取得したフレームデータ。null の場合は何もしない。</param>
+			public void ReleaseFrame(byte[] data)
+			{
+				if (data == null)
+					return;
+	
+				lock (_lock)
+				{
+					FrameInfo frame = null;
+					bool isPending = false;
+	
+					// 現在のフレームと一致するかチェック
+					if (_current != null && _current.Data == data)
+					{
+						frame = _current;
+					}
+					else
+					{
+						// ペンディングリストから検索（旧フレーム）
+						for (int i = 0; i < _pending.Count; i++)
+						{
+							if (_pending[i].Data == data)
+							{
+								frame = _pending[i];
+								isPending = true;
+								break;
+							}
+						}
+					}
+	
+					if (frame != null)
+					{
+						// 参照カウントをデクリメント
+						int count = Interlocked.Decrement(ref frame.ReferenceCount);
+	
+						if (count < 0)
+						{
+							// 参照カウントが負 = 二重解放などの不整合
+							// 警告ログのみ出力し、ArrayPool.Return は呼び出さない（ダブルフリー防止）
+							// コールバックの例外をロック保護下で吸収
+							try { _onReferenceCountNegative?.Invoke(count); } catch { /* ログ出力のみ。ロック解放を妨害しない */ }
+						}
+						else if (count == 0)
+						{
+							// 参照カウントが正確に0 = 安全に ArrayPool へ返却できる
+							_framePool.Return(frame.Data);
+	
+							// ペンディングリストから削除
+							if (isPending)
+							{
+								_pending.Remove(frame);
+							}
+						}
+					}
+	
+					// ペンディングリストのクリーンアップ
+					CleanupPending();
+				}
+			}
+	
+			/// <summary>
+			/// ペンディングリストから参照カウントが0になった（または異常な負値の）フレームを ArrayPool へ返却する。
+			/// </summary>
+			/// <remarks>
+			/// <para><b>役割:</b> ペンディングリストに保持された旧フレームのうち、
+			/// 参照カウントが0になったものを ArrayPool へ返却する。</para>
+			/// <para><b>呼び出し元:</b> <see cref="ReleaseFrame(byte[])"/> の末尾（lock 保護下の内部メソッド）から呼び出される。
+			/// <see cref="SetFrame"/> からは直接呼び出されない。</para>
+			/// <para><b>ReleaseFrame との連携:</b> <see cref="ReleaseFrame(byte[])"/> がペンディングリスト上のフレームの参照カウントを -1 した際、
+			/// count == 0 ならそのフレームを即時 ArrayPool へ返却し _pending から削除する。
+			/// <see cref="CleanupPending"/> は、これとは別に残存する _pending リストのフレームをスキャンし、
+			/// 参照カウントが0または負の値のフレームを ArrayPool へ返却する。</para>
+			/// <para><b>負値の処理:</b> 参照カウントが負の値になった場合は、二重解放などの不整合を示す。
+			/// 警告ログを出力しつつ、ArrayPool へ返却してメモリを回収し、状態を正常化する。</para>
+			/// </remarks>
+			private void CleanupPending()
+			{
+				for (int i = _pending.Count - 1; i >= 0; i--)
+				{
+					var frame = _pending[i];
+					int count = frame.ReferenceCount;
+					if (count <= 0)
+					{
+						if (count < 0)
+						{
+							// 参照カウントが負 = 二重解放などの不整合状態
+							// 警告ログを出力しつつ、ArrayPool へ返却してメモリを回収し状態を正常化する
+							// コールバックの例外をロック保護下で吸収
+							try { _onReferenceCountNegative?.Invoke(count); } catch { /* ログ出力のみ。ロック解放を妨害しない */ }
+						}
+						_framePool.Return(frame.Data);
+						_pending.RemoveAt(i);
+					}
+				}
+			}
+	
+			/// <summary>
+			/// 現在のフレームとペンディングリストの全フレームを ArrayPool へ返却する。
+			/// Dispose 時に呼び出され、メモリリークを確実に防止する。
+			/// </summary>
+			/// <remarks>
+			/// <para><b>役割:</b> RemoteController.Dispose() 時に呼ばれ、
+			/// 参照カウントが0になっていないフレームも含めて強制的に ArrayPool へ返却する。</para>
+			/// <para><b>注意:</b> 本メソッドは最後にのみ呼び出すべきであり、
+			/// 呼び出し後は本 SharedFrameBuffer の使用は不可能となる。</para>
+			/// </remarks>
+			public void Dispose()
+			{
+				lock (_lock)
+				{
+					// 現在のフレームを返却
+					if (_current != null)
+					{
+						_framePool.Return(_current.Data);
+						_current = null;
+					}
+	
+					// ペンディングリストの全フレームを返却
+					foreach (var frame in _pending)
+					{
+						_framePool.Return(frame.Data);
+					}
+					_pending.Clear();
+				}
+			}
+		}
 
 		// インメモリセッションストア（スレッドセーフ）
 		private readonly ConcurrentDictionary<string, SessionInfo> _sessions = new ConcurrentDictionary<string, SessionInfo>();
@@ -2481,6 +2484,13 @@ namespace Browser
 					{
 						_parent.NavigateToLoginPage();
 					}
+					// 2026/08/18 myi 新規作成（ログアウト: 本体ブラウザを空白ページへ移動）
+					// Cookie は削除せず（DMMセッション維持）、空白ページ上のボタンから
+					// ログインページへ戻れば自動ログインとなる。
+					else if (action == "logout_blank")
+					{
+						_parent.LogoutToBlankPage();
+					}
 					// プライバシーフィルターのカラーモードを設定（0=なし, 1=グレースケール, 4=低コントラスト）
 					// 2026/06/01 myi 変更：差分WebP方式に伴い、フィルターはRemoteControllerクライアント側でCSS適用するため
 					//                  サーバー側ではNOP（何もしない）に変更。本家ブラウザ側には影響を与えない。
@@ -3371,49 +3381,49 @@ namespace Browser
 		}
 
 		//====================================================================================
-			// 処理ブロック名 : ConvertToBytesOptimized
-			// 概要           : 受信した Base64 文字列をバイト配列に変換します（ArrayPool 最適化版）。
-			//                  Convert.FromBase64String が返す配列を ArrayPool にコピーし、
-			//                  送信後に返却することで GC 負荷を低減します。
-			//                  2026/07/29 myi 新規作成（GC負荷低減）
-			//                  2026/08/01 myi 修正：中間バッファtempの寿命管理厳格化（null代入→GC対象化）
-			//------------------------------------------------------------------------------------
-			private (byte[] Buffer, int ActualLength) ConvertToBytesOptimized(string dataUrl, string prefix)
+		// 処理ブロック名 : ConvertToBytesOptimized
+		// 概要           : 受信した Base64 文字列をバイト配列に変換します（ArrayPool 最適化版）。
+		//                  Convert.FromBase64String が返す配列を ArrayPool にコピーし、
+		//                  送信後に返却することで GC 負荷を低減します。
+		//                  2026/07/29 myi 新規作成（GC負荷低減）
+		//                  2026/08/01 myi 修正：中間バッファtempの寿命管理厳格化（null代入→GC対象化）
+		//------------------------------------------------------------------------------------
+		private (byte[] Buffer, int ActualLength) ConvertToBytesOptimized(string dataUrl, string prefix)
+		{
+			if (string.IsNullOrEmpty(dataUrl) || !dataUrl.StartsWith(prefix))
 			{
-				if (string.IsNullOrEmpty(dataUrl) || !dataUrl.StartsWith(prefix))
-				{
-					return (null, 0);
-				}
-	
-				try
-				{
-					// "data:image/webp;base64," のヘッダ部分（カンマ以前）を除去
-					int commaIdx = dataUrl.IndexOf(',');
-					if (commaIdx == -1) return (null, 0);
-	
-					string base64Str = dataUrl.Substring(commaIdx + 1);
-	
-					// Base64 文字列からバイト配列を取得（一時的なアロケーション）
-					byte[] temp = Convert.FromBase64String(base64Str);
-	
-					// ArrayPool から必要なサイズのバッファをレンタル
-					// Rent は要求サイズ以上のバッファを返す（temp.Length とは限らない）
-					byte[] pooledBuffer = _bufferPool.Rent(temp.Length);
-					Buffer.BlockCopy(temp, 0, pooledBuffer, 0, temp.Length);
-	
-					// [🚨 厳格な寿命管理] 中間バッファの参照切断 → 即時GC対象化
-					// temp.Length を先に取得してからnull代入（長さ取得はnull代入前に実行）
-					int actualLength = temp.Length;
-					temp = null; // 参照切断 → GC対象化。この行がないとtempはメソッド終了まで生存し、メモリリークの原因となる
-	
-					// 呼び出し側は ArraySegment<byte>(pooledBuffer, 0, actualLength) として使用する
-					return (pooledBuffer, actualLength);
-				}
-				catch (Exception)
-				{
-					return (null, 0);
-				}
+				return (null, 0);
 			}
+	
+			try
+			{
+				// "data:image/webp;base64," のヘッダ部分（カンマ以前）を除去
+				int commaIdx = dataUrl.IndexOf(',');
+				if (commaIdx == -1) return (null, 0);
+	
+				string base64Str = dataUrl.Substring(commaIdx + 1);
+	
+				// Base64 文字列からバイト配列を取得（一時的なアロケーション）
+				byte[] temp = Convert.FromBase64String(base64Str);
+	
+				// ArrayPool から必要なサイズのバッファをレンタル
+				// Rent は要求サイズ以上のバッファを返す（temp.Length とは限らない）
+				byte[] pooledBuffer = _bufferPool.Rent(temp.Length);
+				Buffer.BlockCopy(temp, 0, pooledBuffer, 0, temp.Length);
+	
+				// [🚨 厳格な寿命管理] 中間バッファの参照切断 → 即時GC対象化
+				// temp.Length を先に取得してからnull代入（長さ取得はnull代入前に実行）
+				int actualLength = temp.Length;
+				temp = null; // 参照切断 → GC対象化。この行がないとtempはメソッド終了まで生存し、メモリリークの原因となる
+	
+				// 呼び出し側は ArraySegment<byte>(pooledBuffer, 0, actualLength) として使用する
+				return (pooledBuffer, actualLength);
+			}
+			catch (Exception)
+			{
+				return (null, 0);
+			}
+		}
 
 		//====================================================================================
 		// 処理ブロック名 : task28 Phase 0/1 — プロトコル拡張・サーバー側制御基盤
@@ -3421,8 +3431,8 @@ namespace Browser
 		// task28 設計書 ver 3.0 に対応するプロトコル拡張およびサーバー側制御ロジックを実装
 		//------------------------------------------------------------------------------------
 
-			//------------------------------------------------------------------------------------
-			// 処理ブロック名 : BuildWebCodecsHeader
+		//------------------------------------------------------------------------------------
+		// 処理ブロック名 : BuildWebCodecsHeader
 		// 概要           : WebCodecs モード用の7バイトヘッダーを構築する。
 		//                  Version(1B)=0x02 + Type(1B)=0x01 + Flags(1B) + Seq(4B)
 		//                  【レビュー修正】 設計書 §4.2.1 対応: version 引数を削除し常に 0x02 固定
@@ -4971,180 +4981,180 @@ namespace Browser
 			}
 		}
 		
-				//====================================================================================
-				// 処理ブロック名 : RecordCaptureLatency
-			// 概要           : [案G-2] CaptureCanvasAsync の実行遅延統計を記録し、
-			//                  移動平均が500msを超過した場合に警告ログを出力する。
-			//------------------------------------------------------------------------------------
-			private void RecordCaptureLatency(long elapsedMs)
+		//====================================================================================
+		// 処理ブロック名 : RecordCaptureLatency
+		// 概要           : [案G-2] CaptureCanvasAsync の実行遅延統計を記録し、
+		//                  移動平均が500msを超過した場合に警告ログを出力する。
+		//------------------------------------------------------------------------------------
+		private void RecordCaptureLatency(long elapsedMs)
+		{
+			lock (_captureLatencyHistory)
 			{
-				lock (_captureLatencyHistory)
+				_captureLatencyHistory.Enqueue(elapsedMs);
+				if (_captureLatencyHistory.Count > 30)
 				{
-					_captureLatencyHistory.Enqueue(elapsedMs);
-					if (_captureLatencyHistory.Count > 30)
-					{
-						_captureLatencyHistory.Dequeue();
-					}
+					_captureLatencyHistory.Dequeue();
+				}
 	
-					var avg = _captureLatencyHistory.Average();
-					var max = _captureLatencyHistory.Max();
-					var min = _captureLatencyHistory.Min();
+				var avg = _captureLatencyHistory.Average();
+				var max = _captureLatencyHistory.Max();
+				var min = _captureLatencyHistory.Min();
 		
-					// [案G-3] FPS推定値算出
-					var theoreticalMaxFps = avg > 0 ? 1000.0 / avg : 0;
+				// [案G-3] FPS推定値算出
+				var theoreticalMaxFps = avg > 0 ? 1000.0 / avg : 0;
 		
-					if (avg > 500)
+				if (avg > 500)
+				{
+					Log(3, $"[Profile] High IPC latency: avg={avg:F0}ms, min={min}ms, max={max}ms, theoreticalMaxFPS={theoreticalMaxFps:F1}");
+				}
+				else
+				{
+					// [二次レビュー修正] 正常系ログを100フレームに1回に抑制（ログI/O負荷軽減）
+					if (Interlocked.Increment(ref _sendFrameCounter) % 100 == 0)
 					{
-						Log(3, $"[Profile] High IPC latency: avg={avg:F0}ms, min={min}ms, max={max}ms, theoreticalMaxFPS={theoreticalMaxFps:F1}");
-					}
-					else
-					{
-						// [二次レビュー修正] 正常系ログを100フレームに1回に抑制（ログI/O負荷軽減）
-						if (Interlocked.Increment(ref _sendFrameCounter) % 100 == 0)
-						{
-							Log(3, $"[Profile] CaptureCanvasAsync: {elapsedMs}ms, avg={avg:F0}ms, min={min}ms, max={max}ms, theoreticalMaxFPS={theoreticalMaxFps:F1}, samples={_captureLatencyHistory.Count}");
-						}
+						Log(3, $"[Profile] CaptureCanvasAsync: {elapsedMs}ms, avg={avg:F0}ms, min={min}ms, max={max}ms, theoreticalMaxFPS={theoreticalMaxFps:F1}, samples={_captureLatencyHistory.Count}");
 					}
 				}
 			}
+		}
 	
-			//====================================================================================
-				// 処理ブロック名 : WebSocketFanoutLoopAsync (最終修正版)
-				// 概要           : 中央キャプチャからのフレームをセッションごとに配信するループ。
-				//                  ・セッションの要求周期が中央キャプチャ周期と同等以下の場合は
-				//                    中央キャプチャ側のペース制御を信頼し、ファンアウト側での制限をスキップ（バイパス）。
-				//                  ・他セッションの高FPS要求により中央キャプチャが高周期（16ms等）で動いている場合のみ
-				//                    本セッションの目標FPSに合わせてフレームを間引き（ドロップ）する。
-				//------------------------------------------------------------------------------------
-				// author         : myi
-				// creation date  : 2026/07/29
-				// version        : 2.00 (v3.0設計書によるバイパス条件・マージン・統計変数修正)
-				//------------------------------------------------------------------------------------
-				private async Task WebSocketFanoutLoopAsync(WebSocketSession session)
+		//====================================================================================
+		// 処理ブロック名 : WebSocketFanoutLoopAsync (最終修正版)
+		// 概要           : 中央キャプチャからのフレームをセッションごとに配信するループ。
+		//                  ・セッションの要求周期が中央キャプチャ周期と同等以下の場合は
+		//                    中央キャプチャ側のペース制御を信頼し、ファンアウト側での制限をスキップ（バイパス）。
+		//                  ・他セッションの高FPS要求により中央キャプチャが高周期（16ms等）で動いている場合のみ
+		//                    本セッションの目標FPSに合わせてフレームを間引き（ドロップ）する。
+		//------------------------------------------------------------------------------------
+		// author         : myi
+		// creation date  : 2026/07/29
+		// version        : 2.00 (v3.0設計書によるバイパス条件・マージン・統計変数修正)
+		//------------------------------------------------------------------------------------
+		private async Task WebSocketFanoutLoopAsync(WebSocketSession session)
+		{
+			var ws = session.WebSocket;
+			var token = session.CancellationToken.Token;
+		
+			int lastSentSequenceNumber = 0;
+			long lastSentTicks = 0;
+			double ticksPerMs = (double)System.Diagnostics.Stopwatch.Frequency / 1000.0;
+			long droppedFramesCount = 0;
+			int sessionFrameCounter = 0;
+		
+			try
+			{
+				while (!token.IsCancellationRequested && IsWebSocketOpen(ws))
 				{
-					var ws = session.WebSocket;
-					var token = session.CancellationToken.Token;
-		
-					int lastSentSequenceNumber = 0;
-					long lastSentTicks = 0;
-					double ticksPerMs = (double)System.Diagnostics.Stopwatch.Frequency / 1000.0;
-					long droppedFramesCount = 0;
-					int sessionFrameCounter = 0;
-		
-					try
-					{
-						while (!token.IsCancellationRequested && IsWebSocketOpen(ws))
-						{
-							int targetInterval = session.TargetIntervalMs <= 0 ? 16 : session.TargetIntervalMs;
-							bool frameReady = await session.WaitForFrameAsync(targetInterval, token);
+					int targetInterval = session.TargetIntervalMs <= 0 ? 16 : session.TargetIntervalMs;
+					bool frameReady = await session.WaitForFrameAsync(targetInterval, token);
 			
-							if (frameReady)
+					if (frameReady)
+					{
+						int centralInterval = GetMaxFpsIntervalMs();
+		
+						// [バイパス判定]
+						// 1. targetInterval <= 16 (60FPS) は無条件バイパス
+						// 2. targetInterval <= centralInterval の場合、中央キャプチャループが既に
+						//    このセッションと同等以上の周期で制御しているため、ファンアウト側でのスロットリングは不要（バイパス）
+						if (targetInterval > 16 && targetInterval > centralInterval)
+						{
+							long currentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+							if (lastSentTicks != 0)
 							{
-								int centralInterval = GetMaxFpsIntervalMs();
-		
-								// [バイパス判定]
-								// 1. targetInterval <= 16 (60FPS) は無条件バイパス
-								// 2. targetInterval <= centralInterval の場合、中央キャプチャループが既に
-								//    このセッションと同等以上の周期で制御しているため、ファンアウト側でのスロットリングは不要（バイパス）
-								if (targetInterval > 16 && targetInterval > centralInterval)
+								double elapsedMs = (currentTicks - lastSentTicks) / ticksPerMs;
+								// クロックのゆらぎ（1~4ms）を考慮したマージン（-4ms）で間引き判定
+								if (elapsedMs < (targetInterval - 4))
 								{
-									long currentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
-									if (lastSentTicks != 0)
-									{
-										double elapsedMs = (currentTicks - lastSentTicks) / ticksPerMs;
-										// クロックのゆらぎ（1~4ms）を考慮したマージン（-4ms）で間引き判定
-										if (elapsedMs < (targetInterval - 4))
-										{
-											droppedFramesCount++;
-											continue; // このフレームはドロップして送信スキップ
-										}
-									}
-									lastSentTicks = currentTicks;
+									droppedFramesCount++;
+									continue; // このフレームはドロップして送信スキップ
 								}
-								else
-								{
-									// バイパス時: 送信基準時刻のみ更新し、即座に送信へ進む
-									lastSentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
-								}
+							}
+							lastSentTicks = currentTicks;
+						}
+						else
+						{
+							// バイパス時: 送信基準時刻のみ更新し、即座に送信へ進む
+							lastSentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+						}
 		
-								// 共有バッファから最新のフレームを取得（参照カウント +1）
-								var (data, dataLength, seq) = _sharedFrameBuffer.GetFrame();
+						// 共有バッファから最新のフレームを取得（参照カウント +1）
+						var (data, dataLength, seq) = _sharedFrameBuffer.GetFrame();
 		
-								// 前回送信フレームとの重複チェック（符号付き整数差分で過去フレーム検出）
-								int diff = seq - lastSentSequenceNumber;
-								if (diff <= 0 && lastSentSequenceNumber != 0)
-								{
-									_sharedFrameBuffer.ReleaseFrame(data);
-									continue;
-								}
+						// 前回送信フレームとの重複チェック（符号付き整数差分で過去フレーム検出）
+						int diff = seq - lastSentSequenceNumber;
+						if (diff <= 0 && lastSentSequenceNumber != 0)
+						{
+							_sharedFrameBuffer.ReleaseFrame(data);
+							continue;
+						}
 		
+						try
+						{
+							if (data != null && dataLength > 0)
+							{
+								await session.SendSemaphore.WaitAsync(token);
 								try
 								{
-									if (data != null && dataLength > 0)
+									if (IsWebSocketOpen(ws))
 									{
-										await session.SendSemaphore.WaitAsync(token);
+										// [ver 3.0修正] ヘッダーを7バイトに拡張 (Version+Type+Flags+Seq)
+										byte[] combined = _bufferPool.Rent(7 + dataLength);
 										try
 										{
-											if (IsWebSocketOpen(ws))
+											var header = session._headerBuffer;
+											header[0] = (byte)WebSocketProtocolVersion;
+											header[1] = 0;  // Type
+											header[2] = 0;  // Flags
+											header[3] = (byte)(seq >> 24);
+											header[4] = (byte)(seq >> 16);
+											header[5] = (byte)(seq >> 8);
+											header[6] = (byte)seq;
+		
+											header.CopyTo(combined, 0);
+											Buffer.BlockCopy(data, 0, combined, 7, dataLength);
+		
+											await ws.SendAsync(
+												new ArraySegment<byte>(combined, 0, 7 + dataLength),
+												WebSocketMessageType.Binary, true, token);
+		
+											lastSentSequenceNumber = seq;
+		
+											// 可観測性: 100フレームごとの動作統計ログ
+											if (++sessionFrameCounter % 100 == 0)
 											{
-												// [ver 3.0修正] ヘッダーを7バイトに拡張 (Version+Type+Flags+Seq)
-												byte[] combined = _bufferPool.Rent(7 + dataLength);
-												try
-												{
-													var header = session._headerBuffer;
-													header[0] = (byte)WebSocketProtocolVersion;
-													header[1] = 0;  // Type
-													header[2] = 0;  // Flags
-													header[3] = (byte)(seq >> 24);
-													header[4] = (byte)(seq >> 16);
-													header[5] = (byte)(seq >> 8);
-													header[6] = (byte)seq;
-		
-													header.CopyTo(combined, 0);
-													Buffer.BlockCopy(data, 0, combined, 7, dataLength);
-		
-													await ws.SendAsync(
-														new ArraySegment<byte>(combined, 0, 7 + dataLength),
-														WebSocketMessageType.Binary, true, token);
-		
-													lastSentSequenceNumber = seq;
-		
-													// 可観測性: 100フレームごとの動作統計ログ
-													if (++sessionFrameCounter % 100 == 0)
-													{
-														Log(3, $"[Profile] Fanout sent seq={seq}, targetInterval={targetInterval}ms, centralInterval={centralInterval}ms, dropped={droppedFramesCount}, sessions={GetActiveSessionCount()}");
-														droppedFramesCount = 0;
-													}
-												}
-												finally
-												{
-													_bufferPool.Return(combined);
-												}
+												Log(3, $"[Profile] Fanout sent seq={seq}, targetInterval={targetInterval}ms, centralInterval={centralInterval}ms, dropped={droppedFramesCount}, sessions={GetActiveSessionCount()}");
+												droppedFramesCount = 0;
 											}
 										}
 										finally
 										{
-											session.SendSemaphore.Release();
+											_bufferPool.Return(combined);
 										}
 									}
 								}
 								finally
 								{
-									_sharedFrameBuffer.ReleaseFrame(data);
+									session.SendSemaphore.Release();
 								}
 							}
 						}
-					}
-					catch (OperationCanceledException) { }
-					catch (Exception ex)
-					{
-						Log(3, $"[RemoteController] Fanout loop exception: {ex.Message}");
-					}
-					finally
-					{
-						RemoveWebSocketSession(session.SessionId);
+						finally
+						{
+							_sharedFrameBuffer.ReleaseFrame(data);
+						}
 					}
 				}
+			}
+			catch (OperationCanceledException) { }
+			catch (Exception ex)
+			{
+				Log(3, $"[RemoteController] Fanout loop exception: {ex.Message}");
+			}
+			finally
+			{
+				RemoveWebSocketSession(session.SessionId);
+			}
+		}
 
 		//====================================================================================
 		// 処理ブロック名 : WebSocketCaptureLoopAsync
@@ -5722,7 +5732,7 @@ namespace Browser
 		// author         : myi
 		// creation date  : 2026/07/27
 		// version        : 1.00
-	//------------------------------------------------------------------------------------
+		//------------------------------------------------------------------------------------
 		private string ExtractJsonString(string json, string key)
 		{
 			// キー名の境界チェック（例: "action" を検索する際、"faction" と混同しない）
