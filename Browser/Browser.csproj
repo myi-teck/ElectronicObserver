@@ -146,6 +146,7 @@
     <Compile Include="CefOp\ScreenShotPacket.cs" />
     <Compile Include="BrowserPrivacyFilterManager.cs" />
     <Compile Include="RemoteController.cs" />
+    <Compile Include="CefOp\SelfHostedHtml.cs" />
     <Compile Include="FormBrowser.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -172,6 +173,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="login.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="logout.html">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="css\remote_base.css">

@@ -8,7 +8,8 @@
 const screen = document.getElementById('game-screen');
 
 // [task19 v5] Critical 4 修正: screen 変数が宣言されている remote_screen.js 側で rect キャッシュを定義・公開
-// script 読み込み順: remote_screen.js → remote_input.js → remote_connection.js
+// script 読み込み順: remote_config.js → remote_connection.js → remote_screen.js → remote_input.js → remote_hud.js → remote_main.js
+// （RemoteController.html の実読み込み順。remote_connection.js が remote_screen.js より先読み込み）
 // remote_screen.js が screen 変数を所有し、remote_input.js が getCachedGameScreenRect() を呼び出す
 let _cachedGameScreenRect = null;
 let _gameScreenRectCacheValid = false;
@@ -313,14 +314,11 @@ function scheduleCursorUpdate() {
 }
 
 function updateCursorDisplay() {
-    // [task19 v5] #game-screen 基準に統一: containerRect のオフセット計算を削除
-    // 入力正規化と描画逆変換が同一 rect を使用することで整合性を保証
+    // #virtual-cursor は親要素 #screen-container (position: relative) の子要素 (position: absolute) であるため、
+    // 親要素の左上 (0,0) を基準としたローカルピクセル座標で配置する。
     const rect = getCachedGameScreenRect();
-    // 入力正規化: x = (clientX - rect.left) / rect.width
-    // 描画逆変換: px = rect.left + vCursorX * rect.width
-    // 両者は互いに逆関数であり、整合性が数学的に保証される
-    const x = rect.left + (vCursorX * rect.width);
-    const y = rect.top + (vCursorY * rect.height);
+    const x = vCursorX * rect.width;
+    const y = vCursorY * rect.height;
     cursor.style.left = x + 'px';
     cursor.style.top = y + 'px';
     debug.textContent = `POS-X: ${Math.round(vCursorX * 100)}% POS-Y: ${Math.round(vCursorY * 100)}%`;
@@ -356,3 +354,44 @@ function applyNightvisionFilter(index) {
         gameScreen.classList.add(mode.className);
     }
 }
+
+//=============================================================================================
+// [task23 F-0] WebCodecs 経路専用の VideoDecoder 出力フレーム描画関数
+// VideoFrame は Canvas 2D の ImageSource であり、drawImage() で描画可能
+// （MDN VideoFrame: "A VideoFrame is an image source"）
+// 責務分離: 本関数は「VideoFrame の描画 + frame.close()」に専念する。
+// frameCount++ / updateFpsDisplay() / drawMagnifier() / status 更新は
+// remote_connection.js の output コールバックに残留（WebP 経路末尾と同一の副次処理）。
+// WebP 経路（decodeAndDraw / handleScreenUpdateBinary / handleWebpFrame 等）には
+// 本関数を用いない（VideoFrame と ImageBitmap は別機構）。
+// decodeAndDraw（remote_connection.js:740-824）は createImageBitmap 由来の
+// ImageBitmap を描画する経路であり、本関数（VideoFrame 描画）とは別機構である。
+//=============================================================================================
+function drawVideoFrame(frame) {
+    try {
+        // [task23 指摘2] null frame 時は描画をスキップ（close は呼ばない・frame.close 不存在で TypeError を回避）
+        if (!frame) return;
+        if (!gameCtx || !screen) {
+            console.error('[drawVideoFrame] gameCtx or screen is null - draw skipped');
+            return;
+        }
+        gameCtx.clearRect(0, 0, screen.width, screen.height);
+        gameCtx.drawImage(frame, 0, 0, screen.width, screen.height);
+        console.log('[drawVideoFrame] frame drawn', frame.displayWidth + 'x' + frame.displayHeight);
+    } catch (e) {
+        // [AGENTS.md NEVER] サイレントな例外の握りつぶし禁止
+        console.error('[drawVideoFrame] draw error:', e);
+    } finally {
+        // [task23 F-0-2] frame.close() の所有権は drawVideoFrame に単一化（drawImage の直後に解放）
+        // MDN 公式パターン: ctx.drawImage(frame, 0, 0); frame.close();
+        // W3C 仕様 "Close is final": close() 後の参照は InvalidStateError を投げるため、
+        // output コールバック側の frame.close() は削除済み（二重 close を回避）。
+        if (frame && typeof frame.close === 'function') {
+            frame.close();
+        }
+    }
+}
+
+// [task23 F-0] remote_connection.js の output コールバック（デコード発火時）から
+// 参照可能にするため window に明示公開（getCachedGameScreenRect と同一パターン）
+window.drawVideoFrame = drawVideoFrame;

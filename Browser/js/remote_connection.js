@@ -580,15 +580,17 @@ const ProtocolManager = {
         	const seq = view.getUint32(3, false);
         
         	if (type === 0x02) {
-        		// [task19 v3] SPS/PPS (description) 受信 ― 即座に configure
+        		// [task19 v3] SPS/PPS (description) 受信
         		const description = arrayBuffer.slice(7);
-        		ProtocolManager._videoDecoderDescription = description;
-        		console.log('[ProtocolManager] SPS/PPS received, length:', description.length);
-
-        		// [task19 v5] Critical 3 修正: 即座にデコーダを初期化
-        		// [task19 v5] Major 5 修正: 同期関数のため await を削除
+        		// [task23 F-1-2] 空 ArrayBuffer（byteLength === 0）を保持しない（空 extradata で H.264 デコーダを初期化すると InvalidStateError）
+        		if (description && description.byteLength > 0) {
+        			ProtocolManager._videoDecoderDescription = description;
+        		}
+        		console.log('[ProtocolManager] SPS/PPS received, length:', description.byteLength || description.length);
+        	
         		if (!ProtocolManager._videoDecoderInitialized) {
-        			ProtocolManager.initVideoDecoder(description);
+        			// [task23 F-1] 保持中の SPS/PPS（description）を渡与（引数なしだと 919 行で undefined 上書き破棄される）
+        			ProtocolManager.initVideoDecoder(ProtocolManager._videoDecoderDescription);
         		}
         		return;
         	} else if (type === 0x01) {
@@ -596,13 +598,13 @@ const ProtocolManager = {
         		const isKeyFrame = (flags & 0x01) !== 0;
         		const frameData = arrayBuffer.slice(7);
 
-        		// [task19 v5] Critical 2 修正: キーフレーム受信時のデコーダ初期化
-        		// [task19 v5] Major 5 修正: await を削除（同期関数）
-        		if (isKeyFrame && !ProtocolManager._videoDecoderInitialized && ProtocolManager._videoDecoderDescription) {
+        		// キーフレーム受信時、デコーダ未初期化であれば即時初期化
+        		if (isKeyFrame && !ProtocolManager._videoDecoderInitialized) {
+        			// [task23 F-1] 保持中の SPS/PPS（description）を渡与
         			ProtocolManager.initVideoDecoder(ProtocolManager._videoDecoderDescription);
         		}
 
-        		// [task19 v5] Critical 2 修正: デコーダ未初期化時のヌル参照ガード
+        		// デコーダ未初期化時のヌル参照ガード
         		if (!ProtocolManager._videoDecoderInitialized || !ProtocolManager._videoDecoder) {
         			return;
         		}
@@ -919,15 +921,42 @@ const ProtocolManager = {
                 this._videoDecoder = null;
             }
 
-            this._videoDecoderDescription = description;
+            // [task23 F-1/F-1-2] undefined 引数・空 ArrayBuffer（byteLength === 0）の上書き破棄防止
+            // （引数なし呼び出し時に受信済み SPS/PPS が undefined で上書きされ、configure への渡与経路が断絶していた）
+            if (description && description.byteLength > 0) {
+                this._videoDecoderDescription = description;
+            }
             this._videoDecoderErrorCount = 0;
 
             this._videoDecoder = new VideoDecoder({
                 output: (frame) => {
+                    // [task23 F-0-2] 現行の output 内 frame.close() を削除し、close 所有権を drawVideoFrame に単一化
+                    // （W3C "Close is final" に従い、drawImage 直後に drawVideoFrame 内で close() する）
                     if (typeof drawVideoFrame === 'function') {
-                        drawVideoFrame(frame);
+                        // [task23 Minor-2] null frame 時は drawVideoFrame(frame) の関数呼出を呼び出し側でガード
+                        // （drawVideoFrame 本体は `if (!frame) return;` で早期 return するため機能的には安全だが、
+                        //  呼び出し側で null をガードし、null frame ごとに発生していた不要な関数呼出を排除する。
+                        //  null frame 時は frame が存在しないため、close も副次処理も実行しない）
+                        if (frame) {
+                            drawVideoFrame(frame);
+                            // [task23 指摘5] 描画副次処理は output コールバックに残留（責務分離）
+                            // [task23 指摘2] frame が null 時は副次処理をスキップ（frameCount 過剰インクリメント・FPS 表示ズレ防止）
+                            frameCount++;
+                            updateFpsDisplay();
+                            drawMagnifier();
+                            status.textContent = 'SYNCHRONIZED';
+                            status.classList.add('ok');
+                        }
+                    } else {
+                        // [task23 Minor-1] drawVideoFrame 未定義時の緊急フォールバック（実務到達不可）
+                        // drawVideoFrame は remote_screen.js:395 で必ず window に公開されるため、
+                        // 本分岐は通常到達しない（リーク防止の安全策）。
+                        // 描画経路（drawVideoFrame）が存在しないため、副次処理（frameCount++ /
+                        // updateFpsDisplay / drawMagnifier / status 更新）は実行せず、
+                        // frame のリーク防止のため安全に close() して解放する。
+                        console.warn('[ProtocolManager] drawVideoFrame not defined, closing frame');
+                        if (frame && typeof frame.close === 'function') frame.close();
                     }
-                    frame.close();
                 },
                 error: (e) => {
                     console.error('[ProtocolManager] VideoDecoder error:', e);
@@ -966,12 +995,19 @@ const ProtocolManager = {
                 }
             });
 
-            this._videoDecoder.configure({
+            const config = {
                 codec: 'avc1.42001f',
                 codedWidth: 1200,
                 codedHeight: 720,
-                description: description
-            });
+                optimizeForLatency: true
+            };
+            // [task23 F-1/F-1-2] SPS/PPS (description) を非空の場合のみ渡与
+            // （MDN: description は Optional メンバ・未保持時はフィールドを付けないことも仕様上妥当）
+            if (this._videoDecoderDescription && this._videoDecoderDescription.byteLength > 0) {
+                config.description = this._videoDecoderDescription;
+            }
+
+            this._videoDecoder.configure(config);
 
             this._videoDecoderInitialized = true;
             console.log('[ProtocolManager] VideoDecoder 初期化成功');

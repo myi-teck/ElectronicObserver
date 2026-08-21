@@ -743,3 +743,37 @@ window.isDismissingPanel = false;
 let orientationDebounceTimer = null;
 
 const ORIENTATION_DEBOUNCE_MS = 100; // 画面回転デバウンス時間（ms）
+
+//=============================================================================================
+// [task22] ログイン状態ポーリング（5 秒間隔）
+// 本体ブラウザがログアウト空白ページ状態の間、/logout-page へフルページリダイレクトする
+// （「ログイン中フラグが false ならログアウト中画面にリダイレクト」要件の実装）。
+// WS モードでは remote_screen.js の HTTP ポーリングがスキップされ
+// 画面フレームも届かないため、このポーリングが HTTP/WS 両モードで機能する唯一の状態同期手段。
+// 401（リモート認証セッション切れ）は既存挙動と同様に /login-page へリダイレクト。
+//=============================================================================================
+function checkLoginState() {
+    fetch('/login-state', { cache: 'no-store' })
+        .then(function (res) {
+            if (res.status === 401) {
+                window.location.href = '/login-page';
+                return null;
+            }
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+        })
+        .then(function (data) {
+            if (data && data.loggedOut === true) {
+                window.location.href = '/logout-page';
+            }
+        })
+        .catch(function (e) {
+            // [task22 E2E 修正レビュー SS-E2E-2] 例外の握りつぶしをしない（プロジェクトルールの「サイレントな例外の握りつぶし禁止」に準拠）:
+            // エラー内容をコンソールに warn 出力し、開発者ツールで可視化する（5 秒ポーリングで繰り返し発火する可能性はあるが、
+            // パーサー・通信障害の可観測性向上のため 1 行の warn に留める）。
+            // 一時的な通信エラーは次回のポーリングで再試行（updateScreenDiff の catch と同方針）
+            console.warn('[task22] /login-state poll failed:', e);
+        });
+}
+setInterval(checkLoginState, 5000);
+checkLoginState();

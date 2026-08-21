@@ -146,6 +146,7 @@ namespace Browser
 			"/control",
 			"/capture-mode",
 			"/capture-config",
+			"/login-state",   // [task22] 追加: ログイン状態 API（未認証 401。HTML 系でないため /logout-page はこの集合に含めない）
 		};
 
 		// 2026/07/29 新規作成（グローバルシーケンス番号：WebSocket/HTTP共通の単調増加int型）
@@ -246,7 +247,7 @@ namespace Browser
 		// ラップし、Promise.resolve(...).then() で解決値を回収する。async function 内の式文は return しないと
 		// undefined を解決するため、テンプレート先頭に return を付与し initEncoder() の Promise を回収する。
 		private const string WebCodecsInitEncoderTemplate =
-			@"return (function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.initEncoder({codec:'__CODEC__',width:1200,height:720,bitrate:__BITRATE__,framerate:__FPS__});}})();";
+			@"return (function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.initEncoder({codec:'__CODEC__',width:1200,height:720,bitrate:__BITRATE__,framerate:__FPS__,avc:{format:'annexb'}});}})();";
 
 		// [task19_v1 Critical#3修正] WebCodecs encodeFrame() 呼び出しスクリプトテンプレート（固有トークン: __IS_KEY_FRAME__）
 		// encodeFrame() は同期関数（Promise ではなくオブジェクトを直接返却）のため、非 Promise 版 EvaluateScriptAsync を使用。
@@ -852,6 +853,8 @@ namespace Browser
 				ConnectionStartTime = DateTime.UtcNow;
 				_latestFrameBuffer = null;
 				_latestFrameLength = 0;
+				_cursorXBits = BitConverter.DoubleToInt64Bits(0.5);
+				_cursorYBits = BitConverter.DoubleToInt64Bits(0.5);
 			}
 
 			/// <summary>
@@ -1809,6 +1812,16 @@ namespace Browser
 				{
 					SendCaptureConfig(res);
 				}
+				else if (path == "/login-state")
+				{
+					// [task22] ログイン状態（ログアウト空白ページ状態）を JSON で返却
+					SendLoginState(res);
+				}
+				else if (path == "/logout-page")
+				{
+					// [task22] ログアウト中画面（自ホスト logout.html、remote モード）を配信
+					SendLogoutPage(res);
+				}
 				else if (path == "/ws")
 				{
 					// WebSocket アップグレード要求
@@ -2366,6 +2379,130 @@ namespace Browser
 			res.Close();
 		}
 
+		// [task22 E2E 修正レビュー E-1（一次 #1）] JSON boolean リテラルの定数化・ヘルパー化:
+		// C# の bool.ToString() は仕様上大文字 "True"/"False" を返すため、そのまま文字列連結すると
+		// 不正 JSON となる（JS の JSON.parse が SyntaxError: 実ブラウザ E2E 検証で発見、設計書 §15.1）。
+		// 定数 + ヘルパーに集約し、大文字回帰を構造的に防止する（JSON boolean 出力はすべてこの経路で統一）。
+		private const string JsonTrue = "true";
+		private const string JsonFalse = "false";
+
+		/// <summary>
+		/// [task22 E2E 修正レビュー E-1] 値に対応する JSON boolean リテラル（小文字 true/false、JSON 仕様に準拠）を返す。
+		/// </summary>
+		private static string WriteJsonBool(bool value)
+		{
+			return value ? JsonTrue : JsonFalse;
+		}
+
+		/// <summary>
+		/// [task22] ログイン状態（= ログアウト空白ページ状態）を JSON で返却する。
+		/// リモートクライアントがポーリングし、loggedOut == true で /logout-page へリダイレクトする。
+		/// </summary>
+		private void SendLoginState(HttpListenerResponse res)
+		{
+			bool loggedOut = _parent.IsLogoutBlank;   // volatile 読み込み（HTTP スレッドから安全）
+			// [task22 一次コードレビュー P-4] JSON を文字列連結で組み立てる意図:
+			// 固定キーの JSON 2 つ（loggedOut: bool / ts: long）のみのシンプルなレスポンスであり、
+			// System.Text.Json の導入は新規依存を伴うため最小差分原則で文字列連結を維持する。
+			// bool は true/false として、DateTime.Now.Ticks（long）は暗黙の ToString で JSON 数値として
+			// 出力される（JS の JSON.parse で boolean / number として正しく解析可能）。
+			// [task22 E2E 修正 2026-08-21] C# の bool.ToString() は仕様上大文字 "True"/"False" を返すため、
+			// そのまま連結すると不正 JSON となる（JS 側 res.json()=JSON.parse が SyntaxError を投げ、
+			// remote 画面の /logout-page 遷移・/ 復帰が永発しなくなる: 実ブラウザ E2E 検証で発見）。
+			// JSON 仕様に従い小文字 true/false に明示する。
+			// [task22 E2E 修正レビュー E-1] boolean 出力は WriteJsonBool() に統一（大文字回帰の構造防止）。
+			// [task22 E2E 修正レビュー E-2/E-7] TODO（将来、設計書 §15.3）: 本メソッドの文字列連結による JSON 組立は
+			// 最小差分原則（固定キー 2 つ・エスケープ不要値のみ）での暫定対応。bool/long 以外の値
+			// （double・文字列等）が追加される場合、不正 JSON になるリスクがあるため、その際は
+			// 標準シリアライザ（System.Web.Script.Serialization.JavaScriptSerializer 等のラッパ）へ移行する。
+			string json = "{\"loggedOut\":" + WriteJsonBool(loggedOut) + ",\"ts\":" + DateTime.Now.Ticks + "}";
+			// [task22] キャッシュ制御: ブラウザ/プロキシがレスポンスをキャッシュしないよう付与
+			// （5 秒間隔のポーリング対象のため、loggedOut 状態変化の検出遅延がポーリング間隔を超えないことを保証）
+			res.Headers["Cache-Control"] = "no-cache, must-revalidate";
+			SendJsonResponse(res, json);
+		}
+
+		/// <summary>
+		/// [task22] ログアウト中画面（logout.html の remote モード）を配信する。
+		/// ファイル探索は SelfHostedHtml（login.html と同一ロジック）。
+		/// ファイル不在時はインラインフォールバック HTML を配信する（サイレントスルーしない）。
+		/// </summary>
+		private void SendLogoutPage(HttpListenerResponse res)
+		{
+			string html = SelfHostedHtml.ReadSelfHostedHtml("logout.html");
+			if (html == null)
+			{
+				Console.WriteLine("RemoteController: logout.html が見つからないためフォールバック HTML を配信します");
+				html = LogoutPageFallbackHtml;
+			}
+			else
+			{
+				// remote モード: 「ログインページへ」ボタンは /control?action=navigate_login を使用するため
+				// __LOGIN_URL__ は空文字で置換（data-login-url="" となり JS 側で if(u) ガード）
+				// [task22 二次コードレビュー SS-3] 2 つのプレースホルダは相互に独立な文字列であり置換順序は
+				// 結果に影響しない。連鎖 Replace を個別変数へ分解する案は最小差分原則で現状維持し、
+				// 置換対象・結果を明記したコメントで可読性を担保する。
+				html = html.Replace("__MODE__", "remote").Replace("__LOGIN_URL__", "");
+			}
+			byte[] buffer = Encoding.UTF8.GetBytes(html);
+
+			res.ContentType = "text/html; charset=utf-8";
+			ApplySecurityHeaders(res);
+			res.Headers["Cache-Control"] = "no-cache, must-revalidate";
+			res.ContentLength64 = buffer.Length;
+			res.OutputStream.Write(buffer, 0, buffer.Length);
+			res.Close();
+		}
+
+		// [task22] logout.html 不在時のフォールバック（remote モード挙動を自己完結で再現）
+		private static readonly string LogoutPageFallbackHtml = @"<!DOCTYPE html>
+<html lang=""ja"">
+<head>
+<meta charset=""utf-8"" />
+<title>LOGGED OUT</title>
+<style>
+html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color:#fff; font-family:'Segoe UI',sans-serif; box-sizing:border-box; }
+.wrap { width:100%; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:24px; }
+.title { font-size:28px; letter-spacing:4px; opacity:.85; }
+.btn { display:inline-block; padding:14px 40px; font-size:18px; background:#1e88e5; color:#fff; border:none; border-radius:4px; cursor:pointer; }
+.btn:hover { background:#42a5f5; }
+.hint { font-size:12px; color:#888; text-align:center; }
+</style>
+</head>
+<body>
+<div class=""wrap"">
+	<div class=""title"">LOGGED OUT</div>
+	<button type=""button"" class=""btn"" id=""relogin-btn"">ログインページへ</button>
+	<div class=""hint"" id=""hint"">Cookieは保持されています。ログインページに戻れば自動ログインされます。</div>
+</div>
+<script>
+(function () {
+	var btn = document.getElementById('relogin-btn');
+	var hint = document.getElementById('hint');
+	btn.addEventListener('click', function () {
+		// [task22] 連打防止: クリック直後に disabled 化、失敗時のみ再活性化（logout.html と同方針）
+		btn.disabled = true;
+		hint.textContent = '要求送信中...';
+		fetch('/control?action=navigate_login', { cache: 'no-store' })
+			.then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.text(); })
+			.then(function () { hint.textContent = '要求済み: 本体ブラウザがログインページへ遷移中です（Cookie保持で自動ログイン）。'; })
+			.catch(function (err) { btn.disabled = false; hint.textContent = '要求に失敗しました: ' + err + '（再試行できます）'; });
+	});
+	setInterval(function () {
+		fetch('/login-state', { cache: 'no-store' })
+			.then(function (res) {
+				// [task22 二次コードレビュー SS-2] 401（リモート認証セッション切れ）は /login-page へリダイレクト（logout.html と同方針）
+				if (res.status === 401) { window.location.href = '/login-page'; return null; }
+				return res.ok ? res.json() : null;
+			})
+			.then(function (data) { if (data && data.loggedOut === false) window.location.replace('/'); })
+			.catch(function () { /* 一時的な通信エラーは次回のポーリングで再試行（logout.html と同方針） */ });
+	}, 2000);
+})();
+</script>
+</body>
+</html>";
+
 		/// <summary>
 		/// ログインページ（login.html）のコンテンツを取得します。
 		/// 外部ファイルが存在する場合はそれを優先し、存在しない場合はインラインHTMLを返します。
@@ -2468,6 +2605,10 @@ namespace Browser
 				}
 				else if (action == "click")
 				{
+					if (double.TryParse(xStr, out double cx) && double.TryParse(yStr, out double cy))
+					{
+						cursorState.Touch(Math.Max(0, Math.Min(1.0, cx)), Math.Max(0, Math.Min(1.0, cy)));
+					}
 					await TriggerMouseClickAsync(cursorState);
 				}
 				// 2026/06/11 myi 新規作成（ゲーム画面タッチクリック）
@@ -2516,11 +2657,19 @@ namespace Browser
 						// マウスダウン（ドラッグ開始）
 						else if (action == "mousedown")
 						{
+							if (double.TryParse(xStr, out double mx) && double.TryParse(yStr, out double my))
+							{
+								cursorState.Touch(Math.Max(0, Math.Min(1.0, mx)), Math.Max(0, Math.Min(1.0, my)));
+							}
 							await TriggerMouseDownAsync(cursorState);
 						}
 						// マウスアップ（ドラッグ終了）
 						else if (action == "mouseup")
 						{
+							if (double.TryParse(xStr, out double ux) && double.TryParse(yStr, out double uy))
+							{
+								cursorState.Touch(Math.Max(0, Math.Min(1.0, ux)), Math.Max(0, Math.Min(1.0, uy)));
+							}
 							await TriggerMouseUpAsync(cursorState);
 						}
 		
@@ -2660,6 +2809,9 @@ namespace Browser
 			// 左クリックのためのマウス座標イベントを生成
 			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 			
+			// 0. マウス移動（ホバー・フォーカス確立を先行）
+			host.SendMouseMoveEvent(mouseEvent, false);
+
 			// 1. マウスダウンイベント (左ボタン) の送信
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, false, 1);
 			
@@ -2684,11 +2836,17 @@ namespace Browser
 			var host = browser?.GetHost();
 			if (host == null) return Task.CompletedTask;
 
-			var coords = GetBrowserCoords(cursorState.X, cursorState.Y);
+			double cursorX = cursorState.HasValue ? cursorState.X : 0.5;
+			double cursorY = cursorState.HasValue ? cursorState.Y : 0.5;
+
+			var coords = GetBrowserCoords(cursorX, cursorY);
 			if (coords == null) return Task.CompletedTask;
 			// CefEventFlags.None を使用（公式推奨）
 			// isUp=false でダウンイベントを指定
 			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
+			// 0. マウス移動（ホバー・フォーカス確立を先行）
+			host.SendMouseMoveEvent(mouseEvent, false);
+			// 1. マウスダウン
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, false, 1);
 			Console.WriteLine($"RemoteController: TriggerMouseDown @ {coords.Value.X},{coords.Value.Y}");
 			return Task.CompletedTask;
@@ -2707,7 +2865,10 @@ namespace Browser
 			var host = browser?.GetHost();
 			if (host == null) return Task.CompletedTask;
 
-			var coords = GetBrowserCoords(cursorState.X, cursorState.Y);
+			double cursorX = cursorState.HasValue ? cursorState.X : 0.5;
+			double cursorY = cursorState.HasValue ? cursorState.Y : 0.5;
+
+			var coords = GetBrowserCoords(cursorX, cursorY);
 			if (coords == null) return Task.CompletedTask;
 			// CefEventFlags.None を使用（公式推奨）
 			// isUp=true でアップイベントを指定
@@ -2753,8 +2914,12 @@ namespace Browser
 			if (coords == null) return;
 			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 
+			// 0. マウス移動（ホバー・フォーカス確立を先行）
+			host.SendMouseMoveEvent(mouseEvent, false);
+			// 1. マウスダウン
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, false, 1);
 			await Task.Delay(50, session.CancellationToken.Token);
+			// 2. マウスアップ
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, true, 1);
 		}
 
@@ -2773,6 +2938,9 @@ namespace Browser
 			var coords = GetBrowserCoords(session.CursorX, session.CursorY);
 			if (coords == null) return Task.CompletedTask;
 			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
+			// 0. マウス移動（ホバー・フォーカス確立を先行）
+			host.SendMouseMoveEvent(mouseEvent, false);
+			// 1. マウスダウン
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, false, 1);
 			Console.WriteLine($"RemoteController: TriggerMouseDown @ {coords.Value.X},{coords.Value.Y}");
 
@@ -5610,13 +5778,16 @@ namespace Browser
 						int jsInterval = (session.TargetIntervalMs <= 0) ? 16 : Math.Max(16, session.TargetIntervalMs);
 						Log(2, $"[RemoteController] WebSocket 目標間隔変更受領: {session.TargetIntervalMs}ms → JS側: {jsInterval}ms (Session: {session.SessionId})");
 
-						// ブラウザJS側の常駐キャプチャタイマーも動的更新
-						try
-						{
-							var kancolleFrame = _parent.GetKanColleFrame();
-							kancolleFrame?.ExecuteJavaScriptAsync($"if(window._kancolleCaptureEngine)window._kancolleCaptureEngine.intervalMs={jsInterval};");
-						}
-						catch { }
+						// WebCodecs キャプチャループの目標 FPS も即座に更新
+						// [task23 F-7] intervalMs <= 0 は「無制限 (MAX)」= 60fps 上限と解釈し、
+						// JS 側 jsInterval = 16ms（60fps 相当）と一致させる（修正前は 30 で不一致）
+						int targetFps = (session.TargetIntervalMs <= 0) ? 60 : Math.Max(1, Math.Min(60, (int)Math.Round(1000.0 / session.TargetIntervalMs)));
+						SetWebCodecsFps(targetFps);
+	
+						// [task23 F-4/F-5] 旧実装「window._kancolleCaptureEngine.intervalMs」JS 注入を削除:
+						// CaptureEngineScript（FormBrowser.cs）に intervalMs プロパティが存在せず no-op だったため
+						// （空 catch { } も同時に解消・AGENTS.md NEVER「サイレントな例外の握りつぶし禁止」）
+						// FPS 制御は C# WCS キャプチャループ（Task.Delay によるアダプティブ FPS）が唯一の正（source of truth）
 					}
 				}
 				else if (action == "move" && double.TryParse(xStr, out double x) && double.TryParse(yStr, out double y))
@@ -5627,6 +5798,11 @@ namespace Browser
 				}
 				else if (action == "click")
 				{
+					if (double.TryParse(xStr, out double cx) && double.TryParse(yStr, out double cy))
+					{
+						session.SetCursorX(Math.Max(0, Math.Min(1.0, cx)));
+						session.SetCursorY(Math.Max(0, Math.Min(1.0, cy)));
+					}
 					await TriggerMouseClickAsync(session);
 				}
 				else if (action == "touch_click" && double.TryParse(xStr, out double tx) && double.TryParse(yStr, out double ty))
@@ -5637,10 +5813,20 @@ namespace Browser
 				}
 				else if (action == "mousedown")
 				{
+					if (double.TryParse(xStr, out double mx) && double.TryParse(yStr, out double my))
+					{
+						session.SetCursorX(Math.Max(0, Math.Min(1.0, mx)));
+						session.SetCursorY(Math.Max(0, Math.Min(1.0, my)));
+					}
 					await TriggerMouseDownAsync(session);
 				}
 				else if (action == "mouseup")
 				{
+					if (double.TryParse(xStr, out double ux) && double.TryParse(yStr, out double uy))
+					{
+						session.SetCursorX(Math.Max(0, Math.Min(1.0, ux)));
+						session.SetCursorY(Math.Max(0, Math.Min(1.0, uy)));
+					}
 					await TriggerMouseUpAsync(session);
 				}
 				// [task19 P3] WCS モード切替（クライアント switchToWcsMode() → { action: 'switch_mode', mode: 'webcodecs' }）

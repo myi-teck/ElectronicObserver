@@ -440,7 +440,7 @@ namespace Browser
 						height: 720,
 						bitrate: 800000,
 						framerate: 30,
-						avc: { format: 'avc' }
+						avc: { format: 'annexb' }
 					},
 					encoderOutputCallback: null,
 					encoderRunning: false,
@@ -454,6 +454,7 @@ namespace Browser
 
 						const offCanvas = document.createElement('canvas');
 						const offCtx = offCanvas.getContext('2d');
+						this.offCanvas = offCanvas;
 
 						// WebGL バッファ保存 ＋ バックグラウンド WebP キャッシュ生成
 						const loop = () => {
@@ -564,12 +565,17 @@ namespace Browser
 								this.videoEncoder = null;
 							}
 
+							if (!config.avc) {
+								config.avc = { format: 'annexb' };
+							}
+
 							// コーデックサポート確認
 							var supported = await VideoEncoder.isConfigSupported({
 								codec: config.codec,
 								width: config.width,
 								height: config.height,
-								bitrate: config.bitrate
+								bitrate: config.bitrate,
+								avc: config.avc
 							});
 
 							if (!supported.supported) {
@@ -711,26 +717,12 @@ namespace Browser
 	
 							var frame = null;
 							try {
-								// 【レビュー修正】 WebGL Canvas の場合、ブラウザ実装依存の制限がある
-								// Chromium 143 では new VideoFrame(canvas, { alpha: 'discard' }) は正常動作確認済み
-								// ただし、一部のブラウザ実装では WebGL 内部テクスチャのコピーが正しく行われない可能性あり
-								// 代替案: canvas.captureStream() を経由する方法も検討可能
-								// 【Critical修正】 duration を明示的に指定（設計書 §5.1.1 整合性）
-								// duration 省略時はブラウザ実装依存でフレームレートが不整合になり、
-								// キーフレーム間隔計算誤差が発生する
-								// [task19_v1 Critical#4 修正] VideoFrameInit に timestamp（μs・単調増加）を追加
-								// W3C WebCodecs 仕様に従い、canvas ソースからの VideoFrame 生成時は
-								// VideoFrameInit.timestamp が必須（Chromium は欠如時に
-								// VideoFrameInit must provide timestamp で全フレームを拒否する）。
-								// FPS 変動で非単調になり得る performance.now() の単純使用を避け、
-								// 独立カウンタ（_frameTimestampCounter）で単調増加を保証する（設計書 §4.2.1 整合）。
-								// カウンタは this に保持し、initEncoder() でリセットしないため、
-								// reinit（再初期化）後も単調増加が維持される。
 								var fps = (this.encoderConfig && this.encoderConfig.framerate) || 30;
 								if (!this._frameTimestampCounter) this._frameTimestampCounter = 0;
 								this._frameTimestampCounter += Math.floor(1000000 / fps);
 								var frameTimestamp = this._frameTimestampCounter;
-								frame = new VideoFrame(canvas, {
+								var sourceCanvas = this.offCanvas || canvas;
+								frame = new VideoFrame(sourceCanvas, {
 									alpha: 'discard',
 									duration: 1000000 / this.encoderConfig.framerate,
 									timestamp: frameTimestamp
@@ -1425,7 +1417,9 @@ namespace Browser
 		public void InitialAPIReceived()
 		{
 			IsKanColleLoaded = true;
-
+			// [task22] ゲーム API 受信 = ゲームがロード済み（再ログイン後に再発火するため復帰検出にも機能）
+			_isLogoutBlank = false;
+			
 			//ロード直後の適用ではレイアウトがなぜか崩れるのでこのタイミングでも適用
 			ApplyStyleSheet();
 			ApplyZoom();
@@ -1802,6 +1796,25 @@ namespace Browser
 		// UI スレッドディスパッチ済み、クリアは Browser_IsBrowserInitializedChanged = UI スレッド）だが、
 		// 将来の呼び出し経路増強に対する可視性保証として volatile を付与する。
 		private volatile bool _pendingLogoutBlank = false;
+		// [task22] ログアウト空白ページ「状態」フラグ（_pendingLogoutBlank = 保留要求、本フラグ = 現在状態）。
+		// volatile 修飾:
+		//  - InitialAPIReceived は WCF プロキシスレッドから書き込むため可視性保証が必要。
+		//  - Browser_FrameLoadEnd は WinForms UI スレッド上を直接保証しない（ChromiumWebBrowser は
+		//    WCF プロキシ経由でイベントを受け取る構造）ため、他スレッドから読み書きされる状態として扱う。
+		//  - .NET 公式 volatile 文書（MS Learn、2026-08-19 再検証）: 「多くのシナリオでは Interlocked /
+		//    lock を推奨」+「マルチプロセッサ環境では volatile の読み書きが他プロセッサへの即時可視化・
+		//    最新値取得を保証しない」注記。bool は volatile を適用可能な型。
+		//  - **設計上の対抗措置**: 各セットポイントは**単一の読み書き**のみを行う（複合操作なし）。
+		//    状態の正しさは「単一読みの即時性」ではなく「/login-state ポーリング（≤5 秒で収束）」で
+		//    保証する。この方式では volatile が十分（bool の単一読み書きには追加の原子性保証を要しない）。
+		//    将来 read-modify-write 等の複合操作が生じた場合は System.Threading.Interlocked / lock に変更する。
+		// セットポイント: LogoutToBlankPage(true) / Navigate(false) / InitialAPIReceived(false) /
+		// Browser_FrameLoadEnd(URL 監視セーフティネット)。
+		private volatile bool _isLogoutBlank = false;
+
+		/// <summary>[task22] 本体ブラウザが現在ログアウト空白ページ状態かどうか（RemoteController が HTTP スレッドから読む。volatile 読み込み）。</summary>
+		public bool IsLogoutBlank => _isLogoutBlank;
+
 		private void Browser_IsBrowserInitializedChanged(object sender, EventArgs e)
 		{
 			if (IsBrowserInitialized)
@@ -1852,7 +1865,9 @@ namespace Browser
 			// Browser_IsBrowserInitializedChanged）のため、_pendingLogoutBlank の書き込みは
 			// UI スレッド上で実行されスレッド安全（volatile 修飾により可視性も保証）。
 			_pendingLogoutBlank = false;
-
+			// [task22] 明示的なナビゲーションは空白状態を離れる（_pendingLogoutBlank と同一箇所で同一意味論）
+			_isLogoutBlank = false;
+			
 			if (url != Configuration.LogInPageURL || !Configuration.AppliesStyleSheet)
 				StyleSheetApplied = false;
 			Browser.Load(url);
@@ -1965,19 +1980,38 @@ namespace Browser
 			// [task20] null・空文字列チェック付きでログイン URL を解決（二次レビュー Major 1）
 			string loginUrl = ResolveLogInPageURL();
 
+			// [task22] 自ホスト logout.html を優先利用（リモートの /logout-page と同一コンテンツに統一）。
+			// ファイル不在時は従来の BuildLogoutBlankHtml インライン生成にフォールバックする（サイレントスルーしない）。
+			string pageHtml;
+			string logoutHtmlFile = SelfHostedHtml.ReadSelfHostedHtml("logout.html");
+			if (logoutHtmlFile != null)
+			{
+				// main モード: ボタンは data-login-url（HtmlEncode 済みの属性値）へ location.replace
+				pageHtml = logoutHtmlFile
+					.Replace("__MODE__", "main")
+					.Replace("__LOGIN_URL__", System.Net.WebUtility.HtmlEncode(loginUrl));
+			}
+			else
+			{
+				AddLog(1, "[task22] logout.html が見つからないためインライン HTML（BuildLogoutBlankHtml）を使用します");
+				pageHtml = BuildLogoutBlankHtml(loginUrl);
+			}
+
 			// [task21] 修正: about:blank は LoadHtml 第2引数として無効（CefSharp 公式:
 			// "other uri's such as about:blank are invalid"）のため、LoadHtml(html, "about:blank")
 			// は Uri.TryCreate(Absolute) で失敗し browser.Load が呼ばれず真っ黒になる（task20 項目7 FAIL）。
 			// 有効スキーム URL（127.0.0.1:65535、実在しないポート・メモリ配信専用）+
 			// CustomResourceRequestHandler 経由のメモリ配信で表示する（task21 §3.4）。
 			string blankUrl = string.Format("{0}?ts={1}", LogoutBlankUrlBase, GenerateLogoutBlankToken());
-			byte[] blankHtml = Encoding.UTF8.GetBytes(BuildLogoutBlankHtml(loginUrl));
+			byte[] blankHtml = Encoding.UTF8.GetBytes(pageHtml);
 			// CustomResourceRequestHandler は catch-all（CustomRequestHandler が全リクエストで返す）のため
 			// 必ず呼ばれる。配信はメモリ内（実ネットワーク接続なし、§3.4.1）。
 			// メモリ解放: RegisterLogoutHtml はエントリ上限（8）超過時に最旧エントリを削除し、
 			// Exit() 時に ClearLogoutHtmlStore() で全エントリを解放する（§3.4.2、一次 Major 2 / S-1 対応）。
 			CustomResourceRequestHandler.RegisterLogoutHtml(blankUrl, blankHtml);
 			Browser.Load(blankUrl);
+			// [task22] ログアウト状態フラグを設定（リモートが /login-state で読取）
+			_isLogoutBlank = true;
 			// AddLog(0, ...) は情報ログ相当（r3 指摘7 注記）。既存パターンと整合。
 			// [task21 v1.1] 配信 URL をログに含める（一次 Minor 2: 配信失敗時のデバッグ性向上・可観測性）。
 			AddLog(0, string.Format("[task20] ログアウト（空白ページ）を実行: {0}", blankUrl));
@@ -2026,6 +2060,22 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 </div>
 </body>
 </html>";
+		}
+
+		/// <summary>
+		/// [task22] 指定 URL がログアウト空白ページ URL（LogoutBlankUrlBase）と一致するかを厳密判定する。
+		/// Uri パース後、Host == "127.0.0.1" かつ Port == 65535 かつ AbsolutePath が
+		/// "/task20-logout-blank" で始まることを要求する（サブストリング一致の誤検知を排除）。
+		/// クエリ（?ts=...）は AbsolutePath に含まれないため影響しない。
+		/// </summary>
+		private static bool IsLogoutBlankUrl(string url)
+		{
+			Uri uri;
+			if (!Uri.TryCreate(url, UriKind.Absolute, out uri))
+				return false;
+			return uri.Host == "127.0.0.1"
+				&& uri.Port == 65535
+				&& uri.AbsolutePath.StartsWith("/task20-logout-blank", StringComparison.Ordinal);
 		}
 
 		/// <summary>
@@ -2113,7 +2163,28 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 			{
 				SendErrorReport(ex.ToString(), "Browser_FrameLoadEnd: キャプチャエンジンの自動注入に失敗しました。");
 			}
-
+			
+			// [task22] URL 監視セーフティネット: メインフレーム URL からログアウト状態フラグを更新する。
+			// - CefSharp 143.0.90 に AddressChanged イベントが存在しないため、
+			//   既存の FrameLoadEnd 内で IFrame.IsMain + IFrame.Url を確認する方式。
+			// - 挿入位置: 第 1 try/catch（キャプチャ注入）の後、`if (!Configuration.AppliesStyleSheet) return;`
+			//   の直前。この return は Configuration.AppliesStyleSheet（設定値、通常 true）に基づくもので
+			//   StyleSheetApplied（インスタンスフィールド）とは別物。
+			//   return より前に配置することで、設定値が false の場合にもセーフティネットが機能する。
+			try
+			{
+				if (e.Frame != null && e.Frame.IsMain && e.Frame.Url != null)
+				{
+					// [task22] 厳密判定（Uri パース）。サブストリング一致（Contains）は
+					// "task20-logout-blank-extra" 等の誤検知を防げないため使用しない。
+					_isLogoutBlank = IsLogoutBlankUrl(e.Frame.Url);
+				}
+			}
+			catch (Exception ex)
+			{
+				SendErrorReport(ex.ToString(), "Browser_FrameLoadEnd: ログアウト状態フラグ更新に失敗しました。");
+			}
+			
 			if (!Configuration.AppliesStyleSheet)
 				return;
 
@@ -2130,7 +2201,12 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 					StyleSheetApplied = true;
 				}
 			}
-			catch { }
+			catch (Exception ex)
+			{
+				// [task22 一次コードレビュー P-3] 空 catch 修正: サイレントな例外の握りつぶしを禁止
+				// （AGENTS.md 制約）するため、同ハンドラの第 1 try/catch と同一パターンで SendErrorReport へ委譲する。
+				SendErrorReport(ex.ToString(), "Browser_FrameLoadEnd: PageScript/FrameScript の自動注入に失敗しました。");
+			}
 		}
 
 

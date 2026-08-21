@@ -79,7 +79,10 @@ viewport.addEventListener('touchmove', (e) => {
 
     if (dist > dragThreshold && !isDraggingOnViewport) {
         isDraggingOnViewport = true;
-        sendControlAction('mousedown');
+        const rect = window.getCachedGameScreenRect();
+        const sx = (rect.width > 0) ? Math.max(0, Math.min(1.0, (viewportTouchStartX - rect.left) / rect.width)) : 0.5;
+        const sy = (rect.height > 0) ? Math.max(0, Math.min(1.0, (viewportTouchStartY - rect.top) / rect.height)) : 0.5;
+        sendControlAction('mousedown', sx, sy);
     }
 
     handleViewportMove(touch.clientX, touch.clientY);
@@ -100,14 +103,18 @@ viewport.addEventListener('touchend', (e) => {
     }
 
     const elapsed = Date.now() - viewportTouchStartTime;
+    const rect = window.getCachedGameScreenRect();
+    const x = (rect.width > 0) ? Math.max(0, Math.min(1.0, (viewportTouchStartX - rect.left) / rect.width)) : 0.5;
+    const y = (rect.height > 0) ? Math.max(0, Math.min(1.0, (viewportTouchStartY - rect.top) / rect.height)) : 0.5;
+
+    vCursorX = x;
+    vCursorY = y;
+    scheduleCursorUpdate();
 
     if (isDraggingOnViewport) {
-        sendControlAction('mouseup');
+        sendControlAction('mouseup', vCursorX, vCursorY);
     } else if (elapsed <= tapTimeout) {
         // [task19 v5] touchend 座標計算を #game-screen 基準に統一（handleViewportMove と同じ）
-        const rect = window.getCachedGameScreenRect();
-        const x = Math.max(0, Math.min(1.0, (viewportTouchStartX - rect.left) / rect.width));
-        const y = Math.max(0, Math.min(1.0, (viewportTouchStartY - rect.top) / rect.height));
         sendControlAction('touch_click', x, y);
     }
 
@@ -134,7 +141,17 @@ viewport.addEventListener('mousedown', (e) => {
     viewportTouchStartY = e.clientY;
     viewportTouchStartTime = Date.now();
 
-    sendControlAction('mousedown');
+    const rect = window.getCachedGameScreenRect();
+    if (rect.width > 0 && rect.height > 0) {
+        const x = Math.max(0, Math.min(1.0, (e.clientX - rect.left) / rect.width));
+        const y = Math.max(0, Math.min(1.0, (e.clientY - rect.top) / rect.height));
+        vCursorX = x;
+        vCursorY = y;
+        scheduleCursorUpdate();
+        sendControlAction('mousedown', x, y);
+    } else {
+        sendControlAction('mousedown');
+    }
     activateViewportFpsControl();
     handleViewportMove(e.clientX, e.clientY);
 });
@@ -150,15 +167,20 @@ viewport.addEventListener('mouseup', (e) => {
     if (!isMouseDownOnViewport) return;
     isMouseDownOnViewport = false;
 
-    sendControlAction('mouseup');
-
     const elapsed = Date.now() - viewportTouchStartTime;
     const dx = e.clientX - viewportTouchStartX;
     const dy = e.clientY - viewportTouchStartY;
     const dist = Math.sqrt(dx * dx + dy * dy);
 
+    const rect = window.getCachedGameScreenRect();
+    const x = (rect.width > 0) ? Math.max(0, Math.min(1.0, (e.clientX - rect.left) / rect.width)) : vCursorX;
+    const y = (rect.height > 0) ? Math.max(0, Math.min(1.0, (e.clientY - rect.top) / rect.height)) : vCursorY;
+
     if (elapsed <= tapTimeout && dist <= dragThreshold) {
-        // タップ判定
+        // 短時間クリック（タップ判定）: touch_click で確実に発火
+        sendControlAction('touch_click', x, y);
+    } else {
+        sendControlAction('mouseup', x, y);
     }
 });
 
@@ -342,7 +364,7 @@ clickBtnElement.addEventListener('pointerdown', e => {
     const stateBadge = document.getElementById('state-badge');
     stateBadge.textContent = 'ACT';
     stateBadge.className = 'badge';
-    sendControlAction('click');
+    sendControlAction('click', vCursorX, vCursorY);
 });
 
 clickBtnElement.addEventListener('pointerup', e => {

@@ -1,0 +1,87 @@
+﻿<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<title>LOGGED OUT</title>
+<style>
+html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color:#fff;
+	font-family:'Segoe UI',sans-serif; box-sizing:border-box; }
+.wrap { width:100%; height:100%; display:flex; flex-direction:column;
+	align-items:center; justify-content:center; gap:24px; }
+.title { font-size:28px; letter-spacing:4px; opacity:.85; }
+.btn { display:inline-block; padding:14px 40px; font-size:18px; text-decoration:none;
+	background:#1e88e5; color:#fff; border:none; border-radius:4px; cursor:pointer; }
+.btn:hover { background:#42a5f5; }
+.hint { font-size:12px; color:#888; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+	<div class="title">LOGGED OUT</div>
+	<button type="button" class="btn" id="relogin-btn" data-login-url="__LOGIN_URL__">ログインページへ</button>
+	<div class="hint" id="hint">Cookieは保持されています。ログインページに戻れば自動ログインされます。</div>
+</div>
+<script>
+(function () {
+	var mode = "__MODE__";
+	var btn = document.getElementById('relogin-btn');
+	var hint = document.getElementById('hint');
+
+	btn.addEventListener('click', function () {
+		if (mode === 'main') {
+			// 本体ブラウザモード: data-login-url（HTML 属性 = エンティティデコード済み URL）へ遷移
+			var u = btn.getAttribute('data-login-url');
+			if (u) window.location.replace(u);
+			return;
+		}
+		// remote モード: 既存 /control API で本体ブラウザをログインページへ遷移させる
+		// [task22 v1.5 / r2 Suggestion] 連打による navigate_login 重複送信の防止:
+		// クリック直後にボタンを disabled 化（disabled ボタンには click イベントが発火しないため
+		// リトライタイマー等の追加機構なしに構造的に防止）。成功時は再活性化不要（2 秒ポーリングが
+		// 本体のログイン完了を検知して / へ自動復帰する）。失敗時のみ再活性化（再試行可能）。
+		btn.disabled = true;
+		hint.textContent = '要求送信中...';
+		fetch('/control?action=navigate_login', { cache: 'no-store' })
+			.then(function (res) {
+				if (!res.ok) throw new Error('HTTP ' + res.status);
+				return res.text();
+			})
+			.then(function () {
+				hint.textContent = '要求済み: 本体ブラウザがログインページへ遷移中です（Cookie保持で自動ログイン）。';
+			})
+			.catch(function (err) {
+				// [task22 v1.6 / M-1 + SS-1] 失敗時は再活性化後、hint に再試行可能状態を明示する
+				// （2 回目クリック時に hint が前回の失敗文のまま再試行可否が不明な状態にならないため）
+				btn.disabled = false;
+				hint.textContent = '要求に失敗しました: ' + err + '（再試行できます）';
+			});
+	});
+
+	// remote モード: 2 秒毎にログイン状態をポーリングし、ログイン完了で本体画面へ自動復帰
+	if (mode === 'remote') {
+		setInterval(function () {
+			fetch('/login-state', { cache: 'no-store' })
+				.then(function (res) {
+					// [task22 二次コードレビュー SS-2] 401（リモート認証セッション切れ）は明示的に /login-page
+					// へリダイレクトしてセッションを復旧する（remote_main.js の checkLoginState と同方針）。
+					if (res.status === 401) {
+						window.location.href = '/login-page';
+						return null;
+					}
+					return res.ok ? res.json() : null;
+				})
+				.then(function (data) {
+					if (data && data.loggedOut === false) window.location.replace('/');
+				})
+				.catch(function (e) {
+					// [task22 E2E 修正レビュー SS-E2E-3] 例外の握りつぶしをしない（プロジェクトルールの「サイレントな例外の握りつぶし禁止」に準拠）:
+					// エラー内容をコンソールに warn 出力（remote_main.js checkLoginState と同方針・1 行に留める）。
+					// 一時的な通信エラーは次回のポーリングで再試行（リモート画面ポーリングと同方針）
+					console.warn('[task22] /login-state poll failed:', e);
+				});
+		}, 2000);
+	}
+})();
+</script>
+</body>
+</html>
