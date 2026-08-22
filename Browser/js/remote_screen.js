@@ -11,23 +11,102 @@ const screen = document.getElementById('game-screen');
 // script 読み込み順: remote_config.js → remote_connection.js → remote_screen.js → remote_input.js → remote_hud.js → remote_main.js
 // （RemoteController.html の実読み込み順。remote_connection.js が remote_screen.js より先読み込み）
 // remote_screen.js が screen 変数を所有し、remote_input.js が getCachedGameScreenRect() を呼び出す
-let _cachedGameScreenRect = null;
+// [task27 用語注] `screen` = remote_screen.js:8 の `const screen = document.getElementById('game-screen')`（canvas 要素ローカル変数）。
+// `window.screen`（画面解像度 API）とは無関係。canvas 内在サイズ `screen.width × screen.height` は
+// RemoteController.html:33 の HTML attribute（1200×720）で固定・JS での再代入なし
+// [task27] キャッシュ内容の変更: canvas の box rect（letterbox 込み）→ content rect（letterbox 適用後）
+//   - object-fit: contain の letterbox を canvas box（W×H）と canvas 内在（screen.width×screen.height = 1200×720 = 5:3）から復元
+//     scale = min(W/iw, H/ih) / content = iw*scale × ih*scale / offset = (W−contentW)/2, (H−contentH)/2
+//   - box が 5:3 ちょうど（top/bottom/縦画面）では content = box（offset 0）で現行挙動と等価
+//   - box rect は getCachedGameScreenBoxRect() で引き続き公開（仮想カーソルの container ローカル変換用）
+let _cachedBoxRect = null;
+let _cachedContentRect = null;
 let _gameScreenRectCacheValid = false;
 
-function getCachedGameScreenRect() {
-    if (!_gameScreenRectCacheValid || _cachedGameScreenRect === null) {
-        _cachedGameScreenRect = screen.getBoundingClientRect();
-        _gameScreenRectCacheValid = true;
+// [task27] object-fit: contain サポート判定（極古ブラウザのフォールバック: content = box = 現行挙動）
+// [M-1/E-1 反映] `CSS.supports` 自体が非存在する極古環境では「サポート不明」を安全側 = false とみなす。
+// object-fit 非サポート環境では letterbox 自体が存在しない（canvas が box に引き伸ばされる）ため content = box が正しく、
+// false 側（content = box フォールバック）に落ちる方が安全。対象環境（CefSharp Chromium 91+ / PWA iOS Safari 14+）
+// では CSS.supports は常に存在するため挙動は変わらない
+const _supportsObjectFitContain =
+    (typeof CSS !== 'undefined' && typeof CSS.supports === 'function')
+        ? CSS.supports('object-fit', 'contain')
+        : false;
+
+// [task27] box rect から content rect（object-fit: contain 相当）を算出
+// canvas 内在サイズ（RemoteController.html:33 で 1200×720 固定・JS での再代入なし）を
+// contain 計算の一次情報源とする（CSS 変数 --game-aspect-ratio と値は一致する 5:3）
+function computeContentRect(boxRect) {
+    // [v1.2・Suggestion 1 (r1 critical-review) 反映] boxRect が null / undefined の防御的ガードを関数先頭に明示。
+    // getBoundingClientRect() は通常 null を返さないが、万一 falsy な場合は関数先頭でガードしゼロ rect を返す。
+    // 呼び出し側の既存ガード（rect.width === 0 / rect.height === 0・task17）がそのまま処理をスキップさせる。
+    if (!boxRect || boxRect.width <= 0 || boxRect.height <= 0) {
+        // ゼロサイズ（要素非表示等）または boxRect 非存在: ゼロ rect を返し、呼び出し側の既存ガード（rect.width === 0 / rect.height === 0）で処理をスキップさせる
+        return { left: 0, top: 0, width: 0, height: 0 };
     }
-    return _cachedGameScreenRect;
+    const boxW = boxRect.width;
+    const boxH = boxRect.height;
+    const intrinsicW = screen.width;
+    const intrinsicH = screen.height;
+    if (!intrinsicW || !intrinsicH || !_supportsObjectFitContain) {
+        // 内在サイズ未設定 / object-fit 未サポート（極古ブラウザ・canvas が box に引き伸ばされる）:
+        // letterbox は生じないため box = content（現行挙動と等価）
+        // [M-3 反映] ゼロサイズ判定の優先順位: 上段の box ゼロサイズガード（boxW/boxH <= 0 → ゼロ rect）が先に効くため、
+        // ここに到達し得るのは「box 非ゼロ + 内在サイズ 0」のみ。canvas 内在サイズは HTML attribute（1200×720）で固定・
+        // JS 再代入なしのため 0 になることは想定外であり、本フォールバックは防御的（挙動: content = box）
+        return { left: boxRect.left, top: boxRect.top, width: boxW, height: boxH };
+    }
+    const scale = Math.min(boxW / intrinsicW, boxH / intrinsicH);
+    const contentW = intrinsicW * scale;
+    const contentH = intrinsicH * scale;
+    return {
+        left: boxRect.left + (boxW - contentW) / 2,
+        top: boxRect.top + (boxH - contentH) / 2,
+        width: contentW,
+        height: contentH
+    };
+}
+
+function _refreshGameScreenRects() {
+    _cachedBoxRect = screen.getBoundingClientRect();
+    _cachedContentRect = computeContentRect(_cachedBoxRect);
+    _gameScreenRectCacheValid = true;
+}
+
+// #game-screen の **content rect（letterbox 適用後）** を返す。
+// [task27] セマンティクス変更: 修正前は box rect（letterbox 込み）を返していた。
+// 呼び出し側（座標正規化・仮想カーソル・拡大鏡）は全て content 基準を前提にする。
+function getCachedGameScreenRect() {
+    if (!_gameScreenRectCacheValid || _cachedBoxRect === null) {
+        _refreshGameScreenRects();
+    }
+    return _cachedContentRect;
+}
+
+// [task27] #game-screen の **box rect（letterbox 込み）** を返す。
+// 仮想カーソルを #screen-container（= canvas box）のローカル座標へ変換する際に使用。
+// [task27・S-1 反映] 設計意図（設計書 §3.7）: 座標系（vCursor / 正規化 / 表示 / 送信）は content 基準を統一しており、
+// box は以下の 2 用途にのみ使用する:
+//   1. letterbox オフセット算出（updateCursorDisplay() 内の (rect.left - boxRect.left) / (rect.top - boxRect.top) 項）
+//   2. 仮想カーソルの container ローカル変換（updateCursorDisplay() のみ・唯一の呼び出し箇所）
+// 座標の正規化には box を使用しないこと（タッチ / マウス / 拡大鏡は全て content 基準 = getCachedGameScreenRect()）。
+function getCachedGameScreenBoxRect() {
+    if (!_gameScreenRectCacheValid || _cachedBoxRect === null) {
+        _refreshGameScreenRects();
+    }
+    return _cachedBoxRect;
 }
 
 // remote_input.js および他のモジュールから参照可能に window に公開
 window.getCachedGameScreenRect = getCachedGameScreenRect;
+window.getCachedGameScreenBoxRect = getCachedGameScreenBoxRect;
 
 // [task19 不具合2修正] レイアウト変更時に rect キャッシュを無効化する公開関数
 // resize イベントだけでなく、HUD バー表示/非表示・パネル展開等で #game-screen の実寸が変わる
 // 場合にもキャッシュを無効化し、stale な rect による座標ズレを防止する
+// [task27] 注: canvas 内在サイズ（screen.width/height）は現在不変（HTML attribute 固定・JS 再代入なし）であるため
+// 追加の無効化トリガーは不要。将来 canvas 内在サイズを変更する処理を追加する場合は
+// 必ず window.invalidateGameScreenRect() を併呼すること
 function invalidateGameScreenRect() {
     _gameScreenRectCacheValid = false;
 }
@@ -261,7 +340,9 @@ function drawMagnifier() {
         magCanvas.height = canvasHeight;
     }
 
-    const screenRect = screen.getBoundingClientRect();
+    // [task27] content 基準（letterbox 適用後）: crop の CSS px → canvas バッファ px 変換を
+    // content CSS 幅（例: right/left で 625px）基準で行う（box 幅 768px 基準だった現行の混合基準を解消）
+    const screenRect = getCachedGameScreenRect();
     const displayWidth = screenRect.width || 1;
 
     const cropDisplayWidth = canvasWidth / targetZoom;
@@ -316,9 +397,16 @@ function scheduleCursorUpdate() {
 function updateCursorDisplay() {
     // #virtual-cursor は親要素 #screen-container (position: relative) の子要素 (position: absolute) であるため、
     // 親要素の左上 (0,0) を基準としたローカルピクセル座標で配置する。
-    const rect = getCachedGameScreenRect();
-    const x = vCursorX * rect.width;
-    const y = vCursorY * rect.height;
+    // [task27] rect は content 基準（letterbox 適用後）。canvas box は #screen-container に 100%×100% で
+    // 追随する（remote_base.css:103-106・実測でも canvas rect = container rect・task26 E10）ため、
+    // container ローカル座標 = content の box 内オフセット + content 内相対位置。
+    // [task27・M-2 反映] 前提: #game-screen（canvas box）の左上と #screen-container（position: relative）の左上が一致
+    // していること（現状 CSS 上成立）。将来 #game-screen / #screen-container へ transform / margin / padding を
+    // 追加する場合は本変換式を破るため再検証が必要。
+    const rect = getCachedGameScreenRect();        // content rect
+    const boxRect = getCachedGameScreenBoxRect();  // box rect（letterbox 込み）
+    const x = (rect.left - boxRect.left) + vCursorX * rect.width;
+    const y = (rect.top - boxRect.top) + vCursorY * rect.height;
     cursor.style.left = x + 'px';
     cursor.style.top = y + 'px';
     debug.textContent = `POS-X: ${Math.round(vCursorX * 100)}% POS-Y: ${Math.round(vCursorY * 100)}%`;

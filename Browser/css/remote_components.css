@@ -121,6 +121,25 @@
     overflow: hidden; /* dvh最適化により領域内に綺麗に収まるためスクロール不要 */
 }
 
+/* [task26] 縦画面: #trackpad-area を body の下側 safe-area padding 領域まで延伸。
+ * - task25 により body に padding-bottom: env(safe-area-inset-bottom)（縦画面 home indicator ゾーン）
+ *   が付与され、box-sizing: border-box のため trackpad の下側に body 背景（#030805）の黒帯が露出する。
+ * - margin-bottom: calc(env(safe-area-inset-bottom, 0px) * -1) で trackpad の box を
+ *   下端 padding 分だけ延伸し、trackpad のグラデーション背景で黒帯を覆う（home indicator 回避は維持）。
+ * - [task26/review-M2] 負係数は env() 呼び出しの外部に置く（calc(env(...) * -1)）。
+ *   負数リテラル × 関数の旧記法（calc(-1 * env(...))）は古い Safari/Chrome のパース許容性に
+ *   ばらつきがあるため、実装許容性の高い順序に変換（値・fallback 挙動は同一・無害）。
+ * - flex: 1 の trackpad は負の margin を含む外側サイズで計算されるため、
+ *   body content-box 下端（= 画面下端 − padding）まで box が達し黒帯が消える。
+ * - env() が 0px（safe area 未サポート環境・DevTools）では margin-bottom: 0 で現行挙動と等価（無害）。
+ * - 横画面では #trackpad-area が position: fixed（remote_modal.css 横画面 media ブロック）のため、
+ *   portrait 限定の指定が必要（fixed 要素に負 margin を付けると viewport 外へ box がはみ出すため）。 */
+@media (orientation: portrait) {
+    #trackpad-area {
+        margin-bottom: calc(env(safe-area-inset-bottom, 0px) * -1); /* [task26] 下側 safe-area padding 領域への延伸（黒帯解消） */
+    }
+}
+
 /* トラックパッドを内包するコンテナのレイアウト定義 */
 #trackpad-container {
     flex: 1; /* 残りスペースをすべて縦方向に占有 */

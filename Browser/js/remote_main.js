@@ -81,6 +81,83 @@ window.addEventListener('resize', () => syncViewportToCSSVariables());
 window.addEventListener('scroll', () => syncViewportToCSSVariables(), { passive: true });
 
 //============================================================================================
+// [task25] body 高さの visual viewport 追従（iOS layout/visual viewport 乖離対策）
+// 根本原因: iOS（viewport-fit=cover）は layout viewport（100dvh / 100% の基準）が
+//   visual viewport（実表示領域）より高くなり、iOS は visual viewport を layout 中央に
+//   配置するため body 上下端が (layout高さ − 可視高さ) / 2 ずつ隠れる。
+// 修正: body 高さを visual viewport 高さに揃え、左右配置時のゲームviewportが実表示内に収まるようする。
+//============================================================================================
+function syncBodyHeightToVisualViewport() {
+    // [P-C1] document が完全に active でないとき、MDN 仕様上:
+    //   - Window.visualViewport は null
+    //   - VisualViewport.height は 0
+    //   を返す。null と <=0 の両方をガードし window.innerHeight にフォールバックする
+    //   （0px を body に書き込み画面を消失させる致命エラーを防止）。
+    const vv = window.visualViewport;
+    const vvh = (vv && typeof vv.height === 'number') ? vv.height : NaN;
+    const rawHeight = (Number.isFinite(vvh) && vvh > 0) ? vvh : window.innerHeight;
+    // [S-3①] 上限クランプ: visual viewport が layout viewport を超える異常拡大
+    //   （ピンチズーム等）を防止し、body が layout viewport（innerHeight）を超えないことを保証。
+    //   Math.round は sub-pixel レイアウトぼやけ防止（既存 syncViewportToCSSVariables と同方針）。
+    const newHeight = Math.min(Math.round(rawHeight), window.innerHeight) + 'px';
+    // [S-3②] inline body.style.height ではなく、documentElement の CSS 変数 --kc-body-height
+    //   に書き込む。body { height: var(--kc-body-height, 100svh) } が吸収し、
+    //   変数未設定（JS 未実行・非サポート）時は 100svh（静的下限）がフォールバックする。
+    const root = document.documentElement;
+    // [再書込みガード] 値が変わった時のみ書き込み（不要な style 書き込み・layout thrashing 回避）
+    if (root.style.getPropertyValue('--kc-body-height') !== newHeight) {
+        root.style.setProperty('--kc-body-height', newHeight);
+    }
+    // [task25 補足] body 高さ変更 → #game-screen の rect が変化。window.resize は発火しないため、
+    // remote_screen.js の rect キャッシュを明示的に無効化し座標ズレを防止。
+    // [P-C2 検証済み] remote_screen.js は remote_main.js より先読み込み（RemoteController.html:415-420）
+    // かつ window.invalidateGameScreenRect が公開済み（remote_screen.js:34）。typeof ガードは予防。
+    if (typeof window.invalidateGameScreenRect === 'function') {
+        window.invalidateGameScreenRect();
+    }
+}
+
+// 初期適用（load 時・remote_screen.js が invalidateGameScreenRect を公開した後に実行）
+// [S-5] remote_main.js は RemoteController.html:420 で </body> 直前（末尾）に読み込まれるため、
+//   本関数実行時点で document.body / document.documentElement の存在が確定している。
+syncBodyHeightToVisualViewport();
+
+// [task25] visual viewport の resize / scroll で再適用（iOS のキーボード・アドレスバー表示/隠蔽・回転等）
+if (window.visualViewport) {
+    // resize: visual viewport の寸法変化（キーボード表示/隠蔽・回転等）で発火。再適用の主経路。
+    window.visualViewport.addEventListener('resize', syncBodyHeightToVisualViewport);
+    // [P-M1] scroll: iOS ではキーボード展開時等に visual viewport のオフセット/寸法がスクロール連動で
+    //   変化しうるため登録。再書込みガード（値変化時のみ書き込み）があるため、高さ変化なしで発火しても
+    //   実害は皆無。オフセット変化シナリオの検知を目的に残す。
+    //   [review r1 Suggestion 1 反映] 既存の window scroll リスナ（81行目）と同様 { passive: true } を指定し、
+    //   ブラウザのスクロール最適化（コンポジタスレッドのスムーズスクロール）を阻害しない。
+    //   本関数は preventDefault() を呼ばないため passive 指定は安全。
+    window.visualViewport.addEventListener('scroll', syncBodyHeightToVisualViewport, { passive: true });
+}
+
+// [task25] 既存の window.resize で再適用。
+// [S-7] これは既存 resize リスナ（remote_main.js:80、syncViewportToCSSVariables）とは
+//   独立した「並列登録」であり、置換ではない。同一の resize イベントで両リスナが独立に発火する。
+window.addEventListener('resize', syncBodyHeightToVisualViewport);
+
+// [task25] iOS はレイアウト更新が数回に分かれるため、orientationchange で 0/100/300ms の
+// setTimeout で複数回再適用。
+// [P-N3] 各タイミングの意図（iOS は orientationchange 後にレイアウト更新が複数回に分かれるため）:
+//   - 0ms   = イベントループの次のタスクで即時再適用（iOS はイベント直後に第1回レイアウト更新を行う）
+//   - 100ms = 中間レイアウト更新後の再適用
+//   - 300ms = レイアウト更新完了後の最終再適用
+//   0ms は「同期的に即座に」ではなく「イベントループに回して次タスクで」実行する意図を持つ。
+// [S-1] この orientationchange リスナは、既存 handleOrientationChange（remote_main.js:814、
+//   パネル状態リセット・100ms デバウンス）とは独立に「意図的な並列登録」する（両立・非置換・責務分離）。
+//   回転時に handleOrientationChange（パネルリセット）と本関数（body 高さ追従）が別コールバックで発火する。
+window.addEventListener('orientationchange', () => {
+    syncBodyHeightToVisualViewport();
+    [0, 100, 300].forEach((ms) => {
+        setTimeout(syncBodyHeightToVisualViewport, ms);
+    });
+});
+
+//============================================================================================
 // タイマーフォーマット関数
 //============================================================================================
 function formatTimer(milliseconds) {

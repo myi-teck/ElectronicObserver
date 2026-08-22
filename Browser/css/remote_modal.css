@@ -1320,10 +1320,24 @@ body.panel-expanded #hud-control-bar,
     }
 
     /* [task15] bodyのflex layout変更（コンテンツ中央配置 + 横並列） */
+    /* [task26/A-1] 横画面は body の padding-bottom を 0 にする（方針 A・S2 黒帯解消）。
+     * - task25 が remote_base.css:80 で追加した padding-bottom: env(safe-area-inset-bottom, 0px) は
+     *   横画面で実測 21pt（home indicator ゾーン）となり、box-sizing: border-box のため
+     *   body コンテンツを 375→354pt に圧縮し、body 背景（#030805）の下端黒帯 21pt を生んでいた。
+     * - 横画面は padding-bottom: 0 で撤廃 → body コンテンツ = 812×375pt に復帰し黒帯が消える。
+     * - 縦画面は本 media ブロックに非該当のため base の env(safe-area-inset-bottom) が維持され、
+     *   home indicator 回避（内容の下端退避）が機能する（§2.5・§4.6）。
+     * - home indicator ゾーンとの重複は bottom モードの #hud-control-bar が margin-bottom で
+     *   退避する（A-2）。right/left モードの縦帯は画面左右端にあり home indicator（下端中央）
+     *   とは重複しない。
+     * - padding-top は横画面 inset-top = 0（実測）のため 0 のままでよい（上書き不要）。
+     * - カスケード: 本ファイル（remote_modal.css）は remote_base.css より後読み込み
+     *   （RemoteController.html:23-26）で同特异性（body）のため後勝ち → 横画面のみ 0。 */
     body {
         flex-direction: row;
         justify-content: center;
         align-items: center;
+        padding-bottom: 0; /* [task26/A-1] 横画面限定で下端 safe-area padding を撤廃（黒帯解消・content 375pt に復帰） */
     }
 
     /* -----------------------------------------------------------------
@@ -1335,8 +1349,17 @@ body.panel-expanded #hud-control-bar,
         min-width: 0;
         min-height: 0;
         width: auto;
-        height: auto;
-        max-height: 100%; /* [Task17] 右/左モード時の高さ膨張(上下見切れ)を防止 */
+        /* [task26/B-1] height: auto → 100%（= body コンテンツ高さ 375pt の definite 値）。
+         * - 横画面の body は A-1 で padding-bottom: 0 になり content-box = 375pt（definite）。
+         *   #viewport は body の flex 子（row）で、cross size（高さ）の 100% は
+         *   body の content-box 高さ（definite）に対して解決される → #viewport = 375pt が確定。
+         * - これにより子要素（#screen-container の height: 100%、#hud-control-bar の
+         *   height: 100%）のパーセントが definite 値で解決され、
+         *   高さ駆動レイアウト（方針 B）が成立する。
+         * - max-height: 100%（[Task17]）は維持（一致値 375pt・冗長だが防御として保持）。
+         * - flex: 1 1 auto のまま横方向は body 幅 812 − margin 4×2 = 804pt にストレッチ（不変）。 */
+        height: 100%; /* [task26/B-1] */
+        max-height: 100%; /* [Task17] 右/左モード時の高さ膨張(上下見切れ)を防止（維持） */
         border-bottom: none;
         border-right: 2px solid var(--accent-color);
         margin-left: var(--game-margin-left);
@@ -1346,7 +1369,10 @@ body.panel-expanded #hud-control-bar,
         /* flexboxコンテナとして設定（flex-directionはhud-pos-*クラスで切り替え） */
         display: flex;
         flex-direction: row; /* デフォルト: right モード */
-        gap: var(--viewport-padding, 4px); /* HUDバーとゲーム画面の間の隙間 */
+        gap: var(--viewport-padding, 4px); /* HUDバーとゲーム画面の間の隙間。
+            [task26/review-M4] gap は flex item 間のスペース（W3C CSS Flexbox Level 1 §4.5）であり、
+            #hud-control-bar.position-bottom の margin-bottom（A-2）は item 外側の退避量。
+            両者は独立してレイアウトに反映される（重複計算はしない・一次レビュー Major #4 は二次レビューで誤認と判定済み）。 */
     }
 
     /* モード別の flex-direction 切り替え */
@@ -1370,20 +1396,46 @@ body.panel-expanded #hud-control-bar,
 
     /* -----------------------------------------------------------------
      * [task15] #screen-container のflex item設定（フレームアウト防止）
+     * [task26/B-2] 横画面は height: auto → 100%（= #viewport 高さ 375pt・definite）で
+     * 「幅駆動 aspect-ratio（770×462pt → 上下クリップ）」を「高さ駆動」に変換（方針 B）
      * ----------------------------------------------------------------- */
     #screen-container {
-        flex: 1 1 auto;
+        /* [task26/review-C1] flex-basis: 0 に変更（旧: flex: 1 1 auto）。
+         * - column モード（top/bottom）: 高さが flex-grow により決定論的に確定
+         *   （375−32−4=339 / 375−32−4−21=318pt）になり、shrink と height:100%（definite）の
+         *   優先関係に対する実装依存性が除去される（W3C CSS Flexbox Level 1 §4.3）。
+         * - row モード（right/left）: 幅が flex-grow により確定（804−30−4=770pt、
+         *   #viewport border-right: 2px 控除で実測 768px）。
+         * - 4 方向とも旧 `flex: 1 1 auto` + shrink の結果と等価（動的検証 E4/E5 実測値不変）。 */
+        flex: 1 1 0;
         min-width: 0;
         min-height: 0;
         display: flex;
         justify-content: center;
         align-items: center;
         width: auto;
-        height: auto;
+        height: 100%; /* [task26/B-2] #viewport の definite 高さ（375pt）を基準に幅が aspect-ratio 5/3 で導出 */
         max-width: 100%;
         max-height: 100%;
         overflow: hidden;
         touch-action: none;
+        /* [task26/B-2] aspect-ratio: var(--game-aspect-ratio)（5/3）は base（remote_base.css:130）から
+           継承されたまま（横画面での上書きはしない）。レイアウト挙動:
+           - right/left（row / row-reverse）: 幅が flex-grow で 770pt に確定 + 高さ 375pt 確定
+             → 双方が確定値で制約されるため aspect-ratio は auto 解決のみで作用せず
+             （css-sizing-4）。5:3 の維持は #game-screen の object-fit: contain が担当
+             （625×375 表示・letterbox は canvas 内左右 72.5pt/側）→ 上下クリップ 0
+           - top/bottom（column / column-reverse）: 高さが flex-basis: 0 + flex-grow で
+             339pt（375−32−4）/ 318pt（375−32−4−21・A-2 margin 込み）に確定 →
+             aspect-ratio で幅が導出（565pt / 530pt）→ 上下クリップ 0
+           - max-width: 100%（= 804pt）は 565/530pt に対し発動しない
+           - [task26/review-C1] 一次レビュー Critical（column の shrink 競合）: flex: 1 1 0
+             （basis: 0）により column モードの高さが flex-grow で決定論的に確定し、
+             shrink と height: 100%（definite）の優先関係に対する WebKit 実装依存性が除去された。
+             WebKit 実機での挙動は実機検証（§7.4）で確認
+           - [task26/review-M3] object-fit: contain 未サポート環境（極古 Safari）では canvas が
+             引き伸ばされ歪むが、#viewport の background: #000（remote_base.css:90）が黒背景
+             フォールバックとして維持される（設計書 §5.3・letterbox 非表示時の最低限の表示品質） */
     }
 
     /* -----------------------------------------------------------------
@@ -1437,6 +1489,31 @@ body.panel-expanded #hud-control-bar,
         justify-content: space-evenly;
         padding: 0 8px;
         box-sizing: border-box;
+    }
+
+    /* [task26/A-2] bottom モード: home indicator ゾーン（横画面下端 21pt）から退避。
+     * - A-1 で body の padding-bottom を 0 にしたため、bottom モードの HUD バー（下端 32pt）は
+     *   home indicator ゾーンと重複する。margin-bottom で env(safe-area-inset-bottom, 0px)
+     *   を付与し、バー自体を safe area 内（home indicator 上側）へ退避させる。
+     * - 横画面 inset-bottom = 21pt → バー下端が画面下端から 21pt 上に退く。
+     *   margin は flex 子の外側サイズであり、column flex（#viewport）内で
+     *   #screen-container の利用可能高さは (375 − 32 − 4 − 21) = 318pt になる（§3.1 bottom 計算）。
+     * - 縦画面（非本 media ブロック）では適用されない（横画面限定）。
+     * - env() が 0px（未サポート環境）では margin = 0 で現行挙動と等価（無害）。
+     * - right/left モードの縦帯は margin を付与しない（画面左右端にあり home indicator
+     *   （下端中央）と重複しない・§5.2 既知制約）。
+     * - top モードは横画面 inset-top = 0（実測）のため不要だが、防御的に A-3 を付与。 */
+    body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-bottom {
+        margin-bottom: env(safe-area-inset-bottom, 0px); /* [task26/A-2] home indicator ゾーンからの退避（横画面 21pt） */
+    }
+
+    /* [task26/A-3] top モード: 横画面の safe-area-inset-top は実測 0pt（ノッチ/Dynamic Island は
+     * 横画面では左右（left/right = 50pt）に存在するため）。よって現在値は 0pt で無害（no-op）。
+     * ただし iOS のバージョン・端末により横画面で inset-top に値が入る場合への**防御的**付与。
+     * env() が 0px のときはレイアウトに変化なし。top モードでバー上端が safe area 内に留まるよう
+     * 保証する（bottom モード A-2 との対称性）。 */
+    body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-top {
+        margin-top: env(safe-area-inset-top, 0px); /* [task26/A-3] 横画面 inset-top（実測 0pt・防御的） */
     }
 
     /* 右/左配置モードのmini-infoレイアウト */

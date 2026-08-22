@@ -42,20 +42,42 @@ input, textarea {
     user-select: text !important;
 }
 
-/* 
+/*
  * 全体ボディスタイル：
  * フォントにはメカニカルな等幅・ゴシック系を採用。
  * モバイルブラウザでのアドレスバー干渉を防ぐため dvh を指定。
+ * [task25] svh（静的下限）併記 + JS による visual viewport 追従（--kc-body-height）で
+ * iOS の layout/visual viewport 乖離による上下見切れを防ぐ（二層防御）。
  */
 body {
     background-color: var(--bg-color);
     color: var(--text-color);
-    font-family: 'Play', 'Consolas', 'Courier New', monospace; 
+    font-family: 'Play', 'Consolas', 'Courier New', monospace;
     overflow: hidden;
-    height: 100%; /* 古いブラウザ向けのフォールバック */
-    height: 100dvh; /* dvh(Dynamic Viewport Height)を使用し、モバイルブラウザの伸縮アドレスバーの干渉を防止 */
+    /* [task25] カスケードフォールバック順（後勝ち）: 100% → 100dvh → 100svh → var(--kc-body-height)
+     *  - 100%: 最古ブラウザ向け
+     *  - 100dvh: モバイルブラウザの伸縮アドレスバーの干渉防止
+     *  - 100svh: 静的下限（常に ≤ 可視高さ、body は可視領域を越えない）
+     *  - var(--kc-body-height, 100svh): JS の visual viewport 追従（変数設定時は主）。
+     *    変数未設定（JS 未実行・非サポート）時は 100svh にフォールバック
+     * [review r1 Suggestion 2 注記] var() は解釈できるが svh を解釈できない環境
+     *    （iOS 15.3 以前等）では、--kc-body-height 未設定時のフォールバック値 100svh が
+     *    解釈不能となり IACVT (Invalid At Computed-Value Time) が発生する。
+     *    W3C css-variables-1 仕様では、IACVT になった宣言は「指定されたものとみなされない」ため
+     *    前宣言（100dvh、それも解釈不可なら 100%）へカスケードフォールバックする。
+     *    height の初期値 auto は適用されない（前宣言が存在するため）。
+     *    すなわち現行挙動と等価でありリグレッションは発生しない。
+     *    加えて remote_main.js が HTML 末尾で同期実行して即座に
+     *    px 値を書き込むため実用上は崩れは発生しない（設計上の理解事項として認識）。 */
+    height: 100%; /* 古いブラウザ向けのフォールバック（最優先） */
+    height: 100dvh; /* dvh(Dynamic Viewport Height)：モバイルブラウザの伸縮アドレスバーの干渉を防止（次フォールバック） */
+    height: 100svh; /* [task25] svh(Small Viewport Height)＝最小可視領域基準の静的下限：常に ≤ 可視高さ、body は可視領域を越えない */
+    height: var(--kc-body-height, 100svh); /* [task25] JS visual viewport 追従（変数設定時は主）；変数未設定時は 100svh フォールバック */
     display: flex;
     flex-direction: column;
+    box-sizing: border-box; /* [task25/P-N4] 全要素 * による border-box 継承済みだが、safe-area padding 意図を明確化するため body に明示（意図的な明示、冗長で保持） */
+    padding-top: env(safe-area-inset-top, 0px); /* [task25] 上部 safe area（ノッチ/ステータスバー）を内容から除外 */
+    padding-bottom: env(safe-area-inset-bottom, 0px); /* [task25] 下部 safe area（home indicator）を内容から除外 */
 }
 
 /* 

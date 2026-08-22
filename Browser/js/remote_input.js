@@ -31,6 +31,10 @@ function activateViewportFpsControl() {
 
 function handleViewportMove(clientX, clientY) {
     // [task19 v5] remote_screen.js に定義された window.getCachedGameScreenRect() を呼び出す
+    // [task27] 本関数は content rect（object-fit: contain の letterbox 適用後）を返すため、
+    // 以下の正規化は content（可視ゲーム領域）基準 0〜1 となる（サーバー GetBrowserCoords の
+    // content 基準前提 RemoteController.cs:2705-2749 と整合）。letterbox 領域（黒帯）を指した
+    // 場合はクランプ（0/1）で content 端に丸める（設計書 §4.3）
     const rect = window.getCachedGameScreenRect();
     // [Task17] ゼロサイズ保護ガード: rect.width または rect.height が 0 の場合は処理をスキップ
     if (rect.width === 0 || rect.height === 0) return;
