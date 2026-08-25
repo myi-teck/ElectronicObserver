@@ -78,6 +78,9 @@ namespace Browser
 	{
 		private HttpListener _listener;
 		private FormBrowser _parent;
+		// メインスレッド（Start/Dispose）と Task.Run スレッド（ListenLoop）で共有。
+		// 可視性は Start 内書き込み後の Task.Run 呼び出しで保証され、
+		// ループ終了は Dispose の _listener.Stop() 起因の ObjectDisposedException で駆動される。
 		private bool _isRunning;
 		private int _port;
 		
@@ -122,6 +125,8 @@ namespace Browser
 		/// <summary>
 		/// 認証が必要で、未認証時に401を返すAPIパスのリスト。
 		/// ハードコードされたif文ではなく静的HashSetで管理し、保守性を向上させる。
+		/// JSON API パスのみ。HTML ページ（/logout-page 等）は認証ガードの対象外であり、
+		/// 未認証アクセスは /login-page への 302 リダイレクトで処理される。
 		/// </summary>
 		private static readonly HashSet<string> s_authenticatedApiPaths = new HashSet<string>
 		{
@@ -130,9 +135,9 @@ namespace Browser
 			"/control",
 			"/capture-mode",
 			"/capture-config",
-			"/login-state",   // [task22] 追加: ログイン状態 API（未認証 401。HTML 系でないため /logout-page はこの集合に含めない）
-			"/event-log",    // [task14] クライアント中継イベントログ API（POST。未認証 401・/control と一貫）
-			"/log-toggle",   // [task14 Q9] サーバ側ログ記録 ON/OFF API（POST。未認証 401・/control と一貫）
+			"/login-state",
+			"/event-log",
+			"/log-toggle",
 		};
 
 		// （グローバルシーケンス番号：WebSocket/HTTP共通の単調増加int型）

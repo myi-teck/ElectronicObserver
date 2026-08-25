@@ -138,7 +138,7 @@ namespace Browser
 				}
 
 				var cursorState = GetOrCreateHttpCursorState(sessionId);
-				cursorState.UpdateLastAccess();  // [task19] タイムアウトリセット（設計書 §2.2.2）
+				cursorState.UpdateLastAccess();
 				var action = req.QueryString["action"];
 				var xStr = req.QueryString["x"];
 				var yStr = req.QueryString["y"];
