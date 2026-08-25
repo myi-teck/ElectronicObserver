@@ -76,15 +76,19 @@
     transition: max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease;
     opacity: 1;
     display: flex;
-    flex-direction: row;       /* 変更: row (左右並列) */
-    flex-wrap: nowrap;         /* 変更: nowrap (折り返しなし) */
-    gap: 0;                     /* 変更: 0 (マスターとディテールを密接に) */
+    flex-direction: row;
+    /* 変更: row (左右並列) */
+    flex-wrap: nowrap;
+    /* 変更: nowrap (折り返しなし) */
+    gap: 0;
+    /* 変更: 0 (マスターとディテールを密接に) */
     padding: 4px 0 4px;
     position: absolute;
     top: 34px;
     left: 4px;
     right: 4px;
-    z-index: 500; /* HUDコンテナ(z-index:10)の前面に確実表示 */
+    z-index: 500;
+    /* HUDコンテナ(z-index:10)の前面に確実表示 */
     background: rgba(var(--nerv-bg-dark), 0.95);
     backdrop-filter: blur(8px);
     border: 1px solid var(--accent-color);
@@ -102,22 +106,28 @@
 
 /* --- 新規: マスターリスト (#settings-master-list) --- */
 #settings-master-list {
-    width: 110px;                    /* 固定幅（項目名が収まる最小幅） */
-    flex-shrink: 0;                   /* 縮小防止 */
-    overflow-y: auto;                 /* 縦スクロール有効 */
+    width: 110px;
+    /* 固定幅（項目名が収まる最小幅） */
+    flex-shrink: 0;
+    /* 縮小防止 */
+    overflow-y: auto;
+    /* 縦スクロール有効 */
     overflow-x: hidden;
     border-right: 1px solid rgba(0, 255, 102, 0.2);
     padding: 2px;
-    max-height: 260px;                /* max-heightからリストの高さを制御 */
+    max-height: 260px;
+    /* max-heightからリストの高さを制御 */
 }
 
 /* スクロールバーのNERV風カスタマイズ */
 #settings-master-list::-webkit-scrollbar {
     width: 4px;
 }
+
 #settings-master-list::-webkit-scrollbar-track {
     background: rgba(0, 255, 102, 0.05);
 }
+
 #settings-master-list::-webkit-scrollbar-thumb {
     background: rgba(0, 255, 102, 0.3);
     border-radius: 2px;
@@ -197,25 +207,38 @@
 
 /* --- 新規: ディテールエリア (#settings-detail-area) --- */
 #settings-detail-area {
-    flex: 1;                         /* 残りスペースを占有 */
-    overflow-y: auto;                /* 選択多数時のはみ出し防止 */
+    flex: 1;
+    overflow-y: auto;
     overflow-x: hidden;
     padding: 4px 8px;
 }
 
+#settings-detail-area::-webkit-scrollbar {
+    width: 4px;
+}
+
+#settings-detail-area::-webkit-scrollbar-track {
+    background: rgba(0, 255, 102, 0.05);
+}
+
+#settings-detail-area::-webkit-scrollbar-thumb {
+    background: rgba(0, 255, 102, 0.3);
+    border-radius: 2px;
+}
+
 .detail-panel {
-    display: none;                   /* 非表示（JSで切り替え） */
+    display: none;
 }
 
 .detail-panel.active {
-    display: block;                  /* 選択中のパネルを表示 */
+    display: block;
 }
 
-/* --- 新規: レスポンシブ対応（モバイル幅でのレイアウト崩れ対策） --- */
+/* レスポンシブ対応（モバイル幅でのレイアウト調整） */
 @media (max-width: 480px) {
     #settings-panel {
         flex-direction: column;
-        max-height: 400px; /* noneだとtransitionアニメーションが無効化されるため数値指定 */
+        max-height: 400px;
     }
 
     #settings-master-list {
@@ -232,11 +255,11 @@
 
     .master-item {
         flex-shrink: 0;
-        min-width: 70px; /* 横並び時に項目が圧縮されないよう幅確保 */
+        min-width: 70px;
     }
 
     #settings-scroll-controls {
-        display: none; /* モバイルではネイティブスクロールに依存 */
+        display: none;
     }
 
     #settings-detail-area {
@@ -249,15 +272,20 @@
 #confirm-modal-overlay {
     display: none;
     position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
     background: rgba(0, 0, 0, 0.7);
     z-index: 9999;
     justify-content: center;
     align-items: center;
 }
+
 #confirm-modal-overlay.show {
     display: flex;
 }
+
 #confirm-modal-box {
     background: rgba(2, 15, 6, 0.95);
     border: 1px solid rgba(0, 255, 102, 0.5);
@@ -267,17 +295,20 @@
     text-align: center;
     box-shadow: 0 0 20px rgba(0, 255, 102, 0.3);
 }
+
 #confirm-modal-box p {
     color: var(--accent-color);
     font-size: 12px;
     margin: 0 0 12px;
     font-family: var(--font-tt);
 }
+
 #confirm-modal-box .modal-btn-group {
     display: flex;
     gap: 8px;
     justify-content: center;
 }
+
 .modal-btn {
     padding: 6px 16px;
     background: rgba(2, 15, 6, 0.9);
@@ -290,25 +321,27 @@
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s;
 }
+
 .modal-btn:hover {
     background: rgba(0, 255, 102, 0.15);
     border-color: rgba(0, 255, 102, 0.6);
 }
+
 .modal-btn.confirm {
     border-color: var(--accent-color);
     color: var(--accent-color);
 }
 
 
-/* 設定グループ (ラベル + ボタン横並び) */
+/* 設定グループ (ラベル + ボタンコンテナ) */
 .setting-group {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    border: 1px solid rgba(0, 255, 102, 0.2); /* NERVスタイルの極細グリーン境界枠 */
+    border: 1px solid rgba(0, 255, 102, 0.2);
     padding: 4px 8px 6px;
     border-radius: 4px;
-    background: rgba(0, 255, 102, 0.02); /* 薄い半透明グリーン背景 */
+    background: rgba(0, 255, 102, 0.02);
 }
 
 /* 設定グループのラベルテキスト */
@@ -320,18 +353,20 @@
     font-weight: bold;
 }
 
-/* ボタン群の横並びコンテナ */
+/* ボタン群の縦並びコンテナ */
 .btn-group {
     display: flex;
-    flex-direction: row;
-    gap: 3px;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
 }
 
-/* 設定選択ボタン共通スタイル：NERVコンソールのトグルスイッチ風デザイン */
+/* 設定選択ボタン共通スタイル */
 .settings-btn {
-    height: 22px;
-    min-width: 26px;
-    padding: 0 6px;
+    height: 24px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0 8px;
     background: rgba(2, 15, 6, 0.9);
     border: 1px solid rgba(0, 255, 102, 0.3);
     border-radius: 3px;
@@ -344,6 +379,9 @@
     transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
     -webkit-user-select: none;
     user-select: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 /* 設定選択ボタン：ホバー時 */
@@ -364,24 +402,27 @@
 
 /* 設定選択ボタン：タップ時フィードバック */
 .settings-btn:active {
-    transform: scale(0.95);
+    transform: scale(0.98);
     background: rgba(0, 255, 102, 0.15);
 }
 
-/* ========================================================================================
- * 14. 拡大表示パネル (TACTICAL SCOPE) 定義
+/*
+ * ========================================================================================
+ * 14. 拡大表示パネル定義
  * タッチパッド内右下に正方形で絶対配置され、仮想ポインタ周辺をズーム表示する。
- * NERVタクティカルコンソール風の正方形照準器HUD。
- * ======================================================================================== */
+ * ======================================================================================== 
+*/
 #click-btn {
     width: 100%;
     height: 10dvh;
     position: relative;
     overflow: hidden;
-    background: rgba(var(--nerv-bg-dark), 0.85); /* 透過ダーク背景 */
+    background: rgba(var(--nerv-bg-dark), 0.85);
+    /* 透過ダーク背景 */
     border: 2px solid var(--accent-color);
     border-radius: 6px;
-    color: var(--accent-color); /* テキスト色をネオングリーンにして発光 */
+    color: var(--accent-color);
+    /* テキスト色をネオングリーンにして発光 */
     font-size: 2.5dvh;
     font-weight: 900;
     letter-spacing: 0.25em;
@@ -434,20 +475,19 @@
 }
 
 /* 
- * 拡大鏡（タクティカルスコープ・SF計器風円形照準器）
  * トラックパッドのほぼ中央に巨大（170px）に絶対配置され、ドラッグ中のみHUDの上に被さるように出現します。
- * 円形（border-radius:50%）にすることで、サイバーパンクのタクティカルスコープの高級感を際立たせます。
  */
 .magnifier-container {
     position: absolute;
     /* トラックパッド全体のほぼ中央に大きく絶対配置 */
     left: 50%;
     top: 50%;
-    width: 250px; /* 視認性を劇的に高めるために170pxに大型化 */
+    width: 250px;
     height: 250px;
     border: 2px solid var(--accent-color);
-    border-radius: 10%; 
-    background: rgba(var(--nerv-bg-dark), 0.8); /* HUDパネルの上に被るため、後ろの文字が透けないよう背景不透明度を高めます */
+    border-radius: 10%;
+    background: rgba(var(--nerv-bg-dark), 0.8);
+    /* HUDパネルの上に被るため、後ろの文字が透けないよう背景不透明度を高めます */
     overflow: hidden;
     /*
      * HUDコンテナ(z-index:100)やシステムインジケータ(z-index:6)よりも手前に出現させるため、
@@ -456,7 +496,7 @@
     z-index: 101;
     pointer-events: none;
     box-shadow: 0 0 25px rgba(0, 255, 102, 0.45), inset 0 0 15px rgba(0, 255, 102, 0.25);
-    
+
     /* 
      * 初期状態は中央基準の非表示状態
      * transform の translate(-50%, -50%) で中央寄せを維持したまま、
@@ -464,11 +504,10 @@
      */
     opacity: 0;
     transform: translate(-50%, -50%) scale(0.7);
-    /* キレがよくて気持ちの良いSF的なポップアップ・フェードアウト曲線（ベジェ曲線） */
     transition: opacity 1s cubic-bezier(0.1, 0.8, 0.3, 1.15), transform 0.22s cubic-bezier(0.1, 0.8, 0.3, 1.15);
 }
 
-/* トラックパッド操作中（JSにより.visibleクラス付与時）にシュインと出現させます */
+/* トラックパッド操作中（JSにより.visibleクラス付与時）に出現させます */
 .magnifier-container.visible {
     opacity: 1;
     /* 中央寄せを維持したまま、実寸大(scale:1)へポップアップ */
@@ -482,7 +521,8 @@
     width: 100%;
     height: 100%;
     z-index: 1;
-    opacity: 0.90; /* 独立した正方形HUDとしてクッキリ見せるため不透明度を高める */
+    opacity: 0.90;
+    /* 独立した正方形HUDとしてクッキリ見せるため不透明度を高める */
     display: block;
 }
 
@@ -493,7 +533,8 @@
     top: 50%;
     width: 100%;
     height: 1px;
-    background: rgba(255, 102, 0, 0.75); /* NERVアンバーオレンジ */
+    background: rgba(255, 102, 0, 0.75);
+    /* NERVアンバーオレンジ */
     transform: translateY(-50%);
     z-index: 2;
     pointer-events: none;
@@ -505,7 +546,8 @@
     top: 0;
     width: 1px;
     height: 100%;
-    background: rgba(255, 102, 0, 0.75); /* NERVアンバーオレンジ */
+    background: rgba(255, 102, 0, 0.75);
+    /* NERVアンバーオレンジ */
     transform: translateX(-50%);
     z-index: 2;
     pointer-events: none;
@@ -528,50 +570,60 @@
 /* ========================================================================================
   * 15. 艦船詳細テーブル (SHIP DETAIL TABLE) 定義
   * 艦隊1の艦船リストをテーブル形式で表示（カーソルパッド領域内のHUDコンテナ内に配置）。
-  * NERV戦術モニタ風のネオングリーンテーマを適用。
   * ======================================================================================== */
 #fleet-detail-panel {
-            position: static; /* flex子要素として配置 */
-            flex: 1; /* #fleet-info-row 内で残りのスペースをすべて占有 */
-            max-height: 200px; /* 高さを制限してスクロール可能に */
-            overflow-y: auto;
-            background: rgba(var(--nerv-bg-dark), 0.85);
-            backdrop-filter: blur(4px);
-            border: 1px solid rgba(0, 255, 102, 0.25);
-            border-radius: 3px;
-            padding: 1px 1px;
-            pointer-events: auto; /* ブロック全体をタップして装備表示モードをトグル */
-            cursor: pointer;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
-        }
+    position: static;
+    /* flex子要素として配置 */
+    flex: 1;
+    /* #fleet-info-row 内で残りのスペースをすべて占有 */
+    max-height: 200px;
+    /* 高さを制限してスクロール可能に */
+    overflow-y: auto;
+    background: rgba(var(--nerv-bg-dark), 0.85);
+    backdrop-filter: blur(4px);
+    border: 1px solid rgba(0, 255, 102, 0.25);
+    border-radius: 3px;
+    padding: 1px 1px;
+    pointer-events: auto;
+    /* ブロック全体をタップして装備表示モードをトグル */
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
 
 /* 艦船詳細テーブル本体 */
 /* [v3対応] table-layout: fixed + font-size 7.5px (極小画面対応) */
 #ship-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 7.5px; /* 既存 9px → 7.5px へ縮小（極小画面対応） */
+    font-size: 7.5px;
+    /* 既存 9px → 7.5px へ縮小（極小画面対応） */
     font-family: var(--font-tt);
     color: var(--text-color);
-    table-layout: fixed; /* [v3対応] 固定レイアウトによるセル幅制御 */
+    table-layout: fixed;
+    /* [v3対応] 固定レイアウトによるセル幅制御 */
 }
 
 /* [v3対応] <col> 要素による列幅制御（table-layout: fixed 用） - パーセンテージ単位 */
 #ship-table col.col-name {
     width: 25%;
 }
+
 #ship-table col.col-level {
     width: 9%;
 }
+
 #ship-table col.col-condition {
     width: 10%;
 }
+
 #ship-table col.col-hp {
     width: 18%;
 }
+
 #ship-table col.col-fuel {
     width: 19%;
 }
+
 #ship-table col.col-ammo {
     width: 19%;
 }
@@ -583,7 +635,8 @@
     padding: 1px 2px;
     border-bottom: 1px solid rgba(0, 255, 102, 0.3);
     color: var(--accent-color);
-    font-size: 7.5px; /* 既存 8px → 7.5px へ縮小（ボディと統一） */
+    font-size: 7.5px;
+    /* 既存 8px → 7.5px へ縮小（ボディと統一） */
     font-weight: bold;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -603,10 +656,12 @@
 
 /* テーブルボディの行 - 行間隙を縮小・行高固定でトグル時のガタつき防止 */
 #ship-table tbody tr {
-    border-bottom: none; /* 行境界線を削除して隙間を縮小 */
+    border-bottom: none;
+    /* 行境界線を削除して隙間を縮小 */
     transition: background 0.15s;
     border-bottom: 1px solid rgba(0, 255, 102, 0.3);
-    height: 17px; /* 行高を固定（HPモードのセグメントゲージにも対応） */
+    height: 17px;
+    /* 行高を固定（HPモードのセグメントゲージにも対応） */
 }
 
 #ship-table tbody tr:hover {
@@ -626,8 +681,10 @@
     width: 100%;
     min-width: 0;
     max-width: 100%;
-    overflow: hidden;     /* はみ出しを隠す */
-    white-space: nowrap;  /* 改行を防止 */
+    overflow: hidden;
+    /* はみ出しを隠す */
+    white-space: nowrap;
+    /* 改行を防止 */
 }
 
 /* 艦名セル内のスクロールラッパーコンテナ */
@@ -656,19 +713,24 @@
     content: attr(data-name);
     margin-left: 1.5em;
 }
+
 .ship-name-scroll.scroll {
     position: absolute;
     left: 0;
     animation: ship-name-bounce 4s linear infinite;
 }
+
 @keyframes ship-name-bounce {
+
     /* 0-25%: 左端で1秒停止 */
     0% {
         transform: translateX(0);
     }
+
     10% {
         transform: translateX(0);
     }
+
     /* 25-50%: 左へスクロール（複製テキストの開始位置まで） */
     100% {
         transform: translateX(calc(-50% - 0.75em));
@@ -738,7 +800,8 @@
     display: flex;
     flex-direction: column;
     gap: 1px;
-    align-items: flex-start; /* 左寄せに統一 */
+    align-items: flex-start;
+    /* 左寄せに統一 */
     width: 100%;
 }
 
@@ -753,6 +816,7 @@
     opacity: 1;
     visibility: visible;
 }
+
 .equip-view {
     position: absolute;
     left: 0;
@@ -768,18 +832,21 @@
     vertical-align: middle;
     padding: 1px 0px;
 }
+
 /* .show-equip クラス付与時の切り替え */
 .ship-hp-cell.show-equip .resource-view,
 .ship-resource-cell.show-equip .resource-view {
     opacity: 0;
     visibility: hidden;
 }
+
 .ship-hp-cell.show-equip .equip-view,
 .ship-resource-cell.show-equip .equip-view {
     opacity: 1;
     visibility: visible;
     pointer-events: auto;
 }
+
 /* 装備バッジ：固定幅（4em）でトグル時の横幅変化を防止。長文は電光掲示板式スクロール */
 .equip-badge {
     display: inline-block;
@@ -798,6 +865,7 @@
     position: relative;
     vertical-align: middle;
 }
+
 /* 装備バッジ内のスクロール用コンテナ（艦名のship-name-containerと同じパターン） */
 .equip-scroll-container {
     width: 100%;
@@ -808,26 +876,38 @@
     display: flex;
     align-items: center;
 }
+
 /* 装備バッジ内のスクロール用内包要素 */
 .equip-scroll {
     display: inline-block;
     white-space: nowrap;
     width: max-content;
 }
+
 /* 装備バッジ 電光掲示板スクロールアニメーション（4秒ループ） */
 .equip-scroll.scroll::after {
     content: attr(data-name);
     margin-left: 1em;
 }
+
 .equip-scroll.scroll {
     position: absolute;
     left: 0;
     animation: equip-bounce 4s linear infinite;
 }
+
 @keyframes equip-bounce {
-    0% { transform: translateX(0); }
-    10% { transform: translateX(0); }
-    100% { transform: translateX(calc(-50% - 0.75em)); }
+    0% {
+        transform: translateX(0);
+    }
+
+    10% {
+        transform: translateX(0);
+    }
+
+    100% {
+        transform: translateX(calc(-50% - 0.75em));
+    }
 }
 
 /* ----------------------------------------------------------------------------
@@ -870,15 +950,25 @@
     content: attr(data-name);
     margin-left: 1.5em;
 }
+
 .equip-slot-scroll.scroll {
     position: absolute;
     left: 0;
     animation: equip-slot-bounce 4s linear infinite;
 }
+
 @keyframes equip-slot-bounce {
-    0% { transform: translateX(0); }
-    10% { transform: translateX(0); }
-    100% { transform: translateX(calc(-50% - 0.75em)); }
+    0% {
+        transform: translateX(0);
+    }
+
+    10% {
+        transform: translateX(0);
+    }
+
+    100% {
+        transform: translateX(calc(-50% - 0.75em));
+    }
 }
 
 /* 補強増設スロットの特別カラー */
@@ -891,6 +981,7 @@
     background: rgba(163, 247, 191, 0.02);
     color: rgba(163, 247, 191, 0.3);
 }
+
 .equip-badge.expansion {
     border-color: rgba(255, 102, 0, 0.2);
     background: rgba(255, 102, 0, 0.05);
@@ -902,6 +993,7 @@
 .ship-resource-cell {
     cursor: pointer;
 }
+
 .ship-hp-cell:hover,
 .ship-resource-cell:hover {
     background: rgba(0, 255, 102, 0.08);
@@ -913,82 +1005,158 @@
 
 /* A. 小破（黄色パルス発光点滅・1.5秒周期で滑らかに明滅） */
 .ship-cell-container.hp-state-minor .ship-hp-text {
-    color: #facc15; /* 小破時の黄色テキスト */
+    color: #facc15;
+    /* 小破時の黄色テキスト */
     animation: hp-text-minor 0.8s infinite ease-in-out;
 }
+
 .ship-cell-container.hp-state-minor .gauge-segment.active.segment-bar-fill {
-    background: #facc15; /* ゲージも小破黄に上書き */
+    background: #facc15;
+    /* ゲージも小破黄に上書き */
     border-color: #facc15;
     animation: hp-gauge-minor 0.8s infinite ease-in-out;
 }
+
 @keyframes hp-text-minor {
-    0%, 100% { text-shadow: 0 0 1px rgba(234, 179, 8, 0.2); opacity: 0.7; }
-    50% { text-shadow: 0 0 4px rgba(234, 179, 8, 0.85); opacity: 1; }
+
+    0%,
+    100% {
+        text-shadow: 0 0 1px rgba(234, 179, 8, 0.2);
+        opacity: 0.7;
+    }
+
+    50% {
+        text-shadow: 0 0 4px rgba(234, 179, 8, 0.85);
+        opacity: 1;
+    }
 }
+
 @keyframes hp-gauge-minor {
-    0%, 100% { box-shadow: 0 0 1px rgba(234, 179, 8, 0.2); opacity: 0.6; }
-    50% { box-shadow: 0 0 6px rgba(234, 179, 8, 0.95); opacity: 1; }
+
+    0%,
+    100% {
+        box-shadow: 0 0 1px rgba(234, 179, 8, 0.2);
+        opacity: 0.6;
+    }
+
+    50% {
+        box-shadow: 0 0 6px rgba(234, 179, 8, 0.95);
+        opacity: 1;
+    }
 }
 
 /* B. 中破（オレンジパルス発光点滅・1.0秒周期で注意喚起） */
 .ship-cell-container.hp-state-moderate .ship-hp-text {
-    color: #f97316; /* 中破時のオレンジテキスト */
+    color: #f97316;
+    /* 中破時のオレンジテキスト */
     animation: hp-text-moderate 0.4s infinite ease-in-out;
 }
+
 .ship-cell-container.hp-state-moderate .gauge-segment.active.segment-bar-fill.warning {
-    background: #f97316; /* ゲージも中破オレンジに上書き */
+    background: #f97316;
+    /* ゲージも中破オレンジに上書き */
     border-color: #f97316;
     animation: hp-gauge-moderate 0.4s infinite ease-in-out;
 }
+
 @keyframes hp-text-moderate {
-    0%, 100% { text-shadow: 0 0 1px rgba(249, 115, 22, 0.2); opacity: 0.6; }
-    50% { text-shadow: 0 0 5px rgba(249, 115, 22, 0.95); opacity: 1; }
+
+    0%,
+    100% {
+        text-shadow: 0 0 1px rgba(249, 115, 22, 0.2);
+        opacity: 0.6;
+    }
+
+    50% {
+        text-shadow: 0 0 5px rgba(249, 115, 22, 0.95);
+        opacity: 1;
+    }
 }
+
 @keyframes hp-gauge-moderate {
-    0%, 100% { box-shadow: 0 0 1px rgba(249, 115, 22, 0.2); opacity: 0.5; }
-    50% { box-shadow: 0 0 8px rgba(249, 115, 22, 0.95); opacity: 1; }
+
+    0%,
+    100% {
+        box-shadow: 0 0 1px rgba(249, 115, 22, 0.2);
+        opacity: 0.5;
+    }
+
+    50% {
+        box-shadow: 0 0 8px rgba(249, 115, 22, 0.95);
+        opacity: 1;
+    }
 }
 
 /* C. 大破（危険警告・赤色パルス発光点滅・0.5秒周期で緊急警告） */
 .ship-cell-container.hp-state-critical .ship-hp-text {
-    color: #ef4444; /* 大破時の赤テキスト */
+    color: #ef4444;
+    /* 大破時の赤テキスト */
     animation: hp-text-critical 0.2s infinite ease-in-out;
 }
+
 .ship-cell-container.hp-state-critical .gauge-segment.active.segment-bar-fill.critical {
-    background: #ef4444; /* ゲージも大破赤に上書き */
+    background: #ef4444;
+    /* ゲージも大破赤に上書き */
     border-color: #ef4444;
     animation: hp-gauge-critical 0.2s infinite ease-in-out;
 }
+
 @keyframes hp-text-critical {
-    0%, 100% { text-shadow: 0 0 1px rgba(239, 68, 68, 0.2); opacity: 0.5; }
-    50% { text-shadow: 0 0 6px rgba(239, 68, 68, 1.0); opacity: 1; }
+
+    0%,
+    100% {
+        text-shadow: 0 0 1px rgba(239, 68, 68, 0.2);
+        opacity: 0.5;
+    }
+
+    50% {
+        text-shadow: 0 0 6px rgba(239, 68, 68, 1.0);
+        opacity: 1;
+    }
 }
+
 @keyframes hp-gauge-critical {
-    0%, 100% { box-shadow: 0 0 1px rgba(239, 68, 68, 0.2); opacity: 0.4; }
-    50% { box-shadow: 0 0 10px rgba(239, 68, 68, 1.0); opacity: 1; }
+
+    0%,
+    100% {
+        box-shadow: 0 0 1px rgba(239, 68, 68, 0.2);
+        opacity: 0.4;
+    }
+
+    50% {
+        box-shadow: 0 0 10px rgba(239, 68, 68, 1.0);
+        opacity: 1;
+    }
 }
 
 /* 燃料・弾薬・HP共通 10段階セグメントゲージコンテナ */
 .resource-segment-gauge {
     display: flex;
-    gap: 1px; /* 各セグメントの隙間 */
+    gap: 1px;
+    /* 各セグメントの隙間 */
     justify-content: flex-start;
     align-items: center;
-    width: 40px; /* ゲージ全体の横幅 */
-    height: 5px;  /* ゲージの高さ (1pxボーダーが美しく映えるよう5pxに最適化) */
+    width: 40px;
+    /* ゲージ全体の横幅 */
+    height: 5px;
+    /* ゲージの高さ (1pxボーダーが美しく映えるよう5pxに最適化) */
     background: rgba(0, 0, 0, 0.4);
-    padding: 0;   /* パディングを排除してセグメントをコンテナいっぱいに広げる */
+    padding: 0;
+    /* パディングを排除してセグメントをコンテナいっぱいに広げる */
     border: 1px solid rgba(0, 255, 102, 0.15);
     border-radius: 1px;
-    margin: 0; /* 左寄せにするため中央寄せmarginを排除 */
+    margin: 0;
+    /* 左寄せにするため中央寄せmarginを排除 */
 }
 
 /* 個々のセグメント（極小の長方形） */
 .gauge-segment {
     flex: 1;
     height: 100%;
-    background: rgb(255, 43, 43); /* 消灯状態：消灯を表すサイバーレッドの残光 */
-    border: 0px solid rgb(255, 255, 255); /* 消灯状態の縁（暗いレッド半透明） */
+    background: rgb(255, 43, 43);
+    /* 消灯状態：消灯を表すサイバーレッドの残光 */
+    border: 0px solid rgb(255, 255, 255);
+    /* 消灯状態の縁（暗いレッド半透明） */
     border-radius: 0.5px;
     transition: background 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
@@ -996,21 +1164,24 @@
 /* 点灯状態の通常セグメント (ネオングリーン) */
 .gauge-segment.active.segment-bar-fill {
     background: #00ff66;
-    border-color: #00ff66; /* 縁も明るく塗りつぶす */
+    border-color: #00ff66;
+    /* 縁も明るく塗りつぶす */
     box-shadow: 0 0 3px rgba(0, 255, 102, 0.8);
 }
 
 /* 警告状態のセグメント (アンバーオレンジ・50%未満) */
 .gauge-segment.active.segment-bar-fill.warning {
     background: #ffaa00;
-    border-color: #ffaa00; /* 縁も明るく塗りつぶす */
+    border-color: #ffaa00;
+    /* 縁も明るく塗りつぶす */
     box-shadow: 0 0 3px rgba(255, 170, 0, 0.8);
 }
 
 /* 危険状態のセグメント (エヴァ警告レッド・20%未満) */
 .gauge-segment.active.segment-bar-fill.critical {
     background: #ef4444;
-    border-color: #ffc5c5; /* 縁も明るく塗りつぶす */
+    border-color: #ffc5c5;
+    /* 縁も明るく塗りつぶす */
     box-shadow: 0 0 3px rgba(239, 68, 68, 0.9);
 }
 
@@ -1048,26 +1219,38 @@
     padding: 1px 0px;
     border-radius: 2px;
     background: rgba(var(--nerv-bg-dark), 0.6);
-    border: 1px solid rgba(255, 102, 0, 0.15); /* アンバーオレンジの極細境界線 */
+    border: 1px solid rgba(255, 102, 0, 0.15);
+    /* アンバーオレンジの極細境界線 */
     font-family: var(--font-tt);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-    height: 20px; /* 進捗表示の縦2行構成をゆったりと格納するために高さを20pxに拡張 */
+    height: 20px;
+    /* 進捗表示の縦2行構成をゆったりと格納するために高さを20pxに拡張 */
     overflow: hidden;
     position: relative;
 }
 
 /* 達成率100%の任務の点滅アニメーション（0.5秒間隔） */
 @keyframes quest-blink {
-    0%, 49% { opacity: 1; }
-    50%, 100% { opacity: 0.2; }
+
+    0%,
+    49% {
+        opacity: 1;
+    }
+
+    50%,
+    100% {
+        opacity: 0.2;
+    }
 }
+
 .quest-slot-row.quest-mission-ready {
     animation: quest-blink 1s infinite;
 }
 
 /* 任務番号表示 (左固定) */
 .quest-id {
-    color: #ff6600; /* NERVアンバーオレンジ */
+    color: #ff6600;
+    /* NERVアンバーオレンジ */
     font-weight: bold;
     margin-right: 0px;
     flex-shrink: 0;
@@ -1105,23 +1288,30 @@
 /* 進捗パネル：デフォルト非表示 */
 .quest-progress-panel {
     opacity: 0;
-    transform: translateY(8px); /* 下からスライドイン */
+    transform: translateY(8px);
+    /* 下からスライドイン */
     display: flex;
-    flex-direction: column; /* 進捗率テキストとセグメントゲージを縦2行に並べる */
-    align-items: flex-start; /* 左寄せ */
-    justify-content: center; /* 縦方向中央揃え */
-    gap: 1px; /* 縦の隙間を極限まで詰めて高さをコンパクトに抑制 */
+    flex-direction: column;
+    /* 進捗率テキストとセグメントゲージを縦2行に並べる */
+    align-items: flex-start;
+    /* 左寄せ */
+    justify-content: center;
+    /* 縦方向中央揃え */
+    gap: 1px;
+    /* 縦の隙間を極限まで詰めて高さをコンパクトに抑制 */
 }
 
 /* トグル時（show-progress クラス付与時） */
 .quest-slot-row.show-progress .quest-name-panel {
     opacity: 0;
-    transform: translateY(-8px); /* 上へ消える */
+    transform: translateY(-8px);
+    /* 上へ消える */
 }
 
 .quest-slot-row.show-progress .quest-progress-panel {
     opacity: 1;
-    transform: translateY(0); /* 定位置に出現 */
+    transform: translateY(0);
+    /* 定位置に出現 */
 }
 
 /* 任務スクロールテキスト本体 */
@@ -1137,21 +1327,26 @@
     content: attr(data-text);
     margin-left: 2em;
 }
+
 .quest-text-scroll.scroll {
     position: absolute;
     left: 0;
     animation: quest-text-bounce 10s linear infinite;
 }
+
 @keyframes quest-text-bounce {
     0% {
         transform: translateX(0);
     }
+
     2% {
         transform: translateX(0);
     }
+
     48% {
         transform: translateX(calc(-50% - 1em));
     }
+
     100% {
         transform: translateX(calc(-50% - 1em));
     }
@@ -1159,7 +1354,8 @@
 
 /* 進捗テキスト */
 .quest-progress-text {
-    color: #ffaa00; /* 進捗はアンバー調 */
+    color: #ffaa00;
+    /* 進捗はアンバー調 */
     font-weight: bold;
     font-size: 7.5px;
 }
@@ -1170,14 +1366,19 @@
  */
 .quest-progress-segment-gauge {
     display: flex;
-    gap: 1px; /* 各セグメントの間の隙間 */
+    gap: 1px;
+    /* 各セグメントの間の隙間 */
     justify-content: flex-start;
     align-items: center;
-    width: 45px; /* ゲージ全体の横幅（コンパクトに収まるよう45pxに指定） */
-    height: 5px;  /* ゲージの高さ */
-    background: rgba(0, 0, 0, 0.4); /* 暗い背景 */
+    width: 45px;
+    /* ゲージ全体の横幅（コンパクトに収まるよう45pxに指定） */
+    height: 5px;
+    /* ゲージの高さ */
+    background: rgba(0, 0, 0, 0.4);
+    /* 暗い背景 */
     padding: 0;
-    border: 1px solid rgba(255, 102, 0, 0.3); /* NERVアンバーオレンジの極細境界線 */
+    border: 1px solid rgba(255, 102, 0, 0.3);
+    /* NERVアンバーオレンジの極細境界線 */
     border-radius: 1px;
     margin-right: 2px;
     flex-shrink: 0;
@@ -1185,13 +1386,17 @@
 
 /* 任務ゲージ専用のセグメント装飾定義（点灯・消灯色の割り当て） */
 .quest-progress-segment-gauge .gauge-segment {
-    background: rgba(255, 102, 0, 0.08); /* 消灯状態：ほのかに赤熱するアンバーの残光を表現 */
+    background: rgba(255, 102, 0, 0.08);
+    /* 消灯状態：ほのかに赤熱するアンバーの残光を表現 */
     border: 0px;
     border-radius: 0.5px;
 }
+
 .quest-progress-segment-gauge .gauge-segment.active {
-    background: #ff6600; /* 点灯状態：鮮烈なアンバーオレンジで発光 */
-    box-shadow: 0 0 3px rgba(255, 102, 0, 0.85); /* ネオン感を引き出すグロー効果 */
+    background: #ff6600;
+    /* 点灯状態：鮮烈なアンバーオレンジで発光 */
+    box-shadow: 0 0 3px rgba(255, 102, 0, 0.85);
+    /* ネオン感を引き出すグロー効果 */
 }
 
 /* =====================================================================
@@ -1207,11 +1412,14 @@
 
 /* hud-control-barの横画面（position-right）時のmini-infoレイアウト */
 #hud-control-bar.position-right #hud-mini-info {
-    writing-mode: horizontal-tb !important; /* Y軸（縦方向）にアイテムを積み重ねるため標準モード */
+    writing-mode: horizontal-tb !important;
+    /* Y軸（縦方向）にアイテムを積み重ねるため標準モード */
     display: flex;
-    flex-direction: column-reverse; /* 下から上へ項目を配置 */
+    flex-direction: column-reverse;
+    /* 下から上へ項目を配置 */
     align-items: center;
-    justify-content: space-evenly; /* Y軸方向での均等配置 */
+    justify-content: space-evenly;
+    /* Y軸方向での均等配置 */
     gap: 8px;
     height: 100%;
     width: 100%;
@@ -1229,9 +1437,11 @@
     border: 1px solid rgba(0, 255, 102, 0.25);
     color: var(--text-color);
     white-space: nowrap;
-    writing-mode: vertical-rl; /* 各バッジ内のテキストのみ縦書き回転 */
+    writing-mode: vertical-rl;
+    /* 各バッジ内のテキストのみ縦書き回転 */
     text-orientation: mixed;
-    transform: rotate(180deg); /* 読みやすい -90° 回転 */
+    transform: rotate(180deg);
+    /* 読みやすい -90° 回転 */
     box-shadow: inset 0 0 4px rgba(0, 255, 102, 0.1);
     text-align: center;
 }
@@ -1247,8 +1457,10 @@
     align-items: center;
     justify-content: space-evenly;
     gap: 4px;
-    writing-mode: horizontal-tb !important; /* 横画面の vertical-rl 継承をリセット。flex-direction: row との衝突でテキスト横倒しを防止 */
-    text-orientation: initial !important; /* 同上のテキスト向きリセット */
+    writing-mode: horizontal-tb !important;
+    /* 横画面の vertical-rl 継承をリセット。flex-direction: row との衝突でテキスト横倒しを防止 */
+    text-orientation: initial !important;
+    /* 同上のテキスト向きリセット */
     transform: none !important;
 }
 
@@ -1264,6 +1476,7 @@ body.panel-expanded #hud-control-bar,
     border-color: rgba(234, 179, 8, 0.35);
     text-shadow: 0 0 2px rgba(234, 179, 8, 0.5);
 }
+
 #hud-mini-conn.ok {
     color: #86efac;
     border-color: rgba(134, 239, 172, 0.35);
@@ -1275,16 +1488,19 @@ body.panel-expanded #hud-control-bar,
     border-color: rgba(34, 197, 94, 0.35);
     text-shadow: 0 0 3px rgba(34, 197, 94, 0.6);
 }
+
 #hud-mini-state.idle {
     color: #eab308;
     border-color: rgba(234, 179, 8, 0.35);
 }
+
 #hud-mini-state.sleep {
     color: #6b7280;
     border-color: rgba(107, 114, 128, 0.35);
 }
 
-#hud-mini-bw, #hud-mini-fps {
+#hud-mini-bw,
+#hud-mini-fps {
     color: var(--accent-color);
     border-color: rgba(0, 255, 102, 0.25);
     text-shadow: 0 0 4px var(--accent-glow);
@@ -1308,11 +1524,16 @@ body.panel-expanded #hud-control-bar,
     /* 横画面用CSSカスタムプロパティ */
     :root {
         --panel-width: 340px;
-        --hud-control-bar-width: 30px; /* HUD制御バーの幅 (縦帯スタイル) */
-        --hud-control-bar-height: 32px; /* HUD制御バーの高さ */
-        --hud-gap: 4px;               /* HUDとcontrol-barの間のギャップ */
-        --game-margin-left: 4px;       /* 左側最小余白 */
-        --hud-transition-timing: cubic-bezier(0.4, 0, 0.2, 1); /* HUDスライドアニメーションのイージング関数 */
+        --hud-control-bar-width: 30px;
+        /* HUD制御バーの幅 (縦帯スタイル) */
+        --hud-control-bar-height: 32px;
+        /* HUD制御バーの高さ */
+        --hud-gap: 4px;
+        /* HUDとcontrol-barの間のギャップ */
+        --game-margin-left: 4px;
+        /* 左側最小余白 */
+        --hud-transition-timing: cubic-bezier(0.4, 0, 0.2, 1);
+        /* HUDスライドアニメーションのイージング関数 */
         /* [task15] 追加: #viewport の gap としてHUDバーとゲーム画面の間の隙間 */
         --viewport-padding: 4px;
         /* [task15] 追加: #trackpad-area の固定幅 */
@@ -1337,7 +1558,8 @@ body.panel-expanded #hud-control-bar,
         flex-direction: row;
         justify-content: center;
         align-items: center;
-        padding-bottom: 0; /* [task26/A-1] 横画面限定で下端 safe-area padding を撤廃（黒帯解消・content 375pt に復帰） */
+        padding-bottom: 0;
+        /* [task26/A-1] 横画面限定で下端 safe-area padding を撤廃（黒帯解消・content 375pt に復帰） */
     }
 
     /* -----------------------------------------------------------------
@@ -1358,8 +1580,10 @@ body.panel-expanded #hud-control-bar,
          *   高さ駆動レイアウト（方針 B）が成立する。
          * - max-height: 100%（[Task17]）は維持（一致値 375pt・冗長だが防御として保持）。
          * - flex: 1 1 auto のまま横方向は body 幅 812 − margin 4×2 = 804pt にストレッチ（不変）。 */
-        height: 100%; /* [task26/B-1] */
-        max-height: 100%; /* [Task17] 右/左モード時の高さ膨張(上下見切れ)を防止（維持） */
+        height: 100%;
+        /* [task26/B-1] */
+        max-height: 100%;
+        /* [Task17] 右/左モード時の高さ膨張(上下見切れ)を防止（維持） */
         border-bottom: none;
         border-right: 2px solid var(--accent-color);
         margin-left: var(--game-margin-left);
@@ -1368,8 +1592,10 @@ body.panel-expanded #hud-control-bar,
         margin-bottom: 0;
         /* flexboxコンテナとして設定（flex-directionはhud-pos-*クラスで切り替え） */
         display: flex;
-        flex-direction: row; /* デフォルト: right モード */
-        gap: var(--viewport-padding, 4px); /* HUDバーとゲーム画面の間の隙間。
+        flex-direction: row;
+        /* デフォルト: right モード */
+        gap: var(--viewport-padding, 4px);
+        /* HUDバーとゲーム画面の間の隙間。
             [task26/review-M4] gap は flex item 間のスペース（W3C CSS Flexbox Level 1 §4.5）であり、
             #hud-control-bar.position-bottom の margin-bottom（A-2）は item 外側の退避量。
             両者は独立してレイアウトに反映される（重複計算はしない・一次レビュー Major #4 は二次レビューで誤認と判定済み）。 */
@@ -1379,12 +1605,15 @@ body.panel-expanded #hud-control-bar,
     #viewport.hud-pos-right {
         flex-direction: row;
     }
+
     #viewport.hud-pos-left {
         flex-direction: row-reverse;
     }
+
     #viewport.hud-pos-top {
         flex-direction: column-reverse;
     }
+
     #viewport.hud-pos-bottom {
         flex-direction: column;
     }
@@ -1414,7 +1643,8 @@ body.panel-expanded #hud-control-bar,
         justify-content: center;
         align-items: center;
         width: auto;
-        height: 100%; /* [task26/B-2] #viewport の definite 高さ（375pt）を基準に幅が aspect-ratio 5/3 で導出 */
+        height: 100%;
+        /* [task26/B-2] #viewport の definite 高さ（375pt）を基準に幅が aspect-ratio 5/3 で導出 */
         max-width: 100%;
         max-height: 100%;
         overflow: hidden;
@@ -1504,7 +1734,8 @@ body.panel-expanded #hud-control-bar,
      *   （下端中央）と重複しない・§5.2 既知制約）。
      * - top モードは横画面 inset-top = 0（実測）のため不要だが、防御的に A-3 を付与。 */
     body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-bottom {
-        margin-bottom: env(safe-area-inset-bottom, 0px); /* [task26/A-2] home indicator ゾーンからの退避（横画面 21pt） */
+        margin-bottom: env(safe-area-inset-bottom, 0px);
+        /* [task26/A-2] home indicator ゾーンからの退避（横画面 21pt） */
     }
 
     /* [task26/A-3] top モード: 横画面の safe-area-inset-top は実測 0pt（ノッチ/Dynamic Island は
@@ -1513,7 +1744,8 @@ body.panel-expanded #hud-control-bar,
      * env() が 0px のときはレイアウトに変化なし。top モードでバー上端が safe area 内に留まるよう
      * 保証する（bottom モード A-2 との対称性）。 */
     body:not(.modal-open):not(.panel-expanded) #hud-control-bar.position-top {
-        margin-top: env(safe-area-inset-top, 0px); /* [task26/A-3] 横画面 inset-top（実測 0pt・防御的） */
+        margin-top: env(safe-area-inset-top, 0px);
+        /* [task26/A-3] 横画面 inset-top（実測 0pt・防御的） */
     }
 
     /* 右/左配置モードのmini-infoレイアウト */
@@ -1570,7 +1802,8 @@ body.panel-expanded #hud-control-bar,
         max-width: 80vw;
         transform: translateX(100%);
         transition: transform 0.3s var(--hud-transition-timing);
-        z-index: 98; /* [FIX] Step 3: パネルを背面へ移動（ボタン(1000) > オーバーレイ(99) > パネル(98) の階層構造を明確化） */
+        z-index: 98;
+        /* [FIX] Step 3: パネルを背面へ移動（ボタン(1000) > オーバーレイ(99) > パネル(98) の階層構造を明確化） */
         background: var(--bg-color);
         box-shadow: -4px 0 20px rgba(0, 0, 0, 0.6);
         /* [task15] trackpadは固定サイズを維持し、縮小しない */
@@ -1630,23 +1863,27 @@ body.panel-expanded #hud-control-bar,
      * ----------------------------------------------------------------- */
     #hud-container {
         position: absolute;
-        top: calc(var(--hud-bar-height, 32px) + var(--hud-gap, 4px)); /* 36px */
+        top: calc(var(--hud-bar-height, 32px) + var(--hud-gap, 4px));
+        /* 36px */
         left: 2px;
         right: 2px;
         bottom: 2px;
         z-index: 100;
         box-sizing: border-box;
-        pointer-events: auto; /* イベント判定を許可し、JS側で閾値制御（批判的レビュー対応） */
+        pointer-events: auto;
+        /* イベント判定を許可し、JS側で閾値制御（批判的レビュー対応） */
     }
 
     /* 折り畳み時: #hud-control-bar (32px) が存在するため top: 68px */
     body:not(.panel-expanded) #hud-container {
-        top: calc(var(--hud-bar-height, 32px) + var(--hud-control-bar-height, 32px) + var(--hud-gap, 4px)); /* 68px */
+        top: calc(var(--hud-bar-height, 32px) + var(--hud-control-bar-height, 32px) + var(--hud-gap, 4px));
+        /* 68px */
     }
 
     /* 展開時: #hud-control-bar は display: none のため top: 36px に復帰 */
     body.panel-expanded #hud-container {
-        top: calc(var(--hud-bar-height, 32px) + var(--hud-gap, 4px)); /* 36px */
+        top: calc(var(--hud-bar-height, 32px) + var(--hud-gap, 4px));
+        /* 36px */
     }
 
     /* [一次レビュー🚨Critical対応] HUD内のインタラクティブ要素へのクリック透過解除 */
@@ -1680,7 +1917,8 @@ body.panel-expanded #hud-control-bar,
 /* 極小端末用（500px以下）: 幅縮小（二次レビュー指摘6反映） */
 @media (orientation: landscape) and (max-width: 500px) {
     :root {
-        --hud-control-bar-width: 28px; /* 縮小 */
+        --hud-control-bar-width: 28px;
+        /* 縮小 */
     }
 
     #hud-control-bar {
@@ -1694,7 +1932,8 @@ body.panel-expanded #hud-control-bar,
     }
 
     #hud-control-bar #hud-mini-info .hud-mini-item {
-        font-size: 7px; /* フォントサイズ縮小 */
+        font-size: 7px;
+        /* フォントサイズ縮小 */
         padding: 2px 1px;
     }
 }
@@ -1723,11 +1962,14 @@ body.panel-expanded #hud-control-bar,
 /* 縦画面（Portrait）時のHUD表示復元（#trackpad内に完全収容） */
 @media (orientation: portrait) {
     #hud-container {
-        display: flex !important; /* 既存の display:none を確実に上書き */
-        visibility: visible !important; /* 既存の visibility:hidden を確実に上書き */
+        display: flex !important;
+        /* 既存の display:none を確実に上書き */
+        visibility: visible !important;
+        /* 既存の visibility:hidden を確実に上書き */
         opacity: 1 !important;
         position: absolute;
-        top: var(--hud-bar-height, 32px); /* CSS変数でシステムモニターバーの高さに追従 */
+        top: var(--hud-bar-height, 32px);
+        /* CSS変数でシステムモニターバーの高さに追従 */
         left: 2px;
         right: 2px;
         bottom: 2px;
@@ -1739,7 +1981,7 @@ body.panel-expanded #hud-control-bar,
     }
 
     /* 縦画面時、HUDコンテナ内の主要要素を強制的に表示可能化 */
-    #hud-container > * {
+    #hud-container>* {
         visibility: visible !important;
         opacity: 1 !important;
     }
