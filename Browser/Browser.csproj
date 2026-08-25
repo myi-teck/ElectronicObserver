@@ -146,6 +146,10 @@
     <Compile Include="CefOp\ScreenShotPacket.cs" />
     <Compile Include="BrowserPrivacyFilterManager.cs" />
     <Compile Include="RemoteController.cs" />
+    <Compile Include="RemoteController.Auth.cs" />
+    <Compile Include="RemoteController.HttpApi.cs" />
+    <Compile Include="RemoteController.Capture.cs" />
+    <Compile Include="RemoteController.WebSocket.cs" />
     <Compile Include="RemoteDedicatedLog.cs" />
     <Compile Include="CefOp\SelfHostedHtml.cs" />
     <Compile Include="FormBrowser.cs">
