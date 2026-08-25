@@ -60,7 +60,7 @@ namespace Browser
 			public DateTime CreatedAt { get; set; }
 			public DateTime ExpiresAt { get; set; }    // 有効期限（発行から30日）
 
-			// 2026/07/22 myi 新規作成（Grace Period: 並行リクエストによるRace Condition対策）
+			// （Grace Period: 並行リクエストによるRace Condition対策）
 			public DateTime? RevokedAt { get; set; }        // 破棄された日時（null = 未破棄）
 			public string ReplacedByToken { get; set; }     // 置き換えられた新トークン
 
@@ -77,7 +77,7 @@ namespace Browser
 				return DateTime.UtcNow > ExpiresAt;
 			}
 
-			// 2026/07/22 myi 新規作成（Grace Period内なら有効とみなす）
+			// （Grace Period内なら有効とみなす）
 			public bool IsValid()
 			{
 				return !IsExpired() && (RevokedAt == null || DateTime.UtcNow - RevokedAt.Value < TimeSpan.FromSeconds(10));
@@ -93,9 +93,6 @@ namespace Browser
 		//                  Grace Period: 旧トークンは破棄されてから10秒間は有効とみなし、
 		//                  並行リクエストによるRace Conditionを防ぎます。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/14
-		// version        : 4.00 (Grace Period対応, 無効トークン検知時のCookie消去対応)
 		//------------------------------------------------------------------------------------
 		private bool IsAuthenticated(HttpListenerRequest req, HttpListenerResponse res)
 		{
@@ -167,14 +164,14 @@ namespace Browser
 					// refresh_token も期限切れ（またはGrace Period外） → 削除
 					_refreshTokens.TryRemove(refreshToken, out _);
 
-					// 2026/07/22 myi 新規追加（P0: 無効トークン検知時のCookie消去）
+					// （無効トークン検知時のCookie消去）
 					// ブラウザの無効Cookieを消去して、次回以降の同じ401エラーの繰り返しを防ぐ
 					ClearCookie(res, "session_id");
 					ClearCookie(res, "refresh_token");
 				}
 				else
 				{
-					// 2026/07/22 myi 修正（P0: ストアにトークンが存在しない場合のCookie消去）
+					// （ストアにトークンが存在しない場合のCookie消去）
 					// クライアントが保持するCookieはサーバー側のストアに存在しない無効なトークンであるため、
 					// ブラウザのCookieを消去して次回以降の同じ401エラーの繰り返しを防ぐ
 					ClearCookie(res, "session_id");
@@ -292,9 +289,6 @@ namespace Browser
 		// 概要           : 前回実行から5分以上経過している場合にのみCleanupExpiredSessions()を実行します。
 		//                  /screen.webp や /hud などの高頻度エンドポイントで無駄な走査を防ぎます。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/22
-		// version        : 1.00 (5分間隔のスキップ条件追加)
 		//------------------------------------------------------------------------------------
 		private void CleanupExpiredSessionsIfNeeded()
 		{
@@ -331,7 +325,7 @@ namespace Browser
 			var expiredRefreshKeys = new List<string>();
 			foreach (var kvp in _refreshTokens)
 			{
-				// 2026/07/22 myi 修正（P2: Grace Periodトークンのクリーンアップ実装）
+				// （Grace Periodトークンのクリーンアップ実装）
 				// 有効期限切れのトークンに加え、RevokedAtが設定されており10秒以上経過した
 				// グレース期間トークンもクリーンアップ対象に含める（メモリリーク防止）
 				bool isExpired = kvp.Value.IsExpired();
@@ -358,9 +352,6 @@ namespace Browser
 		//                  ブルートフォース対策として、IPアドレスごとの失敗回数を追跡し、
 		//                  一定回数を超えると一定時間リクエストをブロックします。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/14
-		// version        : 3.00 (クエリパラメータ認証廃止, ブルートフォース対策, 定数時間比較導入)
 		//------------------------------------------------------------------------------------
 		private void HandleLogin(HttpListenerRequest req, HttpListenerResponse res)
 		{
@@ -455,9 +446,6 @@ namespace Browser
 		// 概要           : 2つの文字列を定数時間で比較します。
 		//                  タイミング攻撃を防ぐために、すべての文字を走査します。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/22
-		// version        : 1.00
 		//------------------------------------------------------------------------------------
 		private static bool ConstantTimeEquals(string a, string b)
 		{
@@ -477,9 +465,6 @@ namespace Browser
 		// 処理ブロック名 : IsIpBlocked
 		// 概要           : 指定されたIPアドレスがブルートフォースブロック対象かどうかを確認します。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/22
-		// version        : 1.00
 		//------------------------------------------------------------------------------------
 		private bool IsIpBlocked(string ip)
 		{
@@ -501,9 +486,6 @@ namespace Browser
 		// 処理ブロック名 : RecordLoginFailure
 		// 概要           : 指定されたIPアドレスのログイン失敗を記録します。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/22
-		// version        : 1.00
 		//------------------------------------------------------------------------------------
 		private void RecordLoginFailure(string ip)
 		{
@@ -519,9 +501,6 @@ namespace Browser
 		// 処理ブロック名 : SendJsonResponse
 		// 概要           : JSON レスポンスを簡単に送信するヘルパーです。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/14
-		// version        : 1.00
 		//------------------------------------------------------------------------------------
 		private void SendJsonResponse(HttpListenerResponse res, string json)
 		{
@@ -537,9 +516,6 @@ namespace Browser
 		// 処理ブロック名 : ApplySecurityHeaders
 		// 概要           : レスポンスに基本的なセキュリティヘッダーを付与します。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/22
-		// version        : 1.00
 		//------------------------------------------------------------------------------------
 		private void ApplySecurityHeaders(HttpListenerResponse res)
 		{
@@ -581,7 +557,7 @@ namespace Browser
 			res.Close();
 		}
 
-		// [task22 E2E 修正レビュー E-1（一次 #1）] JSON boolean リテラルの定数化・ヘルパー化:
+		// JSON boolean リテラルの定数化・ヘルパー化:
 		// C# の bool.ToString() は仕様上大文字 "True"/"False" を返すため、そのまま文字列連結すると
 		// 不正 JSON となる（JS の JSON.parse が SyntaxError: 実ブラウザ E2E 検証で発見、設計書 §15.1）。
 		// 定数 + ヘルパーに集約し、大文字回帰を構造的に防止する（JSON boolean 出力はすべてこの経路で統一）。
@@ -589,7 +565,7 @@ namespace Browser
 		private const string JsonFalse = "false";
 
 		/// <summary>
-		/// [task22 E2E 修正レビュー E-1] 値に対応する JSON boolean リテラル（小文字 true/false、JSON 仕様に準拠）を返す。
+		/// 値に対応する JSON boolean リテラル（小文字 true/false、JSON 仕様に準拠）を返す。
 		/// </summary>
 		private static string WriteJsonBool(bool value)
 		{
@@ -597,35 +573,35 @@ namespace Browser
 		}
 
 		/// <summary>
-		/// [task22] ログイン状態（= ログアウト空白ページ状態）を JSON で返却する。
+		/// ログイン状態（= ログアウト空白ページ状態）を JSON で返却する。
 		/// リモートクライアントがポーリングし、loggedOut == true で /logout-page へリダイレクトする。
 		/// </summary>
 		private void SendLoginState(HttpListenerResponse res)
 		{
 			bool loggedOut = _parent.IsLogoutBlank;   // volatile 読み込み（HTTP スレッドから安全）
-			// [task22 一次コードレビュー P-4] JSON を文字列連結で組み立てる意図:
+			// JSON を文字列連結で組み立てる意図:
 			// 固定キーの JSON 2 つ（loggedOut: bool / ts: long）のみのシンプルなレスポンスであり、
 			// System.Text.Json の導入は新規依存を伴うため最小差分原則で文字列連結を維持する。
 			// bool は true/false として、DateTime.Now.Ticks（long）は暗黙の ToString で JSON 数値として
 			// 出力される（JS の JSON.parse で boolean / number として正しく解析可能）。
-			// [task22 E2E 修正 2026-08-21] C# の bool.ToString() は仕様上大文字 "True"/"False" を返すため、
+			// C# の bool.ToString() は仕様上大文字 "True"/"False" を返すため、
 			// そのまま連結すると不正 JSON となる（JS 側 res.json()=JSON.parse が SyntaxError を投げ、
 			// remote 画面の /logout-page 遷移・/ 復帰が永発しなくなる: 実ブラウザ E2E 検証で発見）。
 			// JSON 仕様に従い小文字 true/false に明示する。
-			// [task22 E2E 修正レビュー E-1] boolean 出力は WriteJsonBool() に統一（大文字回帰の構造防止）。
-			// [task22 E2E 修正レビュー E-2/E-7] TODO（将来、設計書 §15.3）: 本メソッドの文字列連結による JSON 組立は
+			// boolean 出力は WriteJsonBool() に統一（大文字回帰の構造防止）。
+			// TODO（将来、設計書 §15.3）: 本メソッドの文字列連結による JSON 組立は
 			// 最小差分原則（固定キー 2 つ・エスケープ不要値のみ）での暫定対応。bool/long 以外の値
 			// （double・文字列等）が追加される場合、不正 JSON になるリスクがあるため、その際は
 			// 標準シリアライザ（System.Web.Script.Serialization.JavaScriptSerializer 等のラッパ）へ移行する。
 			string json = "{\"loggedOut\":" + WriteJsonBool(loggedOut) + ",\"ts\":" + DateTime.Now.Ticks + "}";
-			// [task22] キャッシュ制御: ブラウザ/プロキシがレスポンスをキャッシュしないよう付与
+			// キャッシュ制御: ブラウザ/プロキシがレスポンスをキャッシュしないよう付与
 			// （5 秒間隔のポーリング対象のため、loggedOut 状態変化の検出遅延がポーリング間隔を超えないことを保証）
 			res.Headers["Cache-Control"] = "no-cache, must-revalidate";
 			SendJsonResponse(res, json);
 		}
 
 		/// <summary>
-		/// [task22] ログアウト中画面（logout.html の remote モード）を配信する。
+		/// ログアウト中画面（logout.html の remote モード）を配信する。
 		/// ファイル探索は SelfHostedHtml（login.html と同一ロジック）。
 		/// ファイル不在時はインラインフォールバック HTML を配信する（サイレントスルーしない）。
 		/// </summary>
@@ -641,7 +617,7 @@ namespace Browser
 			{
 				// remote モード: 「ログインページへ」ボタンは /control?action=navigate_login を使用するため
 				// __LOGIN_URL__ は空文字で置換（data-login-url="" となり JS 側で if(u) ガード）
-				// [task22 二次コードレビュー SS-3] 2 つのプレースホルダは相互に独立な文字列であり置換順序は
+				// 2 つのプレースホルダは相互に独立な文字列であり置換順序は
 				// 結果に影響しない。連鎖 Replace を個別変数へ分解する案は最小差分原則で現状維持し、
 				// 置換対象・結果を明記したコメントで可読性を担保する。
 				html = html.Replace("__MODE__", "remote").Replace("__LOGIN_URL__", "");
@@ -656,7 +632,7 @@ namespace Browser
 			res.Close();
 		}
 
-		// [task22] logout.html 不在時のフォールバック（remote モード挙動を自己完結で再現）
+		// logout.html 不在時のフォールバック（remote モード挙動を自己完結で再現）
 		private static readonly string LogoutPageFallbackHtml = @"<!DOCTYPE html>
 <html lang=""ja"">
 <head>
@@ -682,7 +658,7 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 	var btn = document.getElementById('relogin-btn');
 	var hint = document.getElementById('hint');
 	btn.addEventListener('click', function () {
-		// [task22] 連打防止: クリック直後に disabled 化、失敗時のみ再活性化（logout.html と同方針）
+		// 連打防止: クリック直後に disabled 化、失敗時のみ再活性化（logout.html と同方針）
 		btn.disabled = true;
 		hint.textContent = '要求送信中...';
 		fetch('/control?action=navigate_login', { cache: 'no-store' })
@@ -693,7 +669,7 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 	setInterval(function () {
 		fetch('/login-state', { cache: 'no-store' })
 			.then(function (res) {
-				// [task22 二次コードレビュー SS-2] 401（リモート認証セッション切れ）は /login-page へリダイレクト（logout.html と同方針）
+				// 401（リモート認証セッション切れ）は /login-page へリダイレクト（logout.html と同方針）
 				if (res.status === 401) { window.location.href = '/login-page'; return null; }
 				return res.ok ? res.json() : null;
 			})
@@ -770,7 +746,7 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 </html>";
 		}
 
-		// 2026/07/22 myi 新規作成（ブルートフォース対策：IPアドレスごとのログイン失敗追跡）
+		// （ブルートフォース対策：IPアドレスごとのログイン失敗追跡）
 		private readonly ConcurrentDictionary<string, (int count, DateTime lastAttempt)> _loginAttempts = new ConcurrentDictionary<string, (int count, DateTime lastAttempt)>();
 		private const int MaxLoginAttempts = 5;
 		private const int LoginBlockMinutes = 15;
@@ -781,7 +757,7 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 		// リフレッシュトークンの有効期間（30日）
 		private const int RefreshTokenDays = 30;
 
-		// 2026/07/22 myi 新規作成（クリーンアップ最適化：前回実行時刻を保持）
+		// （クリーンアップ最適化：前回実行時刻を保持）
 		private DateTime _lastCleanupTime = DateTime.MinValue;
 	}
 }

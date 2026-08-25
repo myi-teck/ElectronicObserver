@@ -62,12 +62,12 @@ namespace Browser
 				private long _yBits;
 				private int _hasValue; // 0: false, 1: true (Interlocked 管理)
 	
-				// [task19 P4] LastAccessTime を long ticks（UTC）として Interlocked/Volatile 管理
+				// LastAccessTime を long ticks（UTC）として Interlocked/Volatile 管理
 				// DateTime 構造体のプレーン書き込みは 32bit 環境で Torn Read  가능성이あるため、
 				// 64bit 値の原子性を保証する Interlocked.Exchange / Volatile.Read に統一
 				private long _lastAccessTicks = DateTime.UtcNow.Ticks;
 	
-				// [task19 v5] HasValue プロパティ（外部レビュー Major 6 修正: アトミック保護維持）
+				// HasValue プロパティ（アトミック保護維持）
 				public bool HasValue => Volatile.Read(ref _hasValue) == 1;
 	
 				public double X => BitConverter.Int64BitsToDouble(Volatile.Read(ref _xBits));
@@ -75,11 +75,11 @@ namespace Browser
 	
 				/// <summary>
 				/// 最終アクセス時刻（エバクションポリシーで使用）
-				/// [task19 P4] Volatile.Read によるアトミック読み取り
+				/// Volatile.Read によるアトミック読み取り
 				/// </summary>
 				public DateTime LastAccessTime => new DateTime(Volatile.Read(ref _lastAccessTicks), DateTimeKind.Utc);
 	
-				// [task19 P4] 最終アクセス時刻をアトミックに更新（内部共通ヘルパ）
+				// 最終アクセス時刻をアトミックに更新（内部共通ヘルパ）
 				private void UpdateLastAccessTicks()
 				{
 					Interlocked.Exchange(ref _lastAccessTicks, DateTime.UtcNow.Ticks);
@@ -98,7 +98,7 @@ namespace Browser
 				}
 	
 				/// <summary>
-				/// [task19] x, y をセットし HasValue を true にする
+				/// x, y をセットし HasValue を true にする
 				/// </summary>
 				public void Touch(double x, double y)
 				{
@@ -109,9 +109,9 @@ namespace Browser
 				}
 	
 				/// <summary>
-				/// [task19] LastAccessTime のみを更新（タイムアウト状態をリセット）
+				/// LastAccessTime のみを更新（タイムアウト状態をリセット）
 				/// 命名は Touch(double,double) との紛らわしさを避けるため UpdateLastAccess とした
-				/// [task19 P4] Interlocked によるアトミック更新に変更
+				/// Interlocked によるアトミック更新に変更
 				/// </summary>
 				public void UpdateLastAccess()
 				{
@@ -126,7 +126,7 @@ namespace Browser
 		{
 			try
 			{
-				// 2026/07/29 myi 修正（セッション分離対応）
+				// （セッション分離対応）
 				// HTTPモードでもセッションIDベースのカーソル状態を使用
 				CleanupExpiredHttpCursorSessionsIfNeeded();
 
@@ -146,18 +146,18 @@ namespace Browser
 				// 絶対割合座標 (0.0〜1.0) を受け取り、現在のポインタ座標に適用します。
 				if (action == "move" && double.TryParse(xStr, out double x) && double.TryParse(yStr, out double y))
 				{
-					// [task19 P1] Touch(x,y) で座標更新と HasValue=true をアトミックに設定
+					// Touch(x,y) で座標更新と HasValue=true をアトミックに設定
 					// 旧実装は SetX/SetY のみで HasValue が永遠に false のため、
 					// TriggerMouseClickAsync のフォールバックで (0.5, 0.5) が常に優先されていた
 					cursorState.Touch(Math.Max(0, Math.Min(1.0, x)), Math.Max(0, Math.Min(1.0, y)));
 
 					await TriggerMouseMoveAsync(cursorState);
-					// [task14 §3.5b] サーバ側アクション実行ログ（HTTP 経路）
+					// サーバ側アクション実行ログ（HTTP 経路）
 					AppendServerActionLog("move", x, y, sessionId, "http");
 				}
 				else if (action == "click")
 				{
-					// [task14 §3.5b] 座標パース失敗時は null を記録
+					// 座標パース失敗時は null を記録
 					double? cx = null;
 					double? cy = null;
 					if (double.TryParse(xStr, out double cxx) && double.TryParse(yStr, out double cyy))
@@ -167,17 +167,17 @@ namespace Browser
 						cursorState.Touch(Math.Max(0, Math.Min(1.0, cxx)), Math.Max(0, Math.Min(1.0, cyy)));
 					}
 					await TriggerMouseClickAsync(cursorState);
-					// [task14 §3.5b] サーバ側アクション実行ログ（HTTP 経路）
+					// サーバ側アクション実行ログ（HTTP 経路）
 					AppendServerActionLog("click", cx, cy, sessionId, "http");
 				}
-				// 2026/06/11 myi 新規作成（ゲーム画面タッチクリック）
+				// （ゲーム画面タッチクリック）
 				// ゲーム画面（viewport）をタップした位置の絶対座標を直接クリックする
 				else if (action == "touch_click" && double.TryParse(xStr, out double tx) && double.TryParse(yStr, out double ty))
 				{
-					// [task19 P1] Touch(x,y) で座標更新と HasValue=true をアトミックに設定（move と同様）
+					// Touch(x,y) で座標更新と HasValue=true をアトミックに設定（move と同様）
 					cursorState.Touch(Math.Max(0, Math.Min(1.0, tx)), Math.Max(0, Math.Min(1.0, ty)));
 					await TriggerMouseClickAsync(cursorState);
-					// [task14 §3.5b] サーバ側アクション実行ログ（HTTP 経路）
+					// サーバ側アクション実行ログ（HTTP 経路）
 					AppendServerActionLog("touch_click", tx, ty, sessionId, "http");
 				}
 					#region "追加アクション処理"
@@ -186,7 +186,7 @@ namespace Browser
 					{
 						_parent.NavigateToLoginPage();
 					}
-					// 2026/08/18 myi 新規作成（ログアウト: 本体ブラウザを空白ページへ移動）
+					// （ログアウト: 本体ブラウザを空白ページへ移動）
 					// Cookie は削除せず（DMMセッション維持）、空白ページ上のボタンから
 					// ログインページへ戻れば自動ログインとなる。
 					else if (action == "logout_blank")
@@ -194,7 +194,7 @@ namespace Browser
 						_parent.LogoutToBlankPage();
 					}
 					// プライバシーフィルターのカラーモードを設定（0=なし, 1=グレースケール, 4=低コントラスト）
-					// 2026/06/01 myi 変更：差分WebP方式に伴い、フィルターはRemoteControllerクライアント側でCSS適用するため
+					// 差分WebP方式に伴い、フィルターはRemoteControllerクライアント側でCSS適用するため
 					//                  サーバー側ではNOP（何もしない）に変更。本家ブラウザ側には影響を与えない。
 					else if (action == "set_filter")
 					{
@@ -202,7 +202,7 @@ namespace Browser
 						// 将来的に状態同期が必要な場合はここを拡張可能
 					}
 					// WebP圧縮品質の動的設定アクションを追加
-					// 2026/06/01 myi 新規作成（品質スライダーとのWebPリアルタイム連動対応）
+					// （品質スライダーとのWebPリアルタイム連動対応）
 					else if (action == "set_quality" && double.TryParse(req.QueryString["q"], out double qVal))
 					{
 						// 品質を0.05〜1.0の範囲にスケール変換
@@ -213,12 +213,12 @@ namespace Browser
 						kancolleFrame?.ExecuteJavaScriptAsync(script);
 					}
 						#endregion
-						// 2026/07/14 myi 新規作成（ドラッグ操作対応）
-						// 2026/07/29 myi 修正（セッション分離対応：async Task化）
+						// （ドラッグ操作対応）
+						// （セッション分離対応：async Task化）
 						// マウスダウン（ドラッグ開始）
 						else if (action == "mousedown")
 						{
-							// [task14 §3.5b] 座標パース失敗時は null を記録
+							// 座標パース失敗時は null を記録
 							double? mx = null;
 							double? my = null;
 							if (double.TryParse(xStr, out double mxx) && double.TryParse(yStr, out double myy))
@@ -228,13 +228,13 @@ namespace Browser
 								cursorState.Touch(Math.Max(0, Math.Min(1.0, mxx)), Math.Max(0, Math.Min(1.0, myy)));
 							}
 							await TriggerMouseDownAsync(cursorState);
-							// [task14 §3.5b] サーバ側アクション実行ログ（HTTP 経路）
+							// サーバ側アクション実行ログ（HTTP 経路）
 							AppendServerActionLog("mousedown", mx, my, sessionId, "http");
 						}
 						// マウスアップ（ドラッグ終了）
 						else if (action == "mouseup")
 						{
-							// [task14 §3.5b] 座標パース失敗時は null を記録
+							// 座標パース失敗時は null を記録
 							double? ux = null;
 							double? uy = null;
 							if (double.TryParse(xStr, out double uxx) && double.TryParse(yStr, out double uyy))
@@ -244,7 +244,7 @@ namespace Browser
 								cursorState.Touch(Math.Max(0, Math.Min(1.0, uxx)), Math.Max(0, Math.Min(1.0, uyy)));
 							}
 							await TriggerMouseUpAsync(cursorState);
-							// [task14 §3.5b] サーバ側アクション実行ログ（HTTP 経路）
+							// サーバ側アクション実行ログ（HTTP 経路）
 							AppendServerActionLog("mouseup", ux, uy, sessionId, "http");
 						}
 		
@@ -271,11 +271,11 @@ namespace Browser
 		}
 
 		//====================================================================================
-		// [task14] クライアント中継イベントログ API（POST /event-log）・Q9 ON/OFF API（POST /log-toggle）
+		// クライアント中継イベントログ API（POST /event-log）・Q9 ON/OFF API（POST /log-toggle）
 		// 設計書: plans/task14_remote-doubleclick-fix-and-event-logging.md §3.5 / §3.5c / §3.8
 		//------------------------------------------------------------------------------------
 		/// <summary>
-		/// [task14] POST /event-log: クライアント中継イベントログを受信し専用ファイル（remote_event_log_YYYYMMDD.log）へ追記。
+		/// POST /event-log: クライアント中継イベントログを受信し専用ファイル（remote_event_log_YYYYMMDD.log）へ追記。
 		/// 認証済み領域（IsAuthenticated 通過後）でルーティングされる（/control と同一）。
 		/// </summary>
 		private async Task HandleEventLogAsync(HttpListenerRequest req, HttpListenerResponse res)
@@ -288,8 +288,8 @@ namespace Browser
 					res.Close();
 					return;
 				}
-				// [task14 Q10] body サイズ上限（64KB）: 読み捨てず、先頭 64KB を読取して保存（トリミング）。
-				// [v1.3 chunked 対応] ContentLength64 が <= 0（chunked transfer・サイズ未知）の場合、
+				// body サイズ上限（64KB）: 読み捨てず、先頭 64KB を読取して保存（トリミング）。
+				// ContentLength64 が <= 0（chunked transfer・サイズ未知）の場合、
 				// ReadToEndAsync による全量読取は巨大 payload のメモリ逼迫を招くため、上限（65537 文字）までの有界読取を行う。
 				long contentLength = req.ContentLength64;
 				string body;
@@ -303,7 +303,7 @@ namespace Browser
 					else
 					{
 						// サイズ未知（chunked）または上限超過: 有界読取（上限 65537 文字＝上限 65536 超過判定用の +1）。
-						// [v1.3 一次 Major-1・二次 Major-2 反映] StreamReader.ReadAsync(char[], int, int) は
+						// StreamReader.ReadAsync(char[], int, int) は
 						// Task<int> を返す（読取文字数）ため、単一呼び出しで全量取得できる保証はない。
 						// 上限までループ読取し、read <= 0（EOF）で終える。
 						var buffer = new char[65537];
@@ -318,14 +318,14 @@ namespace Browser
 					}
 				}
 				bool truncated = false;
-				// [v1.3 originalBytes 補正・一次 Major-1・二次 Major-2 反映] ContentLength64 が <= 0（chunked）の場合、
+				// ContentLength64 が <= 0（chunked）の場合、
 				// 実読取サイズ（body.Length・文字数）で補正する（従来は originalBytes=0 になる矛盾を解消）。
-				// 注: chunked 時は originalBytes がバイト数ではなく文字数の近似値になる（設計書 §3.5c-4・v1.3 再レビュー指摘③）。
+				// 注: chunked 時は originalBytes がバイト数ではなく文字数の近似値になる（設計書 §3.5c-4）。
 				long originalBytes = (contentLength > 0) ? contentLength : (long)body.Length;
 				if (body.Length > 65536)
 				{
-					// [Q10] body が 64KB 超過 → 先頭 64KB を切り取って保存（読み捨てしない）
-					// [v1.3] 切り取り位置はサロゲートペア境界に合わせ直す（§3.5c-3・SafeTruncate）
+					// body が 64KB 超過 → 先頭 64KB を切り取って保存（読み捨てしない）
+					// 切り取り位置はサロゲートペア境界に合わせ直す（§3.5c-3・SafeTruncate）
 					body = SafeTruncate(body, 65536);
 					truncated = true;
 				}
@@ -338,8 +338,8 @@ namespace Browser
 					res.Close();
 					return;
 				}
-				// [task14 Q10] 1 行 4096 文字超過 → 先頭 4096 文字に切り取って保存（truncated=true）
-				// [v1.3] 切り取り位置はサロゲートペア境界に合わせ直す（§3.5c-3・SafeTruncate）。
+				// 1 行 4096 文字超過 → 先頭 4096 文字に切り取って保存（truncated=true）
+				// 切り取り位置はサロゲートペア境界に合わせ直す（§3.5c-3・SafeTruncate）。
 				// 「4096」は文字数（UTF-16 コードユニット）でありバイト数ではない。多バイト UTF-8 文字を含む場合、
 				// ディスク上のバイト数は大きくなるが、JSONL の「1 行の長さ」は 4096 文字上限で維持する（設計意図: 行長の安定）。
 				if (line.Length > 4096)
@@ -347,7 +347,7 @@ namespace Browser
 					line = SafeTruncate(line, 4096);
 					truncated = true;
 				}
-				// [task14 Q10] トリミングにより JSON が壊れた場合: parse_error=true を付加して生テキストを保存
+				// トリミングにより JSON が壊れた場合: parse_error=true を付加して生テキストを保存
 				bool parseError = !line.EndsWith("}");
 				string savedLine = line;
 				if (parseError)
@@ -361,7 +361,7 @@ namespace Browser
 				}
 				RemoteDedicatedLog.Event.Append(savedLine);
 				res.StatusCode = 200;
-				// [Q10] 内容が保存できたなら 200（truncated 情報を body に返す・クライアントを失敗させない）
+				// 内容が保存できたなら 200（truncated 情報を body に返す・クライアントを失敗させない）
 				var respBody = truncated
 					? "{\"ok\":true,\"truncated\":true,\"originalBytes\":" + originalBytes + "}"
 					: "{\"ok\":true}";
@@ -384,7 +384,7 @@ namespace Browser
 		}
 
 		/// <summary>
-		/// [task14 Q9] POST /log-toggle: サーバ側ログ記録（イベントログ）の ON/OFF を即時切り替え。
+		/// POST /log-toggle: サーバ側ログ記録（イベントログ）の ON/OFF を即時切り替え。
 		/// 認証済み領域（IsAuthenticated 通過後）でルーティングされる（/control・/event-log と同一）。
 		/// body: {"enabled": true|false}（それ以外 400）。応答: {"ok":true,"enabled":<現行値>}。
 		/// </summary>
@@ -403,8 +403,8 @@ namespace Browser
 				{
 					body = await reader.ReadToEndAsync();
 				}
-				// [task14 Q9] enabled の抽出: 既存ヘルパ ExtractJsonString を流用（未クォートの true/false も抽出可能）。
-				// [v1.3 二次 Critical-1 反映] 設計書コード例の「enabled 未定義」欠陥を解消:
+				// enabled の抽出: 既存ヘルパ ExtractJsonString を流用（未クォートの true/false も抽出可能）。
+				// 設計書コード例の「enabled 未定義」欠陥を解消:
 				// キー欠落時は ExtractJsonString が null を返し、bool.TryParse が false を返すため 400 で拒否する。
 				string enabledStr = ExtractJsonString(body ?? "", "enabled");
 				bool enabled;
@@ -415,7 +415,7 @@ namespace Browser
 					res.Close();
 					return;
 				}
-				// [task14 Q9] 即時反映: メモリ内フラグ変更 ＋ 切り替え操作自体をログ記録（SetEnabled 内）
+				// 即時反映: メモリ内フラグ変更 ＋ 切り替え操作自体をログ記録（SetEnabled 内）
 				RemoteDedicatedLog.SetEnabled(enabled, "log-toggle endpoint");
 				res.StatusCode = 200;
 				var buf = System.Text.Encoding.UTF8.GetBytes("{\"ok\":true,\"enabled\":" + enabled.ToString().ToLower() + "}");
@@ -435,9 +435,9 @@ namespace Browser
 		}
 
 		/// <summary>
-		/// [task14 Q10・v1.3] JSON 文字列内の特殊文字をエスケープ（標準機能のみ・NuGet 不要）。
+		/// JSON 文字列内の特殊文字をエスケープ（標準機能のみ・NuGet 不要）。
 		/// 生テキストを JSONL 1 行の "raw" 値として安全に格納するためのヘルパ（§3.5c-3）。
-		/// [v1.3 サロゲートペア対応]（一次 Major-1・二次 Major-2 反映）:
+		/// （一次 Major-1・二次 Major-2 反映）:
 		/// - 切り取り位置は SafeTruncate でサロゲートペア境界に合わせ、ペアを途中で分断しない。
 		/// - ソースに存在した孤立サロゲート（unpaired surrogate）は U+FFFD（置換文字）に置換し、
 		///   不正な UTF-16／UTF-8 を生成して日本語文字化けするのを防止する。
@@ -463,7 +463,7 @@ namespace Browser
 						if (c < 0x20) sb.Append("\\u").Append(((int)c).ToString("x4"));
 						else if (char.IsSurrogate(c))
 						{
-							// [v1.3 サロゲートペア対応] 孤立サロゲート（ペアを構成しない）は U+FFFD に置換。
+							// 孤立サロゲート（ペアを構成しない）は U+FFFD に置換。
 							// 正当なペア（上位＋直後の下位、または直前の上位＋下位）はそのまま保持し、
 							// エンコード結果が有効な UTF-16／UTF-8 シーケンスになることを保証する。
 							bool paired = (char.IsHighSurrogate(c) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]))
@@ -479,7 +479,7 @@ namespace Browser
 		}
 
 		/// <summary>
-		/// [task14 Q10・v1.3] 文字列を指定文字数で切り詰め（サロゲートペア境界に一致）。
+		/// 文字列を指定文字数で切り詰め（サロゲートペア境界に一致）。
 		/// 切り取り位置がサロゲートペア（上位サロゲート＋下位サロゲート）の中間に落ちる場合は
 		/// ペア頭（上位サロゲート）の前へ巻き戻すことで、ペアを途中で分断して孤立サロゲート
 		/// （不正な UTF-16／UTF-8・日本語文字化け）を生成しない（§3.5c-3）。
@@ -489,7 +489,7 @@ namespace Browser
 			if (s == null) return "";
 			if (s.Length <= maxLen) return s;
 			int end = maxLen;
-			// [v1.3 再レビュー指摘④] s.Length > maxLen（上記で検証済み）なので s[end] は必ず存在する（境界チェック不要）。
+			// s.Length > maxLen（上記で検証済み）なので s[end] は必ず存在する（境界チェック不要）。
 			if (char.IsHighSurrogate(s[end - 1]) && char.IsLowSurrogate(s[end]))
 			{
 				end -= 1; // ペア中間切り取り → ペア頭の前へ巻き戻し（上位サロゲートを切り捨て）
@@ -498,7 +498,7 @@ namespace Browser
 		}
 
 		/// <summary>
-		/// [task14 §3.5b] サーバ側アクション実行ログ（src=server）。
+		/// サーバ側アクション実行ログ（src=server）。
 		/// TriggerMouse*Async を実際に実行したタイミングで呼ばれ、クライアント送信ログと
 		/// 同じ専用ファイル（remote_event_log_YYYYMMDD.log）に時系列で並ぶ。
 		/// 二重発火の再発調査（クライアント2回送信？サーバ2回実行？）に用いる（§12 参照）。
@@ -516,7 +516,7 @@ namespace Browser
 		// 概要           : モバイル端末から受信した 0.0〜1.0 のゲーム画面上の相対座標を、
 		//                  ブラウザコントロールの現在のサイズと艦これアスペクト比(5:3)から生じる
 		//                  黒い余白（レターボックス）を動的に考慮し、実際のCefブラウザ論理ピクセル座標へ変換します。
-		//                  2026/07/29 myi 修正：セッション固有のカーソル座標を使用するオーバーロードを追加
+		// セッション固有のカーソル座標を使用するオーバーロードを追加
 		//------------------------------------------------------------------------------------
 		private Point? GetBrowserCoords(double cursorX, double cursorY)
 		{
@@ -524,7 +524,7 @@ namespace Browser
 			double browserWidth = _parent.Browser.Width;
 			double browserHeight = _parent.Browser.Height;
 
-			// [task19 不具合2修正] ブラウザサイズが 0/極小の場合のガード
+			// ブラウザサイズが 0/極小の場合のガード
 			// ブラウザが未ロード/未表示（Width/Height が 0）の場合、browserAspect が Infinity/NaN になり
 			// gameWidth=gameHeight=0 で (0,0) が返る（クリックが常に左上になる原因）。
 			// 座標変換の前提が崩れているため、null を返して呼び出し側でイベント送信をスキップする。
@@ -568,7 +568,7 @@ namespace Browser
 		// 処理ブロック名 : TriggerMouseMoveAsync
 		// 概要           : セッション固有のカーソル座標からアスペクト比補正された
 		//                  CefSharp論理ピクセル座標を求め、ブラウザへ移動イベントを送信します。
-		//                  2026/07/29 myi 修正：async Task化、セッション固有カーソル対応
+		// async Task化、セッション固有カーソル対応
 		//------------------------------------------------------------------------------------
 		private Task TriggerMouseMoveAsync(HttpCursorState cursorState)
 		{
@@ -595,7 +595,7 @@ namespace Browser
 		// 処理ブロック名 : TriggerMouseClickAsync
 		// 概要           : セッション固有のカーソル座標で左クリックを送信します。
 		//                  Thread.Sleep を Task.Delay に変更し、スレッドブロッキングを排除。
-		//                  2026/07/29 myi 修正：async Task化、セッション固有カーソル対応
+		// async Task化、セッション固有カーソル対応
 		//------------------------------------------------------------------------------------
 		private async Task TriggerMouseClickAsync(HttpCursorState cursorState)
 			{
@@ -605,7 +605,7 @@ namespace Browser
 				var host = browser?.GetHost();
 				if (host == null) return;
 	
-				// [task19 v3] HasValue フラグによるフォールバック（Major 3 修正）
+				// HasValue フラグによるフォールバック
 				// HasValue が false の場合のみデフォルト 0.5, 0.5 を使用
 				double cursorX, cursorY;
 				if (cursorState.HasValue)
@@ -642,7 +642,7 @@ namespace Browser
 		//====================================================================================
 		// 処理ブロック名 : TriggerMouseDownAsync
 		// 概要           : セッション固有のカーソル座標で左ボタンダウンを送信
-		//                  2026/07/29 myi 修正：async Task化、セッション固有カーソル対応
+		// async Task化、セッション固有カーソル対応
 		//------------------------------------------------------------------------------------
 		private Task TriggerMouseDownAsync(HttpCursorState cursorState)
 		{
@@ -671,7 +671,7 @@ namespace Browser
 		//====================================================================================
 		// 処理ブロック名 : TriggerMouseUpAsync
 		// 概要           : セッション固有のカーソル座標で左ボタンアップを送信
-		//                  2026/07/29 myi 修正：async Task化、セッション固有カーソル対応
+		// async Task化、セッション固有カーソル対応
 		//------------------------------------------------------------------------------------
 		private Task TriggerMouseUpAsync(HttpCursorState cursorState)
 		{
@@ -795,7 +795,7 @@ namespace Browser
 			var baseDir = AppDomain.CurrentDomain.BaseDirectory;
 			var pathsToSearch = new List<string>();
 
-			// 1. 【最優先】開発時の利便性向上のため、プロジェクトフォルダ直下のソースファイルを探索します。
+			// 1. 開発時の利便性向上のため、プロジェクトフォルダ直下のソースファイルを探索します。
 			//    実行フォルダの親階層を動的に遡って Browser プロジェクト内の RemoteController.html を見つけます。
 			//    これをリストの先頭に追加することで、ビルドされて実行フォルダ内に残っている
 			//    「古いビルド成果物（RemoteController.html）」に邪魔されず、ソースの直接編集が即座に反映されるようになります。
@@ -1200,7 +1200,7 @@ namespace Browser
 			return null;
 		}
 
-		// 2026/07/27 新規作成（set_quality アクション用スクリプトの事前構築）
+		// （set_quality アクション用スクリプトの事前構築）
 		// 動的な品質値のみを連結し、固定部分は定数として事前定義する。
 		private const string QualityScriptPrefix = "if(window._kancolleCaptureEngine)window._kancolleCaptureEngine.webpQuality=";
 		private const char QualityScriptSuffix = ';';

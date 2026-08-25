@@ -81,13 +81,13 @@ namespace Browser
 		private bool _isRunning;
 		private int _port;
 		
-		// 2026/06/10 myi 新規作成（リッスン対象のIPアドレス設定値保持用）
+		// （リッスン対象のIPアドレス設定値保持用）
 		private string _address;
 
-		// 2026/07/14 myi 新規作成（リモート操作サーバーのログインパスワード保持用）
+		// （リモート操作サーバーのログインパスワード保持用）
 		private string _password;
 
-		// 2026/07/23 追記（パスワード更新処理のロックオブジェクト）
+		// （パスワード更新処理のロックオブジェクト）
 		/// <summary>
 		/// パスワード更新および認証チェックのアトミックな処理を保護するロックオブジェクト。
 		/// volatileだけでは UpdatePassword 内のセッション破棄とパスワード変更の原子性が
@@ -95,7 +95,7 @@ namespace Browser
 		/// </summary>
 		private readonly object _passwordLock = new object();
 
-		// 2026/07/26 myi 新規作成（HUDデータ更新のロックオブジェクト）
+		// （HUDデータ更新のロックオブジェクト）
 		/// <summary>
 		/// UpdateHudData と SendHudData 間のHUDキャッシュ（_cachedHudJson, 各バージョン）への
 		/// 読み書きを排他制御するためのロックオブジェクト。
@@ -105,20 +105,20 @@ namespace Browser
 		//====================================================================================
 		// WebSocket 通信関連フィールド・定数
 		//------------------------------------------------------------------------------------
-		// 2026/07/27 新規作成（WebSocket セッション管理）
+		// （WebSocket セッション管理）
 		private readonly ConcurrentDictionary<string, WebSocketSession> _webSocketSessions = new ConcurrentDictionary<string, WebSocketSession>();
 
-		// 2026/07/27 新規作成（バッファプール：GC 負荷削減）
+		// （バッファプール：GC 負荷削減）
 		private static readonly ArrayPool<byte> _bufferPool = ArrayPool<byte>.Shared;
 
-		// 2026/07/27 新規作成（WebSocket 定数）
+		// （WebSocket 定数）
 		private const int WebSocketHeartbeatIntervalMs = 15000; // 15秒
 		private const int WebSocketMaxQueueSize = 1;            // Drop Frame 用キュー上限（最新1枚のみ保持）
 
-		// 2026/07/29 追記（接続数制限のアトミック管理用）
+		// （接続数制限のアトミック管理用）
 		private int _activeConnectionCount; // Interlocked で管理
 	
-		// 2026/08/12 myi 新規作成（認証ガード対象パスリスト）
+		// （認証ガード対象パスリスト）
 		/// <summary>
 		/// 認証が必要で、未認証時に401を返すAPIパスのリスト。
 		/// ハードコードされたif文ではなく静的HashSetで管理し、保守性を向上させる。
@@ -135,8 +135,8 @@ namespace Browser
 			"/log-toggle",   // [task14 Q9] サーバ側ログ記録 ON/OFF API（POST。未認証 401・/control と一貫）
 		};
 
-		// 2026/07/29 新規作成（グローバルシーケンス番号：WebSocket/HTTP共通の単調増加int型）
-		// 2026/08/13 修正（【二次レビュー Minor 修正】 seq 型整合性の明文化）
+		// （グローバルシーケンス番号：WebSocket/HTTP共通の単調増加int型）
+		// （seq 型整合性の明文化）
 		/// <summary>
 		/// グローバルシーケンス番号（WebSocket/HTTP共通、単調増加）
 		/// Interlocked.Increment でスレッドセーフなインクリメント
@@ -153,18 +153,18 @@ namespace Browser
 		/// </summary>
 		private int _globalSequenceNumber;
 
-		// 2026/07/29 新規作成（フェーズ5：中央キャプチャ・ファンアウト方式）
+		// （フェーズ5：中央キャプチャ・ファンアウト方式）
 		/// <summary>
 		/// 中央キャプチャからの共有フレームバッファ（最新の1フレームのみ保持）
 		/// 参照カウント付きで、全セッションが送信完了後にメモリを解放
 		/// </summary>
 		private readonly SharedFrameBuffer _sharedFrameBuffer;
 
-		// 2026/07/29 新規作成（フェーズ5：動的FPS制御用キャッシュ）
+		// （フェーズ5：動的FPS制御用キャッシュ）
 		private int _cachedMaxFpsInterval = 100;
 		private volatile int _cachedSessionCount = 0;
 
-		// 2026/07/29 新規作成（IPCプロファイリング：案G-1/2/3）
+		// （IPCプロファイリング）
 		/// <summary>
 		/// CaptureCanvasAsync の実行遅延統計を保持するリングバッファ（最大30サンプル）
 		/// 移動平均/最大/最小値を算出し、500ms超過時に警告ログを出力
@@ -173,72 +173,71 @@ namespace Browser
 		/// </summary>
 		private readonly Queue<long> _captureLatencyHistory = new Queue<long>(30);
 
-		// 2026/07/31 新規作成（二次レビュー修正：プロファイリングログの頻度抑制用）
+		// （プロファイリングログの頻度抑制用）
 		/// <summary>
 		/// 正常系プロファイリングログの出力頻度を抑制するためのフレームカウンター
 		/// 100フレームに1回のみ出力（ログI/O負荷軽減）
 		/// </summary>
 		private int _sendFrameCounter;
 
-		// 2026/07/29 新規作成（フェーズ5：中央キャプチャループのキャンセルトークン）
-		// [Task05-対策1-volatile] volatile 宣言により、スレッド間の変数可視性を保証
+		// （フェーズ5：中央キャプチャループのキャンセルトークン）
+		// volatile 宣言により、スレッド間の変数可視性を保証
 		// ダブルチェックロックパターンが正しく機能するために必須
 		private volatile CancellationTokenSource _centralCaptureCts;
 	
 	
-		// 2026/07/29 新規作成（フェーズ5：中央キャプチャループのタスク参照）
-		// [Task05-対策1-volatile] volatile 宣言により、スレッド間の変数可視性を保証
+		// （フェーズ5：中央キャプチャループのタスク参照）
+		// volatile 宣言により、スレッド間の変数可視性を保証
 		private volatile Task _centralCaptureTask;
 
-		// [Task05-対策1-排他制御] 複数クライアントの同時接続時に _centralCaptureCts / _centralCaptureTask の
+		// 複数クライアントの同時接続時に _centralCaptureCts / _centralCaptureTask の
 		// 再初期化が競合するのを防ぐためのロックオブジェクト
 		private static readonly object _captureStartLock = new object();
 
-		// [Task05-外部レビュー 指摘1] 再起動時 / 新規接続時にフルキーフレームを強制取得するフラグ
+		// 再起動時 / 新規接続時にフルキーフレームを強制取得するフラグ
 		// ※ CefSharp JS側が「画面変化なし」として type == "none" を返す場合、
 		//   _sharedFrameBuffer が更新されず、新規接続クライアントの画面がブラックアウトするのを防ぐ
 		private volatile bool _forceNextKeyFrame = false;
 
-		// task28 Phase 0: クライアントプロトコルバージョン管理
-		// 【ver 2.9 修正】 Critical Review 指摘6 対応: ConcurrentDictionary へ変更
+		// クライアントプロトコルバージョン管理
 		// 各WebSocketセッションのクライアントプロトコルバージョンをスレッドセーフに管理
 		// null = バージョン未決状態（接続確立後5秒以内に PROTOCOL_VERSION 応答待ち）
 		private readonly ConcurrentDictionary<string, int?> _clientVersions = new ConcurrentDictionary<string, int?>();
 
-		// task28 Phase 0: バージョン検出タイムアウト（5秒）
+		// バージョン検出タイムアウト（5秒）
 		private const int ProtocolVersionTimeoutMs = 5000;
 
-		// 2026/07/29 新規作成（ゾンビクリーンアップ間隔：5秒）
+		// （ゾンビクリーンアップ間隔：5秒）
 		private DateTime _lastZombieCleanupTime = DateTime.MinValue;
 
 		private volatile CaptureMode _currentCaptureMode = CaptureMode.WebP;
 
-		// task28 Phase 1: WebCodecs 状態管理
+		// WebCodecs 状態管理
 		private volatile int _webCodecsBitrate = 800000; // 800 kbps 標準
 		private volatile int _webCodecsFps = 30;
 
-		// task28 Phase 1: WebCodecs 中央キャプチャループのタスク参照
+		// WebCodecs 中央キャプチャループのタスク参照
 		private volatile Task _webCodecsCaptureTask;
 
-		// task28 Phase 1: WebCodecs キャプチャループの CancellationTokenSource
+		// WebCodecs キャプチャループの CancellationTokenSource
 		private CancellationTokenSource _webCodecsCaptureCts;
 
-		// [task13 / D・MAJOR-2・SEC-MAJOR-2] InitializeWebCodecsEncoderAsync の並行呼び出し直列化用シグナル
+		// InitializeWebCodecsEncoderAsync の並行呼び出し直列化用シグナル
 		// force=true 経路が複数スレッドから同時呼ばれる場合、_isWebCodecsInitialized の書き込みと
 		// 初期化処理（initEncoder() 呼び出し）の間に他スレッドが侵入して二重初期化（initEncoder 多重呼び出し、
 		// SPS/PPS 再送の二重化）が起き得るため、SemaphoreSlim(1,1) でメソッド全体を直列化する。
-		// [task13 / SEC-R3-MINOR-1] 宣言位置: _webCodecsCaptureCts の直後（WebCodecs 状態管理フィールド群と一括）
+		// 宣言位置: _webCodecsCaptureCts の直後（WebCodecs 状態管理フィールド群と一括）
 		private readonly SemaphoreSlim _webCodecsInitSemaphore = new SemaphoreSlim(1, 1);
 
-		// [task13 / Minor 4] Dispose フラグ（_webCodecsInitSemaphore の Dispose 後の WaitAsync 呼び出しを防止する）
+		// Dispose フラグ（_webCodecsInitSemaphore の Dispose 後の WaitAsync 呼び出しを防止する）
 		// Dispose() で true に設定され、InitializeWebCodecsEncoderAsync の入口でチェックされる。
 		// volatile で宣言し、Dispose スレッドと初期化呼び出しスレッド間で即座に可視化する。
 		private volatile bool _webCodecsDisposed;
 
-		// [task19 P2/P3] 最終受信した SPS/PPS (description) バイト列のキャッシュ
+		// 最終受信した SPS/PPS (description) バイト列のキャッシュ
 		// 新接続クライアント（DescriptionSent=false）への追隨送信、および reinit_decoder 受信時の
 		// 再送信に使用する。JS 側の SPS/PPS は同一セッション内で不変のためキャッシュ再利用が可能
-		// [task19 レビュー指摘 C1] 不変性保証: volatile は参照の可視性のみ保証し byte[] 中身は保証しないため、
+		// 不変性保証: volatile は参照の可視性のみ保証し byte[] 中身は保証しないため、
 		// キャッシュ登録時に防御コピー（WebCodecsCaptureLoopAsync 内）を行い、登録後は読み取り専用として扱う。
 		// 送信側はローカルスナップショット参照 + BlockCopy コピー送信により、キャッシュ差し替えと無関係に安全
 		private volatile byte[] _lastWebCodecsDescription;
@@ -271,7 +270,7 @@ namespace Browser
 			}
 		}
 
-		// 2026/07/29 myi 修正（セッション分離対応）
+		// （セッション分離対応）
 		// 共有のカーソル座標フィールドを廃止し、各セッション固有のカーソル管理へ移行
 		// HTTPモード用のカーソル状態（セッションIDベース）
 		private readonly ConcurrentDictionary<string, HttpCursorState> _httpCursorStates = new ConcurrentDictionary<string, HttpCursorState>();
@@ -354,7 +353,7 @@ namespace Browser
 			// 接続数が変更された: 再計算
 			int minInterval = int.MaxValue;
 
-			// [レビュー修正] .ToArray() による不要なアロケーションを排除
+			// .ToArray() による不要なアロケーションを排除
 			// ConcurrentDictionary.Values の列挙はスナップショットではないが、
 			// 列挙中にセッションが Dispose されても TargetIntervalMs の読み取りは安全（volatile）
 			// セッションが破棄された場合はループの次の反復で自然に除外される
@@ -387,7 +386,7 @@ namespace Browser
 		/// <summary>
 		/// Heartbeatタイムアウト（30秒）およびWebSocket切断状態のゾンビセッションをクリーンアップする。
 		/// CentralCaptureLoopAsync で集約実行（各セッションループからの呼び出しは不要）。
-		/// 2026/07/29 myi 修正: WebSocketState をチェックして即時切断を検知し、
+		/// WebSocketState をチェックして即時切断を検知し、
 		/// RemoveWebSocketSession を使用してリソースを確実に解放する。
 		/// </summary>
 		private void CleanupZombieSessions()
@@ -422,11 +421,11 @@ namespace Browser
 					shouldRemove = true;
 				}
 
-				// 3. 【task28 二次レビュー修正】 ProtocolVersionTimeoutMs によるフォールバック
+				// 3. ProtocolVersionTimeoutMs によるフォールバック
 				// 設計書 §5.3.3 定義: 接続確立後5秒以内に PROTOCOL_VERSION 応答待ち
 				// タイムアウト時は Version 1 (6Bヘッダー) フォールバック
 				//
-				// 【Critical修正】 TOCTOU 競合解消:
+				// TOCTOU 競合解消:
 				// 旧実装では GetClientVersion → SetClientVersion の2ステップで TOCTOU (Time-of-Check to Time-of-Use)
 				// 競合が存在し、クライアントが PROTOCOL_VERSION メッセージを送信した直後にフォールバックが
 				// 実行されると Version 2 が Version 1 で上書きされる可能性があった。
@@ -548,7 +547,7 @@ namespace Browser
 			try
 			{
 				Console.WriteLine(message);
-				// [task14] 専用ファイルへ記録（本体ブラウザログ eolog.log と分離）
+				// 専用ファイルへ記録（本体ブラウザログ eolog.log と分離）
 				RemoteDedicatedLog.Controller.Append(
 					$"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}][P{priority}] {message}");
 				// 注: _parent?.AddLog(...) を呼び出さない（eolog.log への混在・UIログウィンドウへの
@@ -556,7 +555,6 @@ namespace Browser
 			}
 			catch (Exception ex)
 			{
-				// AGENTS.md NEVER 対応（一次 Critical-3）: 既存 1485 行の空 catch { } を解消。
 				// ログ出力失敗（Console 失敗・専用ファイル書き込み失敗）をサイレントに握りつぶさず記録。
 				try
 				{
@@ -573,13 +571,13 @@ namespace Browser
 		}
 
 		/// <summary>
-		/// 2026/06/10 myi 新規作成（リッスンアドレスパラメータの追加）
-		/// 2026/07/14 myi 変更（パスワードパラメータの追加）
-		/// 2026/08/12 myi 変更（WebCodecs 設定パラメータの追加）
+		/// （リッスンアドレスパラメータの追加）
+		/// （パスワードパラメータの追加）
+		/// （WebCodecs 設定パラメータの追加）
 		/// </summary>
 		public RemoteController(FormBrowser parent, int port = 8080, string address = "*", string password = "", int webCodecsBitrate = 800000, int webCodecsFps = 30)
 		{
-			// [task14 Minor-S4] 専用ログ初期化（ログディレクトリ作成・保持期間外ファイルのクリーンアップ）。
+			// 専用ログ初期化（ログディレクトリ作成・保持期間外ファイルのクリーンアップ）。
 			// コンストラクタ先頭（_sharedFrameBuffer 生成のラムダが Log を呼ぶ可能性より前）に配置。
 			RemoteDedicatedLog.Init();
 			_parent = parent;
@@ -589,7 +587,7 @@ namespace Browser
 			_sharedFrameBuffer = new SharedFrameBuffer(
 				negativeCount => Log(3, $"[RemoteController] 参照カウント不整合: _referenceCount = {negativeCount} (二重解放の可能性があります)"));
 
-			// task28: WebCodecs 設定値をコンストラクタ引数から読み込む
+			// WebCodecs 設定値をコンストラクタ引数から読み込む
 			_webCodecsBitrate = webCodecsBitrate;
 			_webCodecsFps = webCodecsFps;
 		}
@@ -610,7 +608,7 @@ namespace Browser
 			{
 				_listener = new HttpListener();
 
-				// 2026/06/10 myi 新規作成（複数IPアドレス・IPv6対応のプレフィックス構築とバインド）
+				// （複数IPアドレス・IPv6対応のプレフィックス構築とバインド）
 				// アドレス設定文字列をセミコロン（;）またはカンマ（,）で分割
 				var addresses = (_address ?? "*")
 					.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries)
@@ -642,7 +640,7 @@ namespace Browser
 					// HttpListener に接続プレフィックスを登録
 					_listener.Prefixes.Add($"http://{formattedAddr}:{_port}/");
 					
-					// 2026/06/10 myi 新規作成（IPv6の netsh 登録エラー50回避のための置き換え案内）
+					// （IPv6の netsh 登録エラー50回避のための置き換え案内）
 					// netsh http add urlacl は [::] や [::1] などの IPv6 形式を直接指定すると「エラー50：この要求はサポートされていません」になるため、
 					// 代替ワイルドカードとして「+」を用いて案内します。
 					string netshAddr = formattedAddr;
@@ -684,7 +682,7 @@ namespace Browser
 					Log(3, $"[RemoteController] localhost フォールバック起動も失敗しました: {fallbackEx.Message}");
 				}
 
-				// 2026/06/10 myi 新規作成（[::]使用時のエラー原因についての親切な案内文生成）
+				// （[::]使用時のエラー原因についての親切な案内文生成）
 				string errorNotice = "";
 				if (ex.Message.Contains("サポートされていません") && 
 				    (_address != null && (_address.Contains("::") || _address.Contains("[::]"))))
@@ -762,9 +760,6 @@ namespace Browser
 		// 概要           : 管理者権限で netsh コマンドを実行し、HttpListener のプレフィックス
 		//                  登録を自動で行います。UAC画面を立ち上げて昇格実行します。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/06/10
-		// version        : 1.00
 		//------------------------------------------------------------------------------------
 		private bool RunNetshAsAdmin(List<string> commands)
 		{
@@ -882,7 +877,7 @@ namespace Browser
 				if (!IsAuthenticated(req, res))
 				{
 					// APIリクエストには401を返す（クライアントでハンドリングしやすくするため）
-					// 【Minor修正】 ハードコードされたif文を静的HashSet(s_authenticatedApiPaths)で管理
+					// ハードコードされたif文を静的HashSet(s_authenticatedApiPaths)で管理
 					if (s_authenticatedApiPaths.Contains(path))
 					{
 						res.StatusCode = 401;
@@ -911,7 +906,7 @@ namespace Browser
 				{
 					await HandleControlAsync(req, res);
 				}
-				// [task14] クライアント中継イベントログ API（HTTP モード時の gesture/action/console/move_summary 送信先）
+				// クライアント中継イベントログ API（HTTP モード時の gesture/action/console/move_summary 送信先）
 				else if (path == "/event-log")
 				{
 					await HandleEventLogAsync(req, res);
@@ -921,8 +916,8 @@ namespace Browser
 					// モバイル端末からのHUD情報要求に対し、実際のゲーム内ステータスをJSONで返します
 					SendHudData(req, res);
 				}
-				// task28: WebCodecs モード管理エンドポイント
-				// 【Major修正】 認証チェックは一元化されたガード（1525行目）で実施済み（重複排除）
+				// WebCodecs モード管理エンドポイント
+				// 認証チェックは一元化されたガードで実施済み（重複排除）
 				else if (path == "/capture-mode")
 				{
 					await HandleCaptureModeAsync(req, res);
@@ -933,17 +928,17 @@ namespace Browser
 				}
 				else if (path == "/login-state")
 				{
-					// [task22] ログイン状態（ログアウト空白ページ状態）を JSON で返却
+					// ログイン状態（ログアウト空白ページ状態）を JSON で返却
 					SendLoginState(res);
 				}
-				// [task14 Q9] サーバ側ログ記録 ON/OFF API
+				// サーバ側ログ記録 ON/OFF API
 				else if (path == "/log-toggle")
 				{
 					await HandleLogToggleAsync(req, res);
 				}
 				else if (path == "/logout-page")
 				{
-					// [task22] ログアウト中画面（自ホスト logout.html、remote モード）を配信
+					// ログアウト中画面（自ホスト logout.html、remote モード）を配信
 					SendLogoutPage(res);
 				}
 				else if (path == "/ws")
@@ -959,7 +954,7 @@ namespace Browser
 	
 					// 許可されたディレクトリ配下のファイルのみサーブ
 					string basePath = GetStaticFileBasePath();
-						// [task14 Q2] debug_static.log を廃止し、専用ファイル（remotecontroller_YYYYMMDD.log）へ統合
+						// debug_static.log を廃止し、専用ファイル（remotecontroller_YYYYMMDD.log）へ統合
 						if (string.IsNullOrEmpty(basePath))
 						{
 							Log(1, $"[StaticFile] GetStaticFileBasePath returned null for: {path}");
@@ -1034,7 +1029,7 @@ namespace Browser
 		//------------------------------------------------------------------------------------
 		// 処理ブロック名 : TrySetClientVersionIfNull
 		// 概要           : バージョンが未設定（null）の時のみ、指定されたバージョンを原子的に設定する。
-		//                  【Critical修正】 CleanupZombieSessions と SetClientVersion 間の TOCTOU
+		// CleanupZombieSessions と SetClientVersion 間の TOCTOU
 		//                  (Time-of-Check to Time-of-Use) 競合を解消するため、Get→Set の2ステップ
 		//                  を ConcurrentDictionary.AddOrUpdate による単一原子操作に置換。
 		//                  設計書 §5.3.3 定義: フォールバック時のトランザクション保護
@@ -1055,7 +1050,6 @@ namespace Browser
 			//        安全のため、null ではなく version を設定する（フォールバック値として機能）。
 			//   2. エントリが存在する → 既存値が null の場合のみ version に更新、既に値ありは維持 (updateValueFactory)
 			//
-			// 【バグ修正】 旧実装: return result != null;
 			//   AddOrUpdate の戻り値は「設定された新しい値」であり、更新が成功したかどうかっていうわけではない。
 			//   version は int 型（null ではない）なので、result != null は常に true になってしまい、
 			//   既にバージョンが設定されていた場合でも true を返してしまう不具合があった。
@@ -1087,7 +1081,7 @@ namespace Browser
 			_refreshTokens.Clear();
 
 			// 中央キャプチャループのキャンセル（フェーズ5）
-			// [外部レビュー 指摘4] UIスレッドでの .Wait() による同期ブロックは厳禁
+			// UIスレッドでの .Wait() による同期ブロックは厳禁
 			// CancellationTokenSource.Cancel() による非同期キャンセルのみに変更
 			if (_centralCaptureCts != null && !_centralCaptureCts.IsCancellationRequested)
 			{
@@ -1095,14 +1089,14 @@ namespace Browser
 				_centralCaptureCts.Dispose();
 			}
 
-			// WebCodecs キャプチャループのキャンセル（task28 Phase 1）
+			// WebCodecs キャプチャループのキャンセル
 			if (_webCodecsCaptureCts != null && !_webCodecsCaptureCts.IsCancellationRequested)
 			{
 				_webCodecsCaptureCts.Cancel();
 				_webCodecsCaptureCts.Dispose();
 			}
 
-			// [task13 / Minor 4] WebCodecs 初期化セマフォ（_webCodecsInitSemaphore）の Dispose:
+			// WebCodecs 初期化セマフォ（_webCodecsInitSemaphore）の Dispose:
 			// SemaphoreSlim は IDisposable を実装しており、公式ドキュメントに従い破棄して内部リソースを解放する。
 			// 先に _webCodecsDisposed を true（volatile）にして以降の InitializeWebCodecsEncoderAsync 入口をブロックし、
 			// フラグチェックを通過済み・WaitAsync 直前という TOCTOU 競合は InitializeWebCodecsEncoderAsync 入口の
@@ -1110,7 +1104,7 @@ namespace Browser
 			_webCodecsDisposed = true;
 			_webCodecsInitSemaphore.Dispose();
 
-			// [二次レビュー Minor 指摘3 / CriticalReview 指摘3] タスク参照をローカル変数にキャプチャしてから監視
+			// タスク参照をローカル変数にキャプチャしてから監視
 			var task = _centralCaptureTask;
 			if (task != null)
 			{
@@ -1142,7 +1136,7 @@ namespace Browser
 				});
 			}
 
-			// 【Critical修正 指摘5】 _webCodecsCaptureTask の終了監視を追加
+			// _webCodecsCaptureTask の終了監視を追加
 			// _centralCaptureTask と同様に 5秒以内に完了するのを非同期で確認
 			var webCodecsTask = _webCodecsCaptureTask;
 			if (webCodecsTask != null)
@@ -1198,9 +1192,6 @@ namespace Browser
 		//                  共有フレームバッファに格納してから全セッションに通知する。
 		//                  CefSharpへのキャプチャ要求は常に1回/フレーム（O(1)負荷）。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/29
-		// version        : 1.00 (フェーズ5：中央キャプチャ・ファンアウト方式)
 		//------------------------------------------------------------------------------------
 		private async Task CentralCaptureLoopAsync(CancellationToken token)
 		{
@@ -1219,7 +1210,7 @@ namespace Browser
 			{
 				while (!token.IsCancellationRequested)
 				{
-					// [Task05-対策1 / CriticalReview 指摘1 対策] 省電力化: 接続数が0台になったら即座にループを抜ける
+					// 省電力化: 接続数が0台になったら即座にループを抜ける
 					// ※ 接続数チェックと _centralCaptureTask のクリアを lock 内でアトミックに実行し TOCTOU 競合を完全防止
 					if (Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0) <= 0)
 					{
@@ -1227,10 +1218,10 @@ namespace Browser
 						{
 							if (Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0) <= 0)
 							{
-								// [task13 / B-1・L4] CTS も Cancel して「ループ不在」状態を
+								// CTS も Cancel して「ループ不在」状態を
 								// (cts==null || cts.Cancelled || task==null || task.Completed) に統一する。
 								// これにより起動判定（B-2 のヘルパー）が確実に再起動をトリガーする。
-								// [task13 / CRIT-3] 旧 CTS の Dispose は省略し GC に委譲
+								// 旧 CTS の Dispose は省略し GC に委譲
 								// （dotnet/runtime#105811: Dispose 後 .Token アクセスが ObjectDisposedException を
 								// 投げ得るため、finally 側は try-catch で保護済み）
 								Log(2, "[RemoteController] 接続クライアントが0台になったため、中央キャプチャループを停止します (CTS Cancel)");
@@ -1241,7 +1232,7 @@ namespace Browser
 						}
 					}
 
-					// [外部レビュー 指摘1] 再起動後初回、または強制フラグが立っている場合は isInit = true でフルフレームを取得
+					// 再起動後初回、または強制フラグが立っている場合は isInit = true でフルフレームを取得
 					// ※ CefSharp JS側が差分キャッシュを保持しており、接続直後に type == "none" を返すケースを防ぐ
 					bool isInit = isFirstFrameAfterStart || _forceNextKeyFrame;
 					if (isInit)
@@ -1253,7 +1244,7 @@ namespace Browser
 					sw.Restart();
 	
 					// 画面キャプチャ（CefSharpへの要求: 1回/フレーム）
-					// [案G-1] CaptureCanvasAsync の実行時間を Stopwatch で計測
+					// CaptureCanvasAsync の実行時間を Stopwatch で計測
 					var swCapture = System.Diagnostics.Stopwatch.StartNew();
 					var capture = await CaptureCanvasAsync(isInit);
 					swCapture.Stop();
@@ -1284,7 +1275,7 @@ namespace Browser
 							// 全WebSocketセッションにシグナルをキック
 							// .ToList() によりスレッドセーフなコピーを作成してから列挙
 							// 列挙中にセッションが Dispose されて _webSocketSessions から削除されても安全
-							// [二次レビュー修正] ToArray による毎フレームのアロケーションを排除し、直接 .Values を列挙
+							// ToArray による毎フレームのアロケーションを排除し、直接 .Values を列挙
 							foreach (var session in _webSocketSessions.Values)
 							{
 								if (session.WebSocket.State == WebSocketState.Open)
@@ -1294,12 +1285,12 @@ namespace Browser
 									// [Critical修正] 設計書 §5.1.2 規定: TryWrite 失敗時はフレームドロップとして処理
 									if (!session._frameSignal.Writer.TryWrite(seq))
 									{
-										// 【Minor修正】 session._droppedFrameCount を使用（設計書 §1740-1731 の規定：メソッドスコープではなくセッションスコープ）
-										// 設計書 §1740-1731 ではメソッドスコープの droppedCount を規定しているが、
+										// session._droppedFrameCount を使用（セッションスコープでドロップ回数を累積）
+										// 設計書ではメソッドスコープの droppedCount を規定しているが、
 										// セッション全体のドロップ回数の累積統計は運用上のデバッグ・監視に有用なため、
 										// セッションスコープのフィールドとして実装している（設計書整合性の明記）
 										session._droppedFrameCount++;
-										// 【Critical修正】 設計書 §5.3.2 規定: キュー溢れ警告ログ出力（M1対応）
+										// 設計書 §5.3.2 規定: キュー溢れ警告ログ出力（M1対応）
 										Log(3, $"[RemoteController] _frameSignal queue full, dropping frame {seq} (session={session.SessionId}, dropped={session._droppedFrameCount})");
 									}
 								}
@@ -1357,15 +1348,15 @@ namespace Browser
 			}
 			finally
 			{
-				// [task13 / B-3・R1-CRIT-1] 自分のトークン（token 引数）が現在有効な CTS のトークンと一致する場合のみ null にクリアする
+				// 自分のトークン（token 引数）が現在有効な CTS のトークンと一致する場合のみ null にクリアする
 				// （新タスク起動で _centralCaptureCts が差し替えられた場合、旧タスクの finally はクリアしない）
 				// これにより、旧タスクの遅延 finally が新タスク参照を null 上書きして
 				// 「ループ稼働中なのに task==null」状態になるのを防ぐ（S3 解消）
 				lock (_captureStartLock)
 				{
-					// [task13 / R3-CRIT-2] null チェック先行: _centralCaptureCts == null の場合、
+					// null チェック先行: _centralCaptureCts == null の場合、
 					// && の短絡評価で .Token アクセスが回避され、タスク参照は**クリアしない**
-					// [task13 / R1-CRIT-1・Dispose リスク対策] .Token アクセスを try-catch で保護
+					// .Token アクセスを try-catch で保護
 					// （dotnet/runtime#105811: Dispose 後 .Token アクセスが ObjectDisposedException を投げ得る）
 					try
 					{
@@ -1381,7 +1372,7 @@ namespace Browser
 					}
 					catch (ObjectDisposedException)
 					{
-						// [task13 / L7] 例外をサイレントに握りつぶさない（Log で記録）
+						// 例外をサイレントに握りつぶさない（Log で記録）
 						Log(3, "[RemoteController] 中央キャプチャループ終了: CTSがDispose済みのためtoken比較をスキップ");
 					}
 				}
@@ -1391,7 +1382,7 @@ namespace Browser
 		
 		//====================================================================================
 		// 処理ブロック名 : RecordCaptureLatency
-		// 概要           : [案G-2] CaptureCanvasAsync の実行遅延統計を記録し、
+		// 概要           : CaptureCanvasAsync の実行遅延統計を記録し、
 		//                  移動平均が500msを超過した場合に警告ログを出力する。
 		//------------------------------------------------------------------------------------
 		private void RecordCaptureLatency(long elapsedMs)
@@ -1408,7 +1399,7 @@ namespace Browser
 				var max = _captureLatencyHistory.Max();
 				var min = _captureLatencyHistory.Min();
 		
-				// [案G-3] FPS推定値算出
+				// FPS推定値算出
 				var theoreticalMaxFps = avg > 0 ? 1000.0 / avg : 0;
 		
 				if (avg > 500)
@@ -1417,7 +1408,7 @@ namespace Browser
 				}
 				else
 				{
-					// [二次レビュー修正] 正常系ログを100フレームに1回に抑制（ログI/O負荷軽減）
+					// 正常系ログを100フレームに1回に抑制（ログI/O負荷軽減）
 					if (Interlocked.Increment(ref _sendFrameCounter) % 100 == 0)
 					{
 						Log(3, $"[Profile] CaptureCanvasAsync: {elapsedMs}ms, avg={avg:F0}ms, min={min}ms, max={max}ms, theoreticalMaxFPS={theoreticalMaxFps:F1}, samples={_captureLatencyHistory.Count}");

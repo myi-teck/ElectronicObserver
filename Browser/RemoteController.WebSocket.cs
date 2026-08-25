@@ -43,7 +43,7 @@ namespace Browser
 			public DateTime LastHeartbeat { get; set; }
 			/// <summary>
 			/// WebSocket 接続確立時刻。ProtocolVersionTimeoutMs によるフォールバック判定に使用。
-			/// 2026/08/13 myi 追記（task28 二次レビュー修正：バージョン検出タイムアウト対応）
+			/// （バージョン検出タイムアウト対応）
 			/// </summary>
 			public DateTime ConnectionStartTime { get; }
 
@@ -95,7 +95,7 @@ namespace Browser
 			/// <summary>
 			/// フレームドロップカウント（TryWrite 失敗時にインクリメント、統計・ログに反映）
 			/// 設計書 §5.1.2 規定によるフレームドロップの可視化用
-			/// ※ 設計書 §1740-1731 ではメソッドスコープの droppedCount を規定しているが、
+			/// ※ 設計書ではメソッドスコープの droppedCount を規定しているが、
 			///   セッション全体のドロップ回数の累積統計は運用上のデバッグ・監視に有用なため、
 			///   セッションスコープのフィールドとして実装している（設計書整合性の明記）
 			/// </summary>
@@ -103,7 +103,7 @@ namespace Browser
 	
 			/// <summary>
 			/// フレーム到着シグナル（Channel使用、例外ベースフロー制御排除）
-			/// 【Major修正】 設計書 ver 3.9 §1728-1731 規定: キューサイズ 30 に統一
+			/// キューサイズ 30 に統一（設計書規定）
 			/// 30fps で約1秒分のバッファリング。30フレーム超過で TryWrite 失敗→フレームドロップ
 			/// </summary>
 			public readonly Channel<int> _frameSignal = Channel.CreateBounded<int>(new BoundedChannelOptions(30)
@@ -161,21 +161,21 @@ namespace Browser
 			}
 
 			/// <summary>
-			/// [task19 P2] このセッションに SPS/PPS (description) を送信済みかどうかのフラグ
+			/// このセッションに SPS/PPS (description) を送信済みかどうかのフラグ
 			/// WebCodecs モードでキーフレーム送信前に Type=0x02 の Description フレームを送信済みか管理する
 			/// reinit_decoder 受信時に false にリセットして再送信を行う
 			/// </summary>
 			public volatile bool DescriptionSent;
 
-			// [task19 レビュー指摘 M1] SPS/PPS 送信バックオフ状態（Interlocked/Volatile 管理）
+			// SPS/PPS 送信バックオフ状態（Interlocked/Volatile 管理）
 			// 送信失敗の連続回数が閾値に達した場合、一定期間だけ再送を抑制する（P4a と同様の ticks 管理）
 			private int _descSendFailCount;
 			private long _descLastSendTicks;  // 最終 SPS/PPS 送信試行時刻（DateTime.UtcNow.Ticks）
-			// [task19 レビュー指摘 M2] 最終 reinit_decoder 受信時刻（レートリミット用）
+			// 最終 reinit_decoder 受信時刻（レートリミット用）
 			private long _lastReinitTicks;
-			// [task19 レビュー指摘 M2b] 最終 switch_mode 受信時刻（レートリミット用）
+			// 最終 switch_mode 受信時刻（レートリミット用）
 			private long _lastSwitchModeTicks;
-			// [task19 レビュー指摘 M3] 最終 Version 1 警告ログ出力時刻（ダウンスープリング用）
+			// 最終 Version 1 警告ログ出力時刻（ダウンスープリング用）
 			private long _lastV1WarnTicks;
 
 			public WebSocketSession(System.Net.WebSockets.WebSocket ws, string sessionId)
@@ -192,7 +192,7 @@ namespace Browser
 			}
 
 			/// <summary>
-			/// [task19 レビュー指摘 M1] SPS/PPS 送信成功を記録する（失敗カウントをリセット）
+			/// SPS/PPS 送信成功を記録する（失敗カウントをリセット）
 			/// </summary>
 			public void MarkDescriptionSentSuccess()
 			{
@@ -201,7 +201,7 @@ namespace Browser
 			}
 
 			/// <summary>
-			/// [task19 レビュー指摘 M1] SPS/PPS 送信失敗を記録する（失敗カウントをインクリメント）
+			/// SPS/PPS 送信失敗を記録する（失敗カウントをインクリメント）
 			/// </summary>
 			public void MarkDescriptionSentFailure()
 			{
@@ -210,7 +210,7 @@ namespace Browser
 			}
 
 			/// <summary>
-			/// [task19 レビュー指摘 M1] SPS/PPS の再送を許可しているかを判定する（バックオフ制御）
+			/// SPS/PPS の再送を許可しているかを判定する（バックオフ制御）
 			/// 連続失敗が DescriptionSendBackoffFailThreshold 回に達した場合、
 			/// 最終試行から DescriptionSendBackoffMs 経過するまで再送を抑制する
 			/// </summary>
@@ -223,7 +223,7 @@ namespace Browser
 			}
 
 			/// <summary>
-			/// [task19 レビュー指摘 M1/M2] SPS/PPS 送信状態（失敗カウント・最終試行時刻）をリセットする
+			/// SPS/PPS 送信状態（失敗カウント・最終試行時刻）をリセットする
 			/// reinit_decoder / switch_mode(WebCodecs) 受信時に呼び、即時再送を許可する
 			/// </summary>
 			public void ResetDescriptionSendState()
@@ -233,7 +233,7 @@ namespace Browser
 			}
 
 			/// <summary>
-			/// [task19 レビュー指摘 M2] reinit_decoder のレートリミット判定（直近 ReinitDecoderMinIntervalMs 以内の連続受信を拒否）
+			/// reinit_decoder のレートリミット判定（直近 ReinitDecoderMinIntervalMs 以内の連続受信を拒否）
 			/// 許可された場合は時刻を記録して true を返す
 			/// </summary>
 			public bool TryAcceptReinitDecoder()
@@ -249,7 +249,7 @@ namespace Browser
 			}
 
 			/// <summary>
-			/// [task19 レビュー指摘 M2b] switch_mode のレートリミット判定（直近 SwitchModeMinIntervalMs 以内の連続受信を拒否）
+			/// switch_mode のレートリミット判定（直近 SwitchModeMinIntervalMs 以内の連続受信を拒否）
 			/// SetCaptureModeAsync がキャプチャループの停止・起動を伴うため、連打時の再起動ストームを防止する
 			/// </summary>
 			public bool TryAcceptSwitchMode()
@@ -265,7 +265,7 @@ namespace Browser
 			}
 
 			/// <summary>
-			/// [task19 レビュー指摘 M3] Version 1 クライアント警告ログのダウンスープリング判定
+			/// Version 1 クライアント警告ログのダウンスープリング判定
 			/// 前回のログ出力から Version1WarnIntervalMs 以上経過した場合のみ true を返して時刻を記録する
 			/// </summary>
 			public bool TryLogVersion1Warning()
@@ -283,7 +283,7 @@ namespace Browser
 			/// <summary>
 			/// 最新フレームの到着を非同期待機します（送信タスクから呼び出し）。
 			/// Channelを使用し、例外ベースのフロー制御を排除する。
-			/// [Phase 5: Central Capture] 将来の中央キャプチャ機能で使用予定
+			/// 将来の中央キャプチャ機能で使用予定
 			/// </summary>
 			public async Task<bool> WaitForFrameAsync(int timeoutMs, CancellationToken token)
 			{
@@ -312,7 +312,7 @@ namespace Browser
 			/// 既存のフレームがある場合は破棄（ArrayPool へ返却）し、新しいフレームで上書き。
 			/// 操作全体は _bufferLock で排他制御されておりアトミック。
 			/// ChannelのTryWriteを使用し、例外ベースのフロー制御を排除する。
-			/// [Phase 5: Central Capture] 将来の中央キャプチャ機能で使用予定
+			/// 将来の中央キャプチャ機能で使用予定
 			/// </summary>
 			public void SetLatestFrame(byte[] data)
 			{
@@ -342,7 +342,7 @@ namespace Browser
 			/// 送信完了後には ReturnFrame で返却することを期待する。
 			/// フレームがない場合は default(ArraySegment<byte>) (Count == 0) を返す。
 			/// 操作全体は _bufferLock で排他制御されておりアトミック。
-			/// [Phase 5: Central Capture] 将来の中央キャプチャ機能で使用予定
+			/// 将来の中央キャプチャ機能で使用予定
 			/// </summary>
 			public ArraySegment<byte> GetLatestFrame()
 			{
@@ -365,7 +365,7 @@ namespace Browser
 
 			/// <summary>
 			/// 送信完了後、ArrayPool から借りたフレームバッファを返却します。
-			/// [Phase 5: Central Capture] 将来の中央キャプチャ機能で使用予定
+			/// 将来の中央キャプチャ機能で使用予定
 			/// </summary>
 			public void ReturnFrame(ArraySegment<byte> segment)
 			{
@@ -409,9 +409,6 @@ namespace Browser
 		//                  キャプチャタスクと送信タスクを分離し、SendAsyncのawaitによる遅延蓄積を防ぎます。
 		//                  例外発生時は Abort() により確実にソケットリソースを破棄します。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/27
-		// version        : 2.00 (WebSocket.Abort 導入, 例外ハンドリング強化)
 		//------------------------------------------------------------------------------------
 		//====================================================================================
 		// 処理ブロック名 : RemoveWebSocketSession
@@ -419,9 +416,6 @@ namespace Browser
 		//                  セッションのタスク（ファンアウト/送信/受信）をキャンセルし、
 		//                  SharedFrameBufferの参照カウントが正しくデクリメントされることを保証する。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/29
-		// version        : 1.00 (フェーズ6：接続管理とクリーンアップの実装)
 		//------------------------------------------------------------------------------------
 		private void RemoveWebSocketSession(string sessionId)
 		{
@@ -435,7 +429,7 @@ namespace Browser
 				// 2. 接続カウントをデクリメント
 				Interlocked.Decrement(ref _activeConnectionCount);
 
-				// 3. 【二次レビュー Major 修正】 クライアントバージョンエントリを削除
+				// 3. クライアントバージョンエントリを削除
 				// 設計書 §5.3.3 定義: WebSocket 切断時に _clientVersions からエントリを削除
 				RemoveClientVersion(sessionId);
 
@@ -448,7 +442,7 @@ namespace Browser
 
 		//====================================================================================
 		// 処理ブロック名 : IsWebSocketOpen
-		// 概要           : [二次レビュー修正] WebSocketの接続状態を安全に確認するヘルパーメソッド。
+		// 概要           : WebSocketの接続状態を安全に確認するヘルパーメソッド。
 		//                  WebSocketState プロパティのアクセスを try-catch で保護し、
 		//                  Abort() や CloseAsync() 呼び出し後の例外発生を防止する。
 		//------------------------------------------------------------------------------------
@@ -523,14 +517,14 @@ namespace Browser
 
 				_webSocketSessions.TryAdd(sessionId, session);
 
-				// 【二次レビュー Major 修正】 クライアントバージョンの初期化（null = 未決状態）
+				// クライアントバージョンの初期化（null = 未決状態）
 				// 設計書 §5.3.3 定義: 接続確立時に _clientVersions に null エントリを追加
 				// クライアントから PROTOCOL_VERSION メッセージを受信するまでバージョン未決状態を保持
 				_clientVersions[sessionId] = null;
 
 				Log(2, $"[RemoteController] WebSocket 接続確立: SessionID={sessionId}, IP={req.RemoteEndPoint}, 接続数={count}/{MaxConcurrentClients}");
 
-				// [task13 / B-2] 中央キャプチャループ起動判定を EnsureCentralCaptureLoopStarted() に統合
+				// 中央キャプチャループ起動判定を EnsureCentralCaptureLoopStarted() に統合
 				// （TOCTOU 解消: _captureStartLock 内での再チェック / 旧 CTS は Dispose せず GC に委譲 —
 				// dotnet/runtime#105811 参照: Dispose 後 .Token アクセスが ObjectDisposedException を投げ得るため
 				// 旧タスク finally 側の try-catch と連携）
@@ -565,9 +559,6 @@ namespace Browser
 		//                  ・他セッションの高FPS要求により中央キャプチャが高周期（16ms等）で動いている場合のみ
 		//                    本セッションの目標FPSに合わせてフレームを間引き（ドロップ）する。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/29
-		// version        : 2.00 (v3.0設計書によるバイパス条件・マージン・統計変数修正)
 		//------------------------------------------------------------------------------------
 		private async Task WebSocketFanoutLoopAsync(WebSocketSession session)
 		{
@@ -579,7 +570,7 @@ namespace Browser
 			double ticksPerMs = (double)System.Diagnostics.Stopwatch.Frequency / 1000.0;
 			long droppedFramesCount = 0;
 			int sessionFrameCounter = 0;
-			// [task13 / B-4] フレーム到着待機連続タイムアウト回数（try 外で初期化、§7.4-5）
+			// フレーム到着待機連続タイムアウト回数（try 外で初期化、§7.4-5）
 			int frameWaitTimeoutStreak = 0;
 		
 			try
@@ -591,7 +582,7 @@ namespace Browser
 			
 					if (frameReady)
 					{
-						// [task13 / R1-MINOR-1] 成功時のみリセット（失敗は else 分支でカウント）
+						// 成功時のみリセット（失敗は else 分支でカウント）
 						frameWaitTimeoutStreak = 0;
 						int centralInterval = GetMaxFpsIntervalMs();
 		
@@ -640,7 +631,7 @@ namespace Browser
 								{
 									if (IsWebSocketOpen(ws))
 									{
-										// [ver 3.0修正] ヘッダーを7バイトに拡張 (Version+Type+Flags+Seq)
+										// ヘッダーを7バイトに拡張 (Version+Type+Flags+Seq)
 										byte[] combined = _bufferPool.Rent(7 + dataLength);
 										try
 										{
@@ -688,14 +679,14 @@ namespace Browser
 					}
 					else
 					{
-						// [task13 / B-4・L6] 自己救済: フレーム到着待ちが連続3回タイムアウトした場合、
+						// 自己救済: フレーム到着待ちが連続3回タイムアウトした場合、
 						// 中央キャプチャループ不在を検知して再起動を試行する
-						// [task13 / R1-MINOR-1] 失敗時のみカウント（成功時のみリセットする方式）
+						// 失敗時のみカウント（成功時のみリセットする方式）
 						frameWaitTimeoutStreak++;
-						// [task13 / Minor 3] 連続タイムアウト閾値の定数化（フレーム到着待機が3回連続でタイムアウトで自己救済）
+						// 連続タイムアウト閾値の定数化（フレーム到着待機が3回連続でタイムアウトで自己救済）
 						if (frameWaitTimeoutStreak >= FrameWaitTimeoutStreakThreshold)
 						{
-							// [task13 / R1-MINOR-1] 戻り値に関わらずリセットして毎フレームのロック取得を防止
+							// 戻り値に関わらずリセットして毎フレームのロック取得を防止
 							frameWaitTimeoutStreak = 0;
 							if (EnsureCentralCaptureLoopStarted("fanout_self_heal"))
 							{
@@ -719,14 +710,11 @@ namespace Browser
 
 		//====================================================================================
 		// 処理ブロック名 : WebSocketCaptureLoopAsync
-		// 概要           : [Phase 5] 廃止予定。各セッション独立キャプチャを中央キャプチャへ移行。
+		// 概要           : 廃止予定。各セッション独立キャプチャを中央キャプチャへ移行。
 		//                  後方互換性のため残すが一時的に無効化されている。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/27
-		// version        : 1.00
 		//------------------------------------------------------------------------------------
-		// [Phase 5: 廃止] 中央キャプチャ方式へ移行したため、このメソッドは使用されません。
+		// 中央キャプチャ方式へ移行したため、このメソッドは使用されません。
 		private async Task WebSocketCaptureLoopAsync(WebSocketSession session)
 		{
 			var ws = session.WebSocket;
@@ -761,7 +749,7 @@ namespace Browser
 
 					if (type == "full" && !string.IsNullOrEmpty(dataUrl))
 					{
-						// 2026/07/29 修正: ArrayPool を使用して GC 負荷を低減
+						// ArrayPool を使用して GC 負荷を低減
 						var (webpData, actualDataLength) = ConvertToBytesOptimized(dataUrl, "data:image/webp");
 						if (webpData != null && actualDataLength > 0)
 						{
@@ -904,7 +892,7 @@ namespace Browser
 			var ws = session.WebSocket;
 			var token = session.CancellationToken.Token;
 
-			// [案E-2] Heartbeatスキップカウンター（サーバーC#側管理）
+			// Heartbeatスキップカウンター（サーバーC#側管理）
 			int consecutiveHeartbeatSkips = 0;
 			const int MAX_HEARTBEAT_SKIP = 3; // サーバーC#のPing/Pongタイムアウトと整合
 
@@ -919,7 +907,7 @@ namespace Browser
 					// Heartbeat 処理
 					if ((DateTime.UtcNow - session.LastHeartbeat).TotalMilliseconds > WebSocketHeartbeatIntervalMs)
 					{
-						// [案E-2] ノンブロッキング送信: セマフォ取得できない場合はスキップ
+						// ノンブロッキング送信: セマフォ取得できない場合はスキップ
 						// .NET Framework 4.8ではTryWait(0)が存在しないためWait(0)を使用
 						if (session.SendSemaphore.Wait(0))
 						{
@@ -962,9 +950,6 @@ namespace Browser
 		// 処理ブロック名 : WebSocketReceiveLoopAsync
 		// 概要           : WebSocket からクライアントの操作イベントを受信するループ。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/27
-		// version        : 1.00
 		//------------------------------------------------------------------------------------
 		private async Task WebSocketReceiveLoopAsync(WebSocketSession session)
 		{
@@ -972,7 +957,7 @@ namespace Browser
 			var token = session.CancellationToken.Token;
 
 			// バッファプールから受信バッファを割り当て
-			// [二次レビュー修正] 受信バッファを64KBに拡大（1920x1080高画質WebPは50KB〜150KB）
+			// 受信バッファを64KBに拡大（1920x1080高画質WebPは50KB〜150KB）
 			byte[] receiveBuffer = _bufferPool.Rent(65536);
 
 			try
@@ -1018,11 +1003,8 @@ namespace Browser
 		// 処理ブロック名 : ProcessWebSocketControlMessage
 		// 概要           : WebSocket 経由で受信した制御メッセージを処理します。
 		//                  形式: JSON { "action": "init" }, { "action": "move", "x": 0.5, "y": 0.5 }
-		//                  2026/07/29 myi 修正：async Task化、セッション固有カーソル対応
+		// async Task化、セッション固有カーソル対応
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/27
-		// version        : 3.00 (async Task化、セッション固有カーソル対応)
 		//------------------------------------------------------------------------------------
 		private async Task ProcessWebSocketControlMessageAsync(WebSocketSession session, string message)
 		{
@@ -1032,7 +1014,7 @@ namespace Browser
 				string xStr = ExtractJsonString(message, "x");
 				string yStr = ExtractJsonString(message, "y");
 	
-				// 【二次レビュー Major 修正】 PROTOCOL_VERSION: クライアントのプロトコルバージョンを受信
+				// PROTOCOL_VERSION: クライアントのプロトコルバージョンを受信
 				// 設計書 §5.3.3 定義: クライアント接続時に PROTOCOL_VERSION を送信し、サーバーがセッションごとにバージョンを記録
 				// バージョン番号は将来の仕様が互換性なく変更される場合にインクリメント
 				// Version 2: 7Bヘッダー (Version + Type + Flags + Seq)
@@ -1059,7 +1041,7 @@ namespace Browser
 					try
 					{
 						// 1. 画面キーフレームのキャプチャと変換（SendSemaphore 取得前）
-						// 2026/07/29 修正: キャプチャと変換を SendSemaphore 取得前に行い、
+						// キャプチャと変換を SendSemaphore 取得前に行い、
 						//    SendSemaphore の保持時間を送信処理のみ(最小)に制限
 						var capture = await CaptureCanvasAsync(true); // isInit = true
 						byte[] webpData = null;
@@ -1079,8 +1061,8 @@ namespace Browser
 							// セマフォ保持時間を送信処理のみに極小化
 							int seq = Interlocked.Increment(ref _globalSequenceNumber);
 
-							// [二次レビュー修正] 既存の _headerBuffer を流用（毎回の new byte[6] によるアロケーションを排除）
-							// [ver 3.0修正] 7Bヘッダー対応
+							// 既存の _headerBuffer を流用（毎回の new byte[6] によるアロケーションを排除）
+							// 7Bヘッダー対応
 							var header = session._headerBuffer;
 							header[0] = (byte)WebSocketProtocolVersion;
 							header[1] = 0; // Type
@@ -1101,7 +1083,7 @@ namespace Browser
 								if (session.WebSocket.State == WebSocketState.Open)
 								{
 									// [FPS Fix] WebSocketフラグメント化を排除: ヘッダーとデータを単一メッセージとして送信
-									// [ver 3.0修正] 7Bヘッダー対応
+									// 7Bヘッダー対応
 									byte[] combined = _bufferPool.Rent(7 + actualDataLength);
 									try
 									{
@@ -1162,7 +1144,7 @@ namespace Browser
 					{
 						session.TargetIntervalMs = Math.Max(0, Math.Min(300000, intervalMs));
 
-						// [外部レビュー 指摘5] FPS変更を受信したら中央キャプチャのFPSキャッシュをクリア
+						// FPS変更を受信したら中央キャプチャのFPSキャッシュをクリア
 						// ※ GetMaxFpsIntervalMs() は _cachedSessionCount が一致している場合、
 						//   キャッシュされた _cachedMaxFpsInterval を返すため、
 						//   接続数が変わらない場合でも再計算されるよう強制する
@@ -1172,22 +1154,22 @@ namespace Browser
 						Log(2, $"[RemoteController] WebSocket 目標間隔変更受領: {session.TargetIntervalMs}ms → JS側: {jsInterval}ms (Session: {session.SessionId})");
 
 						// WebCodecs キャプチャループの目標 FPS も即座に更新
-						// [task23 F-7] intervalMs <= 0 は「無制限 (MAX)」= 60fps 上限と解釈し、
+						// intervalMs <= 0 は「無制限 (MAX)」= 60fps 上限と解釈し、
 						// JS 側 jsInterval = 16ms（60fps 相当）と一致させる（修正前は 30 で不一致）
 						int targetFps = (session.TargetIntervalMs <= 0) ? 60 : Math.Max(1, Math.Min(60, (int)Math.Round(1000.0 / session.TargetIntervalMs)));
 						SetWebCodecsFps(targetFps);
 	
-						// [task23 F-4/F-5] 旧実装「window._kancolleCaptureEngine.intervalMs」JS 注入を削除:
+						// 「window._kancolleCaptureEngine.intervalMs」JS 注入は削除済み:
 						// CaptureEngineScript（FormBrowser.cs）に intervalMs プロパティが存在せず no-op だったため
 						// （空 catch { } も同時に解消・AGENTS.md NEVER「サイレントな例外の握りつぶし禁止」）
 						// FPS 制御は C# WCS キャプチャループ（Task.Delay によるアダプティブ FPS）が唯一の正（source of truth）
 					}
 				}
-				// [task14] クライアント中継イベントログの受信（§3.5a: move 分岐より前に配置）
+				// クライアント中継イベントログの受信（§3.5a: move 分岐より前に配置）
 				else if (action == "event_log")
 				{
 					string evJson = ExtractJsonString(message, "ev"); // 既存ヘルパを流用（JSON ライブラリ不使用・既存パターン）
-					// [task14 Major-S2] 受信検証: 空・サイズ上限超過・JSON オブジェクト形状以外を拒否
+					// 受信検証: 空・サイズ上限超過・JSON オブジェクト形状以外を拒否
 					if (string.IsNullOrEmpty(evJson) || evJson.Length > 4096 ||
 						!evJson.TrimStart().StartsWith("{") || !evJson.TrimEnd().EndsWith("}"))
 					{
@@ -1201,7 +1183,7 @@ namespace Browser
 					session.SetCursorX(Math.Max(0, Math.Min(1.0, x)));
 					session.SetCursorY(Math.Max(0, Math.Min(1.0, y)));
 					await TriggerMouseMoveAsync(session);
-					// [task14 §3.5b] サーバ側アクション実行ログ（クライアント送信ログと時系列で突き合わせる）
+					// サーバ側アクション実行ログ（クライアント送信ログと時系列で突き合わせる）
 					AppendServerActionLog("move", x, y, session.SessionId, "ws");
 				}
 				else if (action == "click")
@@ -1216,7 +1198,7 @@ namespace Browser
 						session.SetCursorY(Math.Max(0, Math.Min(1.0, cyy)));
 					}
 					await TriggerMouseClickAsync(session);
-					// [task14 §3.5b] サーバ側アクション実行ログ
+					// サーバ側アクション実行ログ
 					AppendServerActionLog("click", cx, cy, session.SessionId, "ws");
 				}
 				else if (action == "touch_click" && double.TryParse(xStr, out double tx) && double.TryParse(yStr, out double ty))
@@ -1224,7 +1206,7 @@ namespace Browser
 					session.SetCursorX(Math.Max(0, Math.Min(1.0, tx)));
 					session.SetCursorY(Math.Max(0, Math.Min(1.0, ty)));
 					await TriggerMouseClickAsync(session);
-					// [task14 §3.5b] サーバ側アクション実行ログ
+					// サーバ側アクション実行ログ
 					AppendServerActionLog("touch_click", tx, ty, session.SessionId, "ws");
 				}
 				else if (action == "mousedown")
@@ -1239,7 +1221,7 @@ namespace Browser
 						session.SetCursorY(Math.Max(0, Math.Min(1.0, myy)));
 					}
 					await TriggerMouseDownAsync(session);
-					// [task14 §3.5b] サーバ側アクション実行ログ
+					// サーバ側アクション実行ログ
 					AppendServerActionLog("mousedown", mx, my, session.SessionId, "ws");
 				}
 				else if (action == "mouseup")
@@ -1254,15 +1236,15 @@ namespace Browser
 						session.SetCursorY(Math.Max(0, Math.Min(1.0, uyy)));
 					}
 					await TriggerMouseUpAsync(session);
-					// [task14 §3.5b] サーバ側アクション実行ログ
+					// サーバ側アクション実行ログ
 					AppendServerActionLog("mouseup", ux, uy, session.SessionId, "ws");
 				}
-				// [task19 P3] WCS モード切替（クライアント switchToWcsMode() → { action: 'switch_mode', mode: 'webcodecs' }）
+				// WCS モード切替（クライアント switchToWcsMode() → { action: 'switch_mode', mode: 'webcodecs' }）
 				// 設計書 §5.2 整合: クライアントは既存 WebSocket 接続を維持したまま
 				// sendWsControl を用いてモード切替を要求し、サーバーが SetCaptureModeAsync を実行する
 				else if (action == "switch_mode")
 				{
-					// [task19 レビュー指摘 M2b] レートリミット: SetCaptureModeAsync はキャプチャループの停止・起動を伴うため、
+					// レートリミット: SetCaptureModeAsync はキャプチャループの停止・起動を伴うため、
 					// 5秒以内の連続要求は拒否して再起動ストームを防止する（クライアント側 sendWsControl にはスロットリングがない）
 					if (!session.TryAcceptSwitchMode())
 					{
@@ -1270,7 +1252,7 @@ namespace Browser
 						return;
 					}
 
-					// [task19 レビュー指摘 m1] 厳格な入力バリデーション:
+					// 厳格な入力バリデーション:
 					// JSON の "mode" 欠損（null）と無効値（想定外文字列）を区別してログし、
 					// いずれも安全側（WebP）へフォールバックする（例外の握りつぶし禁止のためログ出力）
 					string modeStr = ExtractJsonString(message, "mode");
@@ -1295,15 +1277,15 @@ namespace Browser
 					Log(2, $"[RemoteController] WebSocket switch_mode 受信: {targetMode} (Session: {session.SessionId})");
 					await SetCaptureModeAsync(targetMode);
 
-					// [task19 P3] edge case 対策: サーバーが既に WebCodecs モードの場合、
+					// edge case 対策: サーバーが既に WebCodecs モードの場合、
 					// SetCaptureModeAsync は早期リターン（旧=新モード）するため SPS/PPS 再送信されない。
 					// 一方、クライアント switchToWcsMode() はデコーダ状態をリセット済み（_videoDecoderDescription=null）
 					// であるため、DescriptionSent をリセットし、次フレームで SPS/PPS を再送信させる
-					// [task13] 生存性チェック: サーバが既に WebCodecs モードの場合、SetCaptureModeAsync は
+					// 生存性チェック: サーバが既に WebCodecs モードの場合、SetCaptureModeAsync は
 					// 早期リターン（旧=新モード）するため、WCS ループが不在（前回 WebP 切替、または
 					// モード切替で停止済み）の場合に再起動する。
 					// ※ WCS ループは接続数0で自終了しない（停止は SetCaptureModeAsync の Cancel 経由のみ）。
-					// [task13 / R1-MAJOR-1] 判定基準はクライアント送信の targetMode ではなく、
+					// 判定基準はクライアント送信の targetMode ではなく、
 					// SetCaptureModeAsync 実行後の実効モード _currentCaptureMode を用いる。
 					// SetCaptureModeAsync 内で初期化失敗 → WebP フォールバックした場合は _currentCaptureMode == WebP となり、
 					// 生存性チェック（StartWebCodecsCaptureLoopAsync 再呼び出し）がスキップされるため、
@@ -1311,26 +1293,26 @@ namespace Browser
 					if (_currentCaptureMode == CaptureMode.WebCodecs)
 					{
 						session.DescriptionSent = false;
-						// [task19 レビュー指摘 M1] バックオフ状態もリセットし、即座に再送を許可する
+						// バックオフ状態もリセットし、即座に再送を許可する
 						session.ResetDescriptionSendState();
-						// [task13] ループ不在（_webCodecsCaptureTask が null または完了）なら再起動
+						// ループ不在（_webCodecsCaptureTask が null または完了）なら再起動
 						// （_currentCaptureMode 基準のため、WebP フォールバック後の多重起動・多重フォールバックは起きない）
 						var wcsTask = _webCodecsCaptureTask;
 						if (wcsTask == null || wcsTask.IsCompleted)
 						{
-							// [task13 / L2] WCS ループ不在を検知、再起動
+							// WCS ループ不在を検知、再起動
 							Log(2, $"[RemoteController] switch_mode(WebCodecs) で WCS ループ不在を検知、再起動します (Session: {session.SessionId})");
 							await StartWebCodecsCaptureLoopAsync();
 						}
 						Log(2, $"[RemoteController] switch_mode(WebCodecs) で SPS/PPS 再送トリガー (Session: {session.SessionId})");
 					}
 				}
-				// [task19 P3] SPS/PPS 再送信要求（クライアントがデコードエラー上限到達時に送信、設計書 §4.2.3 Major 4）
+				// SPS/PPS 再送信要求（クライアントがデコードエラー上限到達時に送信、設計書 §4.2.3 Major 4）
 				// DescriptionSent をリセットすると WebCodecsCaptureLoopAsync が
 				// 次フレームより前に Type=0x02 の SPS/PPS フレームを再送信する
 				else if (action == "reinit_decoder")
 				{
-					// [task19 レビュー指摘 M2] レートリミット: クライアントの 5秒スロットリング（_clampReinitIntervalMs）と整合させ、
+					// レートリミット: クライアントの 5秒スロットリング（_clampReinitIntervalMs）と整合させ、
 					// 5秒以内の連続受信を拒否して SPS/PPS の無限再送（帯域浪費・サーバー負荷増大）を防ぐ
 					if (!session.TryAcceptReinitDecoder())
 					{
@@ -1338,14 +1320,14 @@ namespace Browser
 						return;
 					}
 
-					// [task19 レビュー指摘 M2] キャッシュ未保持時は SPS/PPS を再送できないため、
+					// キャッシュ未保持時は SPS/PPS を再送できないため、
 					// フラグリセットのみ行っても再送信が起きない状態になる。警告ログで可視化する
 					if (_lastWebCodecsDescription == null)
 					{
 						Log(3, $"[RemoteController] reinit_decoder 受信: SPS/PPS キャッシュが存在しないため再送信できません (Session: {session.SessionId})");
 					}
 					session.DescriptionSent = false;
-					// [task19 レビュー指摘 M1] バックオフ状態もリセットし、即座に再送を許可する
+					// バックオフ状態もリセットし、即座に再送を許可する
 					session.ResetDescriptionSendState();
 					Log(2, $"[RemoteController] reinit_decoder 受信: SPS/PPS を再送信します (Session: {session.SessionId}, cached={(_lastWebCodecsDescription?.Length.ToString() ?? "null")} bytes)");
 				}
@@ -1361,9 +1343,6 @@ namespace Browser
 		// 概要           : JSON 文字列から指定されたキーの値を抽出します（軽量パース）。
 		//                  エスケープ文字 (\") に対応し、キー名の境界チェックを追加。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/27
-		// version        : 1.00
 		//------------------------------------------------------------------------------------
 		private string ExtractJsonString(string json, string key)
 		{
@@ -1447,9 +1426,6 @@ namespace Browser
 		// 概要           : 再接続時にクライアントがHUDデータを最新の状態に同期するための
 		//                  init_hudパケットを送信します。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/29
-		// version        : 1.00
 		//------------------------------------------------------------------------------------
 		private async Task SendInitHudDataAsync(WebSocketSession session)
 		{
@@ -1510,9 +1486,6 @@ namespace Browser
 		//                  .NET Framework 4.8 の WebSocket は Ping/Pong メッセージをサポートしないため、
 		//                  アプリケーションレベルの Heartbeat として Text メッセージを送信します。
 		//------------------------------------------------------------------------------------
-		// author         : myi
-		// creation date  : 2026/07/27
-		// version        : 1.00
 		//------------------------------------------------------------------------------------
 		private async Task SendHeartbeatAsync(System.Net.WebSockets.WebSocket ws, CancellationToken token)
 		{
@@ -1530,34 +1503,34 @@ namespace Browser
 			}
 		}
 
-		// 2026/07/29 新規作成（WebSocketプロトコルバージョン定数）
+		// （WebSocketプロトコルバージョン定数）
 		// バージョン番号は将来の仕様が互換性なく変更される場合にインクリメント
 		// Version 2: 7Bヘッダー (Version + Type + Flags + Seq)
 		private const int WebSocketProtocolVersion = 2;
 
-		// 2026/07/29 新規作成（最大同時接続数制限）
+		// （最大同時接続数制限）
 		private const int MaxConcurrentClients = 5;
 
-		// [task13 / Minor 3] フレーム到着待機の連続タイムアウト閾値（ファンアウト自己救済: N 回連続で中央キャプチャループを再起動）
+		// フレーム到着待機の連続タイムアウト閾値（ファンアウト自己救済: N 回連続で中央キャプチャループを再起動）
 		private const int FrameWaitTimeoutStreakThreshold = 3;
 
-		// [task19 レビュー指摘 M1] SPS/PPS 送信バックオフ定数
+		// SPS/PPS 送信バックオフ定数
 		// 連続失敗回数閾値超過後、最終試行から一定期間だけ再送を抑制し、
 		// ネットワーク断続時の無限再送ループ・ログスパイクを防ぐ
 		private const int DescriptionSendBackoffFailThreshold = 5;
 		private const int DescriptionSendBackoffMs = 5000;
 
-		// [task19 レビュー指摘 M2/M2b] 制御メッセージレートリミット定数（reinit_decoder / switch_mode）
+		// 制御メッセージレートリミット定数（reinit_decoder / switch_mode）
 		// クライアント側には 5秒スロット（_clampReinitIntervalMs）が存在するが、
 		// サーバー側もバグ・悪意あるクライアントの連打に対して防御する（帯域浪費・キャプチャループ再起動ストーム防止）
 		private const int ReinitDecoderMinIntervalMs = 5000;
 		private const int SwitchModeMinIntervalMs = 5000;
 
-		// [task19 レビュー指摘 M3] Version 1 クライアント警告ログのダウンスープリング間隔（ms）
+		// Version 1 クライアント警告ログのダウンスープリング間隔（ms）
 		// 毎フレーム出力するとログスパイクになるため、一定間隔でのみ出力する
 		private const int Version1WarnIntervalMs = 10000;
 
-		// 2026/07/27 新規作成（WebSocket Heartbeat 用バイト列の事前構築）
+		// （WebSocket Heartbeat 用バイト列の事前構築）
 		// 毎回の Encoding.UTF8.GetBytes("heartbeat") による一時バッファ割り当てを排除する。
 		private static readonly byte[] HeartbeatBytes = Encoding.UTF8.GetBytes("heartbeat");
 	}
