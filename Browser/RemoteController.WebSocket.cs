@@ -15,6 +15,7 @@
 //============================================================================================
 
 using System;
+using System.Buffers;
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
@@ -1528,5 +1529,36 @@ namespace Browser
 				Console.WriteLine($"RemoteController: Heartbeat 送信エラー: {ex.Message}");
 			}
 		}
+
+		// 2026/07/29 新規作成（WebSocketプロトコルバージョン定数）
+		// バージョン番号は将来の仕様が互換性なく変更される場合にインクリメント
+		// Version 2: 7Bヘッダー (Version + Type + Flags + Seq)
+		private const int WebSocketProtocolVersion = 2;
+
+		// 2026/07/29 新規作成（最大同時接続数制限）
+		private const int MaxConcurrentClients = 5;
+
+		// [task13 / Minor 3] フレーム到着待機の連続タイムアウト閾値（ファンアウト自己救済: N 回連続で中央キャプチャループを再起動）
+		private const int FrameWaitTimeoutStreakThreshold = 3;
+
+		// [task19 レビュー指摘 M1] SPS/PPS 送信バックオフ定数
+		// 連続失敗回数閾値超過後、最終試行から一定期間だけ再送を抑制し、
+		// ネットワーク断続時の無限再送ループ・ログスパイクを防ぐ
+		private const int DescriptionSendBackoffFailThreshold = 5;
+		private const int DescriptionSendBackoffMs = 5000;
+
+		// [task19 レビュー指摘 M2/M2b] 制御メッセージレートリミット定数（reinit_decoder / switch_mode）
+		// クライアント側には 5秒スロット（_clampReinitIntervalMs）が存在するが、
+		// サーバー側もバグ・悪意あるクライアントの連打に対して防御する（帯域浪費・キャプチャループ再起動ストーム防止）
+		private const int ReinitDecoderMinIntervalMs = 5000;
+		private const int SwitchModeMinIntervalMs = 5000;
+
+		// [task19 レビュー指摘 M3] Version 1 クライアント警告ログのダウンスープリング間隔（ms）
+		// 毎フレーム出力するとログスパイクになるため、一定間隔でのみ出力する
+		private const int Version1WarnIntervalMs = 10000;
+
+		// 2026/07/27 新規作成（WebSocket Heartbeat 用バイト列の事前構築）
+		// 毎回の Encoding.UTF8.GetBytes("heartbeat") による一時バッファ割り当てを排除する。
+		private static readonly byte[] HeartbeatBytes = Encoding.UTF8.GetBytes("heartbeat");
 	}
 }

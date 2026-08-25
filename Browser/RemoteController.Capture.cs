@@ -1773,5 +1773,63 @@ namespace Browser
 				res.Close();
 			}
 		}
+
+		//====================================================================================
+		// IPC 最適化 - スクリプト事前構築
+		//------------------------------------------------------------------------------------
+		// 2026/07/27 新規作成（EvaluateScriptAsync 用スクリプトの事前構築：GC 負荷削減）
+
+		// task28 Phase 0: WebCodecs pull 用スクリプト（ver 2.9 対応: Base64 文字列受信方式）
+		private const string WebCodecsPullScript =
+			"(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.pull_encoded();}})()";
+
+		// task28 Phase 0: WebCodecs エンコーダ停止スクリプト
+		private const string WebCodecsStopScript =
+			"(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.stopEncoder();}})()";
+
+		// [task19_v1 Critical修正] WebCodecs エンコーダ初期化スクリプトテンプレート（固有トークン: __CODEC__ / __BITRATE__ / __FPS__）
+		// string.Format で構築しない理由: string.Format は JS リテラルブレース（{codec:'...'} 等）を
+		// フォーマット項目と解釈し FormatException（「入力文字列の形式が正しくありません」）を投げるため、
+		// JS に到達せず WebCodecs モードが常に WebP にフォールバックしていた。
+		// verbatim 文字列 + トークン置換（string.Replace）で構築するため、ブレースのエスケープが不要で検証しやすい。
+		// [task19_v1 Critical#2修正] EvaluateScriptAsPromiseAsync はスクリプトを (async function(){ <script> })() で
+		// ラップし、Promise.resolve(...).then() で解決値を回収する。async function 内の式文は return しないと
+		// undefined を解決するため、テンプレート先頭に return を付与し initEncoder() の Promise を回収する。
+		private const string WebCodecsInitEncoderTemplate =
+			@"return (function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.initEncoder({codec:'__CODEC__',width:1200,height:720,bitrate:__BITRATE__,framerate:__FPS__,avc:{format:'annexb'}});}})();";
+
+		// [task19_v1 Critical#3修正] WebCodecs encodeFrame() 呼び出しスクリプトテンプレート（固有トークン: __IS_KEY_FRAME__）
+		// encodeFrame() は同期関数（Promise ではなくオブジェクトを直接返却）のため、非 Promise 版 EvaluateScriptAsync を使用。
+		// 結果は pull_encoded()（_encodedChunks キュー）で回収されるため、返却値は失敗検知のみに使用。
+		// （AGENTS.md: 空 catch 禁止 — engine 未初期化・例外時は警告ログを出力し、そのフレームをスキップしてループ継続）
+		// canvas はスクリプト内で document.querySelector('canvas') により取得（start() / pull() と同一ソース）。
+		// __IS_KEY_FRAME__ は true/false に置換（string.Replace）。
+		private const string WebCodecsEncodeFrameTemplate =
+			"(function(){if(window._kancolleCaptureEngine){var canvas=document.querySelector('canvas');if(!canvas){return{success:false,error:'Canvas not found'};}return window._kancolleCaptureEngine.encodeFrame(canvas,__IS_KEY_FRAME__);}})();";
+
+		private readonly object _modeLock = new object();
+
+		private volatile bool _isWebCodecsInitialized = false;
+
+		private volatile string _webCodecsCodec = "avc1.42001f"; // H.264 Baseline Level 3.1
+
+		// [task13 / A-3] WebCodecs 再初期化バックオフ（iframe 破棄直後・エンジン未注入時に毎フレーム再初期化しないためのスロットリング）
+		private DateTime _lastWebCodecsReinitUtc = DateTime.MinValue;
+		private const int WebCodecsReinitBackoffMs = 2000; // 再初期化試行間隔（2秒）
+		// [task13 / CRIT-2] バックオフ状態の lock 保護（_lastWebCodecsReinitUtc の読み書き・比較更新を原子化する）
+		private readonly object _webCodecsReinitLock = new object();
+
+		// [task13 / Minor 3] WebCodecs キャプチャループのリトライ待機間隔（ms）:
+		// frame 不在・engine 未初期化・encode 失敗・例外時等の短待機。Task.Delay(100) のマジックナンバー定数化
+		private const int WebCodecsFrameRetryDelayMs = 100;
+
+		// task28 Phase 2: WebCodecs キャプチャループのキーフレーム間隔（2秒）
+		private const int WebCodecsKeyFrameIntervalMs = 2000;
+
+		// 2026/07/27 新規作成（EvaluateScriptAsync 用スクリプトの事前構築：GC 負荷削減）
+		// 高頻度呼び出し（10FPS）の CaptureCanvasAsync で使用するスクリプトを
+		// 定数として事前定義し、呼び出し毎の文字列生成によるGC負荷および FormatException を排除する。
+		private const string CaptureScriptInit = "(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.pull(true);}})()";
+		private const string CaptureScriptNormal = "(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.pull(false);}})()";
 	}
 }

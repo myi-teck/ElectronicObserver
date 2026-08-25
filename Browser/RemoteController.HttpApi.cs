@@ -1199,5 +1199,10 @@ namespace Browser
 			}
 			return null;
 		}
+
+		// 2026/07/27 新規作成（set_quality アクション用スクリプトの事前構築）
+		// 動的な品質値のみを連結し、固定部分は定数として事前定義する。
+		private const string QualityScriptPrefix = "if(window._kancolleCaptureEngine)window._kancolleCaptureEngine.webpQuality=";
+		private const char QualityScriptSuffix = ';';
 	}
 }

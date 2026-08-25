@@ -15,6 +15,7 @@
 //============================================================================================
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -768,5 +769,19 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 </body>
 </html>";
 		}
+
+		// 2026/07/22 myi 新規作成（ブルートフォース対策：IPアドレスごとのログイン失敗追跡）
+		private readonly ConcurrentDictionary<string, (int count, DateTime lastAttempt)> _loginAttempts = new ConcurrentDictionary<string, (int count, DateTime lastAttempt)>();
+		private const int MaxLoginAttempts = 5;
+		private const int LoginBlockMinutes = 15;
+
+		// セッションのアイドルタイムアウト（30分）
+		private const int SessionTimeoutMinutes = 30;
+
+		// リフレッシュトークンの有効期間（30日）
+		private const int RefreshTokenDays = 30;
+
+		// 2026/07/22 myi 新規作成（クリーンアップ最適化：前回実行時刻を保持）
+		private DateTime _lastCleanupTime = DateTime.MinValue;
 	}
 }

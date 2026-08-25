@@ -61,21 +61,13 @@ using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.Drawing;
-using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.WebSockets;
-using System.Text;
 using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using CefSharp;
-using CefSharp.DevTools.Page;
-using CefSharp.WinForms;
 
 namespace Browser
 {
@@ -123,14 +115,6 @@ namespace Browser
 		private const int WebSocketHeartbeatIntervalMs = 15000; // 15秒
 		private const int WebSocketMaxQueueSize = 1;            // Drop Frame 用キュー上限（最新1枚のみ保持）
 
-		// 2026/07/29 新規作成（WebSocketプロトコルバージョン定数）
-		// バージョン番号は将来の仕様が互換性なく変更される場合にインクリメント
-		// Version 2: 7Bヘッダー (Version + Type + Flags + Seq)
-		private const int WebSocketProtocolVersion = 2;
-
-		// 2026/07/29 新規作成（最大同時接続数制限）
-		private const int MaxConcurrentClients = 5;
-	
 		// 2026/07/29 追記（接続数制限のアトミック管理用）
 		private int _activeConnectionCount; // Interlocked で管理
 	
@@ -227,47 +211,11 @@ namespace Browser
 		// 2026/07/29 新規作成（ゾンビクリーンアップ間隔：5秒）
 		private DateTime _lastZombieCleanupTime = DateTime.MinValue;
 
-		//====================================================================================
-		// IPC 最適化 - スクリプト事前構築
-		//------------------------------------------------------------------------------------
-		// 2026/07/27 新規作成（EvaluateScriptAsync 用スクリプトの事前構築：GC 負荷削減）
-
-		// task28 Phase 0: WebCodecs pull 用スクリプト（ver 2.9 対応: Base64 文字列受信方式）
-		private const string WebCodecsPullScript =
-			"(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.pull_encoded();}})()";
-
-		// task28 Phase 0: WebCodecs エンコーダ停止スクリプト
-		private const string WebCodecsStopScript =
-			"(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.stopEncoder();}})()";
-
-		// [task19_v1 Critical修正] WebCodecs エンコーダ初期化スクリプトテンプレート（固有トークン: __CODEC__ / __BITRATE__ / __FPS__）
-		// string.Format で構築しない理由: string.Format は JS リテラルブレース（{codec:'...'} 等）を
-		// フォーマット項目と解釈し FormatException（「入力文字列の形式が正しくありません」）を投げるため、
-		// JS に到達せず WebCodecs モードが常に WebP にフォールバックしていた。
-		// verbatim 文字列 + トークン置換（string.Replace）で構築するため、ブレースのエスケープが不要で検証しやすい。
-		// [task19_v1 Critical#2修正] EvaluateScriptAsPromiseAsync はスクリプトを (async function(){ <script> })() で
-		// ラップし、Promise.resolve(...).then() で解決値を回収する。async function 内の式文は return しないと
-		// undefined を解決するため、テンプレート先頭に return を付与し initEncoder() の Promise を回収する。
-		private const string WebCodecsInitEncoderTemplate =
-			@"return (function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.initEncoder({codec:'__CODEC__',width:1200,height:720,bitrate:__BITRATE__,framerate:__FPS__,avc:{format:'annexb'}});}})();";
-
-		// [task19_v1 Critical#3修正] WebCodecs encodeFrame() 呼び出しスクリプトテンプレート（固有トークン: __IS_KEY_FRAME__）
-		// encodeFrame() は同期関数（Promise ではなくオブジェクトを直接返却）のため、非 Promise 版 EvaluateScriptAsync を使用。
-		// 結果は pull_encoded()（_encodedChunks キュー）で回収されるため、返却値は失敗検知のみに使用。
-		// （AGENTS.md: 空 catch 禁止 — engine 未初期化・例外時は警告ログを出力し、そのフレームをスキップしてループ継続）
-		// canvas はスクリプト内で document.querySelector('canvas') により取得（start() / pull() と同一ソース）。
-		// __IS_KEY_FRAME__ は true/false に置換（string.Replace）。
-		private const string WebCodecsEncodeFrameTemplate =
-			"(function(){if(window._kancolleCaptureEngine){var canvas=document.querySelector('canvas');if(!canvas){return{success:false,error:'Canvas not found'};}return window._kancolleCaptureEngine.encodeFrame(canvas,__IS_KEY_FRAME__);}})();";
-
 		private volatile CaptureMode _currentCaptureMode = CaptureMode.WebP;
-		private readonly object _modeLock = new object();
 
 		// task28 Phase 1: WebCodecs 状態管理
-		private volatile bool _isWebCodecsInitialized = false;
 		private volatile int _webCodecsBitrate = 800000; // 800 kbps 標準
 		private volatile int _webCodecsFps = 30;
-		private volatile string _webCodecsCodec = "avc1.42001f"; // H.264 Baseline Level 3.1
 
 		// task28 Phase 1: WebCodecs 中央キャプチャループのタスク参照
 		private volatile Task _webCodecsCaptureTask;
@@ -282,18 +230,6 @@ namespace Browser
 		// [task13 / SEC-R3-MINOR-1] 宣言位置: _webCodecsCaptureCts の直後（WebCodecs 状態管理フィールド群と一括）
 		private readonly SemaphoreSlim _webCodecsInitSemaphore = new SemaphoreSlim(1, 1);
 
-		// [task13 / A-3] WebCodecs 再初期化バックオフ（iframe 破棄直後・エンジン未注入時に毎フレーム再初期化しないためのスロットリング）
-		private DateTime _lastWebCodecsReinitUtc = DateTime.MinValue;
-		private const int WebCodecsReinitBackoffMs = 2000; // 再初期化試行間隔（2秒）
-		// [task13 / CRIT-2] バックオフ状態の lock 保護（_lastWebCodecsReinitUtc の読み書き・比較更新を原子化する）
-		private readonly object _webCodecsReinitLock = new object();
-
-		// [task13 / Minor 3] WebCodecs キャプチャループのリトライ待機間隔（ms）:
-		// frame 不在・engine 未初期化・encode 失敗・例外時等の短待機。Task.Delay(100) のマジックナンバー定数化
-		private const int WebCodecsFrameRetryDelayMs = 100;
-		// [task13 / Minor 3] フレーム到着待機の連続タイムアウト閾値（ファンアウト自己救済: N 回連続で中央キャプチャループを再起動）
-		private const int FrameWaitTimeoutStreakThreshold = 3;
-
 		// [task13 / Minor 4] Dispose フラグ（_webCodecsInitSemaphore の Dispose 後の WaitAsync 呼び出しを防止する）
 		// Dispose() で true に設定され、InitializeWebCodecsEncoderAsync の入口でチェックされる。
 		// volatile で宣言し、Dispose スレッドと初期化呼び出しスレッド間で即座に可視化する。
@@ -307,59 +243,12 @@ namespace Browser
 		// 送信側はローカルスナップショット参照 + BlockCopy コピー送信により、キャッシュ差し替えと無関係に安全
 		private volatile byte[] _lastWebCodecsDescription;
 
-		// task28 Phase 2: WebCodecs キャプチャループのキーフレーム間隔（2秒）
-		private const int WebCodecsKeyFrameIntervalMs = 2000;
-
-		// [task19 レビュー指摘 M1] SPS/PPS 送信バックオフ定数
-		// 連続失敗回数閾値超過後、最終試行から一定期間だけ再送を抑制し、
-		// ネットワーク断続時の無限再送ループ・ログスパイクを防ぐ
-		private const int DescriptionSendBackoffFailThreshold = 5;
-		private const int DescriptionSendBackoffMs = 5000;
-
-		// [task19 レビュー指摘 M2/M2b] 制御メッセージレートリミット定数（reinit_decoder / switch_mode）
-		// クライアント側には 5秒スロット（_clampReinitIntervalMs）が存在するが、
-		// サーバー側もバグ・悪意あるクライアントの連打に対して防御する（帯域浪費・キャプチャループ再起動ストーム防止）
-		private const int ReinitDecoderMinIntervalMs = 5000;
-		private const int SwitchModeMinIntervalMs = 5000;
-
-		// [task19 レビュー指摘 M3] Version 1 クライアント警告ログのダウンスープリング間隔（ms）
-		// 毎フレーム出力するとログスパイクになるため、一定間隔でのみ出力する
-		private const int Version1WarnIntervalMs = 10000;
-
-		// 2026/07/27 新規作成（EvaluateScriptAsync 用スクリプトの事前構築：GC 負荷削減）
-		// 高頻度呼び出し（10FPS）の CaptureCanvasAsync で使用するスクリプトを
-		// 定数として事前定義し、呼び出し毎の文字列生成によるGC負荷および FormatException を排除する。
-		private const string CaptureScriptInit = "(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.pull(true);}})()";
-		private const string CaptureScriptNormal = "(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.pull(false);}})()";
-
-		// 2026/07/27 新規作成（set_quality アクション用スクリプトの事前構築）
-		// 動的な品質値のみを連結し、固定部分は定数として事前定義する。
-		private const string QualityScriptPrefix = "if(window._kancolleCaptureEngine)window._kancolleCaptureEngine.webpQuality=";
-		private const char QualityScriptSuffix = ';';
-
-		// 2026/07/27 新規作成（WebSocket Heartbeat 用バイト列の事前構築）
-		// 毎回の Encoding.UTF8.GetBytes("heartbeat") による一時バッファ割り当てを排除する。
-		private static readonly byte[] HeartbeatBytes = Encoding.UTF8.GetBytes("heartbeat");
-
-		// 2026/07/22 myi 新規作成（ブルートフォース対策：IPアドレスごとのログイン失敗追跡）
-		private readonly ConcurrentDictionary<string, (int count, DateTime lastAttempt)> _loginAttempts = new ConcurrentDictionary<string, (int count, DateTime lastAttempt)>();
-		private const int MaxLoginAttempts = 5;
-		private const int LoginBlockMinutes = 15;
 
 		// インメモリセッションストア（スレッドセーフ）
 		private readonly ConcurrentDictionary<string, SessionInfo> _sessions = new ConcurrentDictionary<string, SessionInfo>();
 
 		// リフレッシュトークンストア（スレッドセーフ）
 		private readonly ConcurrentDictionary<string, RefreshTokenInfo> _refreshTokens = new ConcurrentDictionary<string, RefreshTokenInfo>();
-
-		// セッションのアイドルタイムアウト（30分）
-		private const int SessionTimeoutMinutes = 30;
-
-		// リフレッシュトークンの有効期間（30日）
-		private const int RefreshTokenDays = 30;
-
-		// 2026/07/22 myi 新規作成（クリーンアップ最適化：前回実行時刻を保持）
-		private DateTime _lastCleanupTime = DateTime.MinValue;
 
 		//====================================================================================
 		// パスワード更新
