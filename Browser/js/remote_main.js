@@ -281,6 +281,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (!masterList || !detailArea) {
         console.warn('settings-master-list or settings-detail-area not found');
+        if (window.__eventLog) window.__eventLog.consoleLog('warn', 'settings-master-list or settings-detail-area not found', 'MASTER_LIST_NOT_FOUND');
         return;
     }
 
@@ -288,6 +289,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (masterItems.length === 0) {
         console.warn('No master-item elements found');
+        if (window.__eventLog) window.__eventLog.consoleLog('warn', 'No master-item elements found', 'MASTER_ITEM_EMPTY');
         return;
     }
 
@@ -791,7 +793,11 @@ window.isDismissingPanel = false;
     // クリックイベント（マウス操作時、フォールバック用）
     // touchstart は remote_input.js 側で処理するため、click のみを登録（クリティカルレビュー指摘4対応）
     if (viewport) {
-        viewport.addEventListener('click', dismissIfExpanded);
+        // [task14] viewport click を計装（§3.4: dismissIfExpanded をラップして計装。gesture('click', e, null, null)）
+        viewport.addEventListener('click', (e) => {
+            if (window.__eventLog) window.__eventLog.gesture('click', e, null, null);
+            return dismissIfExpanded(e);
+        });
     }
 
     // 画面回転時の状態クリーンアップ
@@ -850,6 +856,7 @@ function checkLoginState() {
             // パーサー・通信障害の可観測性向上のため 1 行の warn に留める）。
             // 一時的な通信エラーは次回のポーリングで再試行（updateScreenDiff の catch と同方針）
             console.warn('[task22] /login-state poll failed:', e);
+            if (window.__eventLog) window.__eventLog.consoleLog('warn', '[task22] /login-state poll failed: ' + (e && e.message ? e.message : e), 'LOGIN_STATE_POLL_FAIL');
         });
 }
 setInterval(checkLoginState, 5000);

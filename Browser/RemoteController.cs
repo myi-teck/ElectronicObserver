@@ -147,6 +147,8 @@ namespace Browser
 			"/capture-mode",
 			"/capture-config",
 			"/login-state",   // [task22] 追加: ログイン状態 API（未認証 401。HTML 系でないため /logout-page はこの集合に含めない）
+			"/event-log",    // [task14] クライアント中継イベントログ API（POST。未認証 401・/control と一貫）
+			"/log-toggle",   // [task14 Q9] サーバ側ログ記録 ON/OFF API（POST。未認証 401・/control と一貫）
 		};
 
 		// 2026/07/29 新規作成（グローバルシーケンス番号：WebSocket/HTTP共通の単調増加int型）
@@ -275,6 +277,30 @@ namespace Browser
 
 		// task28 Phase 1: WebCodecs キャプチャループの CancellationTokenSource
 		private CancellationTokenSource _webCodecsCaptureCts;
+
+		// [task13 / D・MAJOR-2・SEC-MAJOR-2] InitializeWebCodecsEncoderAsync の並行呼び出し直列化用シグナル
+		// force=true 経路が複数スレッドから同時呼ばれる場合、_isWebCodecsInitialized の書き込みと
+		// 初期化処理（initEncoder() 呼び出し）の間に他スレッドが侵入して二重初期化（initEncoder 多重呼び出し、
+		// SPS/PPS 再送の二重化）が起き得るため、SemaphoreSlim(1,1) でメソッド全体を直列化する。
+		// [task13 / SEC-R3-MINOR-1] 宣言位置: _webCodecsCaptureCts の直後（WebCodecs 状態管理フィールド群と一括）
+		private readonly SemaphoreSlim _webCodecsInitSemaphore = new SemaphoreSlim(1, 1);
+
+		// [task13 / A-3] WebCodecs 再初期化バックオフ（iframe 破棄直後・エンジン未注入時に毎フレーム再初期化しないためのスロットリング）
+		private DateTime _lastWebCodecsReinitUtc = DateTime.MinValue;
+		private const int WebCodecsReinitBackoffMs = 2000; // 再初期化試行間隔（2秒）
+		// [task13 / CRIT-2] バックオフ状態の lock 保護（_lastWebCodecsReinitUtc の読み書き・比較更新を原子化する）
+		private readonly object _webCodecsReinitLock = new object();
+
+		// [task13 / Minor 3] WebCodecs キャプチャループのリトライ待機間隔（ms）:
+		// frame 不在・engine 未初期化・encode 失敗・例外時等の短待機。Task.Delay(100) のマジックナンバー定数化
+		private const int WebCodecsFrameRetryDelayMs = 100;
+		// [task13 / Minor 3] フレーム到着待機の連続タイムアウト閾値（ファンアウト自己救済: N 回連続で中央キャプチャループを再起動）
+		private const int FrameWaitTimeoutStreakThreshold = 3;
+
+		// [task13 / Minor 4] Dispose フラグ（_webCodecsInitSemaphore の Dispose 後の WaitAsync 呼び出しを防止する）
+		// Dispose() で true に設定され、InitializeWebCodecsEncoderAsync の入口でチェックされる。
+		// volatile で宣言し、Dispose スレッドと初期化呼び出しスレッド間で即座に可視化する。
+		private volatile bool _webCodecsDisposed;
 
 		// [task19 P2/P3] 最終受信した SPS/PPS (description) バイト列のキャッシュ
 		// 新接続クライアント（DescriptionSent=false）への追隨送信、および reinit_decoder 受信時の
@@ -1456,9 +1482,28 @@ namespace Browser
 			try
 			{
 				Console.WriteLine(message);
-				_parent?.AddLog(priority, message);
+				// [task14] 専用ファイルへ記録（本体ブラウザログ eolog.log と分離）
+				RemoteDedicatedLog.Controller.Append(
+					$"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}][P{priority}] {message}");
+				// 注: _parent?.AddLog(...) を呼び出さない（eolog.log への混在・UIログウィンドウへの
+				// 出力を防止する意図）。トレードオフは Q1、ログ参照手順は §12（運用）参照。
 			}
-			catch { }
+			catch (Exception ex)
+			{
+				// AGENTS.md NEVER 対応（一次 Critical-3）: 既存 1485 行の空 catch { } を解消。
+				// ログ出力失敗（Console 失敗・専用ファイル書き込み失敗）をサイレントに握りつぶさず記録。
+				try
+				{
+					Console.Error.WriteLine($"[RemoteController] Log出力失敗: {ex.GetType().Name}: {ex.Message}");
+				}
+				catch (Exception innerEx)
+				{
+					// 最終フォールバック: Console 出力すら失敗した場合（極めて稀）は Debug 出力で記録。
+					// この階層まで失敗するとフォールバック先が存在しないため、Debug.WriteLine までで終端とする。
+					System.Diagnostics.Debug.WriteLine(
+						$"[RemoteController] Log出力失敗: {ex.Message} / フォールバック失敗: {innerEx.Message}");
+				}
+			}
 		}
 
 		/// <summary>
@@ -1468,6 +1513,9 @@ namespace Browser
 		/// </summary>
 		public RemoteController(FormBrowser parent, int port = 8080, string address = "*", string password = "", int webCodecsBitrate = 800000, int webCodecsFps = 30)
 		{
+			// [task14 Minor-S4] 専用ログ初期化（ログディレクトリ作成・保持期間外ファイルのクリーンアップ）。
+			// コンストラクタ先頭（_sharedFrameBuffer 生成のラムダが Log を呼ぶ可能性より前）に配置。
+			RemoteDedicatedLog.Init();
 			_parent = parent;
 			_port = port;
 			_address = address;
@@ -1797,6 +1845,11 @@ namespace Browser
 				{
 					await HandleControlAsync(req, res);
 				}
+				// [task14] クライアント中継イベントログ API（HTTP モード時の gesture/action/console/move_summary 送信先）
+				else if (path == "/event-log")
+				{
+					await HandleEventLogAsync(req, res);
+				}
 				else if (path == "/hud")
 				{
 					// モバイル端末からのHUD情報要求に対し、実際のゲーム内ステータスをJSONで返します
@@ -1817,6 +1870,11 @@ namespace Browser
 					// [task22] ログイン状態（ログアウト空白ページ状態）を JSON で返却
 					SendLoginState(res);
 				}
+				// [task14 Q9] サーバ側ログ記録 ON/OFF API
+				else if (path == "/log-toggle")
+				{
+					await HandleLogToggleAsync(req, res);
+				}
 				else if (path == "/logout-page")
 				{
 					// [task22] ログアウト中画面（自ホスト logout.html、remote モード）を配信
@@ -1835,16 +1893,14 @@ namespace Browser
 	
 					// 許可されたディレクトリ配下のファイルのみサーブ
 					string basePath = GetStaticFileBasePath();
-					var now = DateTime.Now.ToString("HH:mm:ss.fff");
-					var debugLogPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug_static.log");
-					if (string.IsNullOrEmpty(basePath))
-					{
-						string debugMsg = $"[{now}] GetStaticFileBasePath returned null for: {path}";
-						System.IO.File.AppendAllText(debugLogPath, debugMsg + Environment.NewLine);
-						res.StatusCode = 500;
-						res.Close();
-						return;
-					}
+						// [task14 Q2] debug_static.log を廃止し、専用ファイル（remotecontroller_YYYYMMDD.log）へ統合
+						if (string.IsNullOrEmpty(basePath))
+						{
+							Log(1, $"[StaticFile] GetStaticFileBasePath returned null for: {path}");
+							res.StatusCode = 500;
+							res.Close();
+							return;
+						}
 					string fullPath = Path.GetFullPath(Path.Combine(basePath, relativePath));
 	
 					// セキュリティチェック：basePath 配下か確認
@@ -1855,16 +1911,14 @@ namespace Browser
 						: basePathFull + Path.DirectorySeparatorChar;
 					bool isSafe = fullPath.StartsWith(searchPrefix, StringComparison.OrdinalIgnoreCase) ||
 						fullPath.Equals(basePathFull, StringComparison.OrdinalIgnoreCase);
-					string debugMsg2 = $"[{now}] Static file: path={path}, basePathFull={basePathFull}, fullPath={fullPath}, isSafe={isSafe}";
-					System.IO.File.AppendAllText(debugLogPath, debugMsg2 + Environment.NewLine);
+					Log(1, $"[StaticFile] Static file: path={path}, basePathFull={basePathFull}, fullPath={fullPath}, isSafe={isSafe}");
 					if (isSafe)
 					{
 						SendStaticFile(req, res, fullPath);
 					}
 					else
 					{
-						string debugMsg3 = $"[{now}] Static file BLOCKED: {path}";
-						System.IO.File.AppendAllText(debugLogPath, debugMsg3 + Environment.NewLine);
+						Log(1, $"[StaticFile] Static file BLOCKED: {path}");
 						res.StatusCode = 403;
 						res.Close();
 					}
@@ -2602,14 +2656,23 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 					cursorState.Touch(Math.Max(0, Math.Min(1.0, x)), Math.Max(0, Math.Min(1.0, y)));
 
 					await TriggerMouseMoveAsync(cursorState);
+					// [task14 §3.5b] サーバ側アクション実行ログ（HTTP 経路）
+					AppendServerActionLog("move", x, y, sessionId, "http");
 				}
 				else if (action == "click")
 				{
-					if (double.TryParse(xStr, out double cx) && double.TryParse(yStr, out double cy))
+					// [task14 §3.5b] 座標パース失敗時は null を記録
+					double? cx = null;
+					double? cy = null;
+					if (double.TryParse(xStr, out double cxx) && double.TryParse(yStr, out double cyy))
 					{
-						cursorState.Touch(Math.Max(0, Math.Min(1.0, cx)), Math.Max(0, Math.Min(1.0, cy)));
+						cx = cxx;
+						cy = cyy;
+						cursorState.Touch(Math.Max(0, Math.Min(1.0, cxx)), Math.Max(0, Math.Min(1.0, cyy)));
 					}
 					await TriggerMouseClickAsync(cursorState);
+					// [task14 §3.5b] サーバ側アクション実行ログ（HTTP 経路）
+					AppendServerActionLog("click", cx, cy, sessionId, "http");
 				}
 				// 2026/06/11 myi 新規作成（ゲーム画面タッチクリック）
 				// ゲーム画面（viewport）をタップした位置の絶対座標を直接クリックする
@@ -2618,6 +2681,8 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 					// [task19 P1] Touch(x,y) で座標更新と HasValue=true をアトミックに設定（move と同様）
 					cursorState.Touch(Math.Max(0, Math.Min(1.0, tx)), Math.Max(0, Math.Min(1.0, ty)));
 					await TriggerMouseClickAsync(cursorState);
+					// [task14 §3.5b] サーバ側アクション実行ログ（HTTP 経路）
+					AppendServerActionLog("touch_click", tx, ty, sessionId, "http");
 				}
 					#region "追加アクション処理"
 					// ブラウザをログインページへ移動（確認はHUD側で行うため、ここでは即座に実行）
@@ -2657,20 +2722,34 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 						// マウスダウン（ドラッグ開始）
 						else if (action == "mousedown")
 						{
-							if (double.TryParse(xStr, out double mx) && double.TryParse(yStr, out double my))
+							// [task14 §3.5b] 座標パース失敗時は null を記録
+							double? mx = null;
+							double? my = null;
+							if (double.TryParse(xStr, out double mxx) && double.TryParse(yStr, out double myy))
 							{
-								cursorState.Touch(Math.Max(0, Math.Min(1.0, mx)), Math.Max(0, Math.Min(1.0, my)));
+								mx = mxx;
+								my = myy;
+								cursorState.Touch(Math.Max(0, Math.Min(1.0, mxx)), Math.Max(0, Math.Min(1.0, myy)));
 							}
 							await TriggerMouseDownAsync(cursorState);
+							// [task14 §3.5b] サーバ側アクション実行ログ（HTTP 経路）
+							AppendServerActionLog("mousedown", mx, my, sessionId, "http");
 						}
 						// マウスアップ（ドラッグ終了）
 						else if (action == "mouseup")
 						{
-							if (double.TryParse(xStr, out double ux) && double.TryParse(yStr, out double uy))
+							// [task14 §3.5b] 座標パース失敗時は null を記録
+							double? ux = null;
+							double? uy = null;
+							if (double.TryParse(xStr, out double uxx) && double.TryParse(yStr, out double uyy))
 							{
-								cursorState.Touch(Math.Max(0, Math.Min(1.0, ux)), Math.Max(0, Math.Min(1.0, uy)));
+								ux = uxx;
+								uy = uyy;
+								cursorState.Touch(Math.Max(0, Math.Min(1.0, uxx)), Math.Max(0, Math.Min(1.0, uyy)));
 							}
 							await TriggerMouseUpAsync(cursorState);
+							// [task14 §3.5b] サーバ側アクション実行ログ（HTTP 経路）
+							AppendServerActionLog("mouseup", ux, uy, sessionId, "http");
 						}
 		
 						res.StatusCode = 200;
@@ -2693,6 +2772,247 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 					res.Close();
 				}
 			}
+		}
+
+		//====================================================================================
+		// [task14] クライアント中継イベントログ API（POST /event-log）・Q9 ON/OFF API（POST /log-toggle）
+		// 設計書: plans/task14_remote-doubleclick-fix-and-event-logging.md §3.5 / §3.5c / §3.8
+		//------------------------------------------------------------------------------------
+		/// <summary>
+		/// [task14] POST /event-log: クライアント中継イベントログを受信し専用ファイル（remote_event_log_YYYYMMDD.log）へ追記。
+		/// 認証済み領域（IsAuthenticated 通過後）でルーティングされる（/control と同一）。
+		/// </summary>
+		private async Task HandleEventLogAsync(HttpListenerRequest req, HttpListenerResponse res)
+		{
+			try
+			{
+				if (req.HttpMethod != "POST")
+				{
+					res.StatusCode = 405;
+					res.Close();
+					return;
+				}
+				// [task14 Q10] body サイズ上限（64KB）: 読み捨てず、先頭 64KB を読取して保存（トリミング）。
+				// [v1.3 chunked 対応] ContentLength64 が <= 0（chunked transfer・サイズ未知）の場合、
+				// ReadToEndAsync による全量読取は巨大 payload のメモリ逼迫を招くため、上限（65537 文字）までの有界読取を行う。
+				long contentLength = req.ContentLength64;
+				string body;
+				using (var reader = new StreamReader(req.InputStream, req.ContentEncoding))
+				{
+					if (contentLength > 0 && contentLength <= 65536)
+					{
+						// サイズ既知・上限内: 全量読取
+						body = await reader.ReadToEndAsync();
+					}
+					else
+					{
+						// サイズ未知（chunked）または上限超過: 有界読取（上限 65537 文字＝上限 65536 超過判定用の +1）。
+						// [v1.3 一次 Major-1・二次 Major-2 反映] StreamReader.ReadAsync(char[], int, int) は
+						// Task<int> を返す（読取文字数）ため、単一呼び出しで全量取得できる保証はない。
+						// 上限までループ読取し、read <= 0（EOF）で終える。
+						var buffer = new char[65537];
+						int total = 0;
+						while (total < buffer.Length)
+						{
+							int read = await reader.ReadAsync(buffer, total, buffer.Length - total);
+							if (read <= 0) break;
+							total += read;
+						}
+						body = new string(buffer, 0, total);
+					}
+				}
+				bool truncated = false;
+				// [v1.3 originalBytes 補正・一次 Major-1・二次 Major-2 反映] ContentLength64 が <= 0（chunked）の場合、
+				// 実読取サイズ（body.Length・文字数）で補正する（従来は originalBytes=0 になる矛盾を解消）。
+				// 注: chunked 時は originalBytes がバイト数ではなく文字数の近似値になる（設計書 §3.5c-4・v1.3 再レビュー指摘③）。
+				long originalBytes = (contentLength > 0) ? contentLength : (long)body.Length;
+				if (body.Length > 65536)
+				{
+					// [Q10] body が 64KB 超過 → 先頭 64KB を切り取って保存（読み捨てしない）
+					// [v1.3] 切り取り位置はサロゲートペア境界に合わせ直す（§3.5c-3・SafeTruncate）
+					body = SafeTruncate(body, 65536);
+					truncated = true;
+				}
+				var line = body.Trim();
+				// JSON オブジェクト形状でない（{ で始まらない）: 無効 payload → 400（拒否）
+				if (!line.StartsWith("{"))
+				{
+					Log(3, $"[RemoteController] POST /event-log 無効な payload を拒否（{{ で始まらない）: len={line.Length}");
+					res.StatusCode = 400;
+					res.Close();
+					return;
+				}
+				// [task14 Q10] 1 行 4096 文字超過 → 先頭 4096 文字に切り取って保存（truncated=true）
+				// [v1.3] 切り取り位置はサロゲートペア境界に合わせ直す（§3.5c-3・SafeTruncate）。
+				// 「4096」は文字数（UTF-16 コードユニット）でありバイト数ではない。多バイト UTF-8 文字を含む場合、
+				// ディスク上のバイト数は大きくなるが、JSONL の「1 行の長さ」は 4096 文字上限で維持する（設計意図: 行長の安定）。
+				if (line.Length > 4096)
+				{
+					line = SafeTruncate(line, 4096);
+					truncated = true;
+				}
+				// [task14 Q10] トリミングにより JSON が壊れた場合: parse_error=true を付加して生テキストを保存
+				bool parseError = !line.EndsWith("}");
+				string savedLine = line;
+				if (parseError)
+				{
+					// JSON が壊れているため、切り取った生テキストをエンベロープ JSON として保存。
+					// 行は JSONL 1 行・先頭 {・末尾 } を維持し、調査者が parse_error を判別可能にする。
+					savedLine = "{\"parse_error\":true,\"truncated\":" + truncated.ToString().ToLower() +
+								",\"originalBytes\":" + originalBytes +
+								",\"raw\":\"" + EscapeJsonString(line, 3900) + "\"}";
+					Log(3, $"[RemoteController] POST /event-log トリミングで JSON 破損: len={line.Length}, originalBytes={originalBytes}（parse_error=true として保存）");
+				}
+				RemoteDedicatedLog.Event.Append(savedLine);
+				res.StatusCode = 200;
+				// [Q10] 内容が保存できたなら 200（truncated 情報を body に返す・クライアントを失敗させない）
+				var respBody = truncated
+					? "{\"ok\":true,\"truncated\":true,\"originalBytes\":" + originalBytes + "}"
+					: "{\"ok\":true}";
+				var buf = System.Text.Encoding.UTF8.GetBytes(respBody);
+				await res.OutputStream.WriteAsync(buf, 0, buf.Length);
+				res.Close();
+			}
+			catch (Exception ex)
+			{
+				// AGENTS.md NEVER 対応: 例外を握りつぶさず記録・500 返却。
+				// 設計書コード例の finally { try { res.Close(); } catch { } } の空 catch を解消するため、
+				// HandleControlAsync と同一の「catch でログ記録＋finally で res.Close()」パターンに構造化。
+				Log(3, $"[RemoteController] POST /event-log error: {ex.GetType().Name}: {ex.Message}");
+				try { res.StatusCode = 500; } catch (Exception ex2) { Log(3, $"[RemoteController] POST /event-log status 設定失敗: {ex2.Message}"); }
+			}
+			finally
+			{
+				res.Close();
+			}
+		}
+
+		/// <summary>
+		/// [task14 Q9] POST /log-toggle: サーバ側ログ記録（イベントログ）の ON/OFF を即時切り替え。
+		/// 認証済み領域（IsAuthenticated 通過後）でルーティングされる（/control・/event-log と同一）。
+		/// body: {"enabled": true|false}（それ以外 400）。応答: {"ok":true,"enabled":<現行値>}。
+		/// </summary>
+		private async Task HandleLogToggleAsync(HttpListenerRequest req, HttpListenerResponse res)
+		{
+			try
+			{
+				if (req.HttpMethod != "POST")
+				{
+					res.StatusCode = 405;
+					res.Close();
+					return;
+				}
+				string body;
+				using (var reader = new StreamReader(req.InputStream, req.ContentEncoding))
+				{
+					body = await reader.ReadToEndAsync();
+				}
+				// [task14 Q9] enabled の抽出: 既存ヘルパ ExtractJsonString を流用（未クォートの true/false も抽出可能）。
+				// [v1.3 二次 Critical-1 反映] 設計書コード例の「enabled 未定義」欠陥を解消:
+				// キー欠落時は ExtractJsonString が null を返し、bool.TryParse が false を返すため 400 で拒否する。
+				string enabledStr = ExtractJsonString(body ?? "", "enabled");
+				bool enabled;
+				if (!bool.TryParse(enabledStr, out enabled))
+				{
+					Log(3, $"[RemoteController] POST /log-toggle 無効な body（enabled が true/false 以外）: body={body ?? "(null)"}");
+					res.StatusCode = 400;
+					res.Close();
+					return;
+				}
+				// [task14 Q9] 即時反映: メモリ内フラグ変更 ＋ 切り替え操作自体をログ記録（SetEnabled 内）
+				RemoteDedicatedLog.SetEnabled(enabled, "log-toggle endpoint");
+				res.StatusCode = 200;
+				var buf = System.Text.Encoding.UTF8.GetBytes("{\"ok\":true,\"enabled\":" + enabled.ToString().ToLower() + "}");
+				await res.OutputStream.WriteAsync(buf, 0, buf.Length);
+				res.Close();
+			}
+			catch (Exception ex)
+			{
+				// AGENTS.md NEVER 対応: 例外を握りつぶさず記録・500 返却（HandleControlAsync と同一パターン）。
+				Log(3, $"[RemoteController] POST /log-toggle error: {ex.GetType().Name}: {ex.Message}");
+				try { res.StatusCode = 500; } catch (Exception ex2) { Log(3, $"[RemoteController] POST /log-toggle status 設定失敗: {ex2.Message}"); }
+			}
+			finally
+			{
+				res.Close();
+			}
+		}
+
+		/// <summary>
+		/// [task14 Q10・v1.3] JSON 文字列内の特殊文字をエスケープ（標準機能のみ・NuGet 不要）。
+		/// 生テキストを JSONL 1 行の "raw" 値として安全に格納するためのヘルパ（§3.5c-3）。
+		/// [v1.3 サロゲートペア対応]（一次 Major-1・二次 Major-2 反映）:
+		/// - 切り取り位置は SafeTruncate でサロゲートペア境界に合わせ、ペアを途中で分断しない。
+		/// - ソースに存在した孤立サロゲート（unpaired surrogate）は U+FFFD（置換文字）に置換し、
+		///   不正な UTF-16／UTF-8 を生成して日本語文字化けするのを防止する。
+		/// - System.Text.Encodings.Web（JavaScriptEncoder）は .NET Framework 4.8 でも package-provided
+		///   （NuGet 参照必須）であり、新規 NuGet 禁止制約（AGENTS.md）に抵触するため不採用（§9 参照）。
+		/// </summary>
+		private static string EscapeJsonString(string s, int maxLen)
+		{
+			if (s == null) return "";
+			s = SafeTruncate(s, maxLen); // raw も最大長で切り詰め（行長維持・サロゲートペア境界に一致）
+			var sb = new StringBuilder(s.Length + 16);
+			for (int i = 0; i < s.Length; i++)
+			{
+				char c = s[i];
+				switch (c)
+				{
+					case '"': sb.Append("\\\""); break;
+					case '\\': sb.Append("\\\\"); break;
+					case '\n': sb.Append("\\n"); break;
+					case '\r': sb.Append("\\r"); break;
+					case '\t': sb.Append("\\t"); break;
+					default:
+						if (c < 0x20) sb.Append("\\u").Append(((int)c).ToString("x4"));
+						else if (char.IsSurrogate(c))
+						{
+							// [v1.3 サロゲートペア対応] 孤立サロゲート（ペアを構成しない）は U+FFFD に置換。
+							// 正当なペア（上位＋直後の下位、または直前の上位＋下位）はそのまま保持し、
+							// エンコード結果が有効な UTF-16／UTF-8 シーケンスになることを保証する。
+							bool paired = (char.IsHighSurrogate(c) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]))
+									  || (char.IsLowSurrogate(c) && i > 0 && char.IsHighSurrogate(s[i - 1]));
+							if (paired) { sb.Append(c); }
+							else { sb.Append("\\ufffd"); }
+						}
+						else sb.Append(c);
+						break;
+				}
+			}
+			return sb.ToString();
+		}
+
+		/// <summary>
+		/// [task14 Q10・v1.3] 文字列を指定文字数で切り詰め（サロゲートペア境界に一致）。
+		/// 切り取り位置がサロゲートペア（上位サロゲート＋下位サロゲート）の中間に落ちる場合は
+		/// ペア頭（上位サロゲート）の前へ巻き戻すことで、ペアを途中で分断して孤立サロゲート
+		/// （不正な UTF-16／UTF-8・日本語文字化け）を生成しない（§3.5c-3）。
+		/// </summary>
+		private static string SafeTruncate(string s, int maxLen)
+		{
+			if (s == null) return "";
+			if (s.Length <= maxLen) return s;
+			int end = maxLen;
+			// [v1.3 再レビュー指摘④] s.Length > maxLen（上記で検証済み）なので s[end] は必ず存在する（境界チェック不要）。
+			if (char.IsHighSurrogate(s[end - 1]) && char.IsLowSurrogate(s[end]))
+			{
+				end -= 1; // ペア中間切り取り → ペア頭の前へ巻き戻し（上位サロゲートを切り捨て）
+			}
+			return s.Substring(0, end);
+		}
+
+		/// <summary>
+		/// [task14 §3.5b] サーバ側アクション実行ログ（src=server）。
+		/// TriggerMouse*Async を実際に実行したタイミングで呼ばれ、クライアント送信ログと
+		/// 同じ専用ファイル（remote_event_log_YYYYMMDD.log）に時系列で並ぶ。
+		/// 二重発火の再発調査（クライアント2回送信？サーバ2回実行？）に用いる（§12 参照）。
+		/// </summary>
+		private void AppendServerActionLog(string action, double? x, double? y, string sessionId, string route)
+		{
+			string xVal = x.HasValue ? x.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "null";
+			string yVal = y.HasValue ? y.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "null";
+			RemoteDedicatedLog.Event.Append(
+				$@"{{""ts_ms"":{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()},""ts_local"":""{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}"",""src"":""server"",""kind"":""action"",""action"":""{action}"",""x"":{xVal},""y"":{yVal},""session"":""{sessionId}"",""route"":""{route}""}}");
 		}
 
 		//====================================================================================
@@ -3714,10 +4034,14 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 					var loopStart = sw.ElapsedMilliseconds;
 
 					// Kancolle frame チェック
+					// [task13 / A-4] IFrame.IsValid ガード（CefSharp Issue #1354/#1509）:
+					// 破棄フレーム（IsValid == false）への EvaluateScriptAsync は exit code 1073741855
+					// （アクセス違反）でプロセスクラッシュし得るため、null チェックと併せて IsValid を確認する
 					var kancolleFrame = _parent.GetKanColleFrame();
-					if (kancolleFrame == null)
+					if (kancolleFrame == null || !kancolleFrame.IsValid)
 					{
-						await Task.Delay(100, token);
+						// [task13 / Minor 3] マジックナンバー定数化（リトライ待機間隔 100ms）
+						await Task.Delay(WebCodecsFrameRetryDelayMs, token);
 						continue;
 					}
 
@@ -3769,7 +4093,12 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 							// 警告ログを出力し、そのフレームをスキップしてループ継続
 							var encodeFailReason = encodeResult.Success ? "Result null" : encodeResult.Message;
 							Log(3, $"[RemoteController] WebCodecs encodeFrame() 呼び出し失敗 (engine 未初期化または JS 例外): {encodeFailReason}");
-							await Task.Delay(100, token);
+							// [task13 / A-3] encode 失敗（Result==null: engine 未注入・undefined）時にバックオフ付き再初期化を試行。
+							// iframe 破棄で JS エンジンが消滅しても _isWebCodecsInitialized が true のまま再初期化されない
+							// 問題（W2）を解消する。成功時は次フレームをキーフレームとして強制（SPS/PPS 再生成が必要）。
+							if (await TryReinitWebCodecsEncoderAsync(token, "engine not ready")) isWebCodecsFirstFrame = true;
+							// [task13 / Minor 3] マジックナンバー定数化（リトライ待機間隔 100ms）
+							await Task.Delay(WebCodecsFrameRetryDelayMs, token);
 							continue;
 						}
 
@@ -3780,11 +4109,13 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 						{
 							// エンコーダ状態が closed / unconfigured → 再初期化してループ継続（次イテレーションで初回フレーム=キーフレーム）
 							Log(3, "[RemoteController] WebCodecs encodeFrame() が reinit を返却 (encoder closed/unconfigured)、再初期化します");
-							var reinitOk = await InitializeWebCodecsEncoderAsync(token);
+							// [task13 / A-3] バックオフ付き再初期化に統一（force 初期化 + 2秒バックオフ + L1 ログ）
+							var reinitOk = await TryReinitWebCodecsEncoderAsync(token, "reinit");
 							if (!reinitOk)
 							{
 								Log(3, "[RemoteController] WebCodecs 再初期化失敗、このフレームをスキップします");
-								await Task.Delay(100, token);
+								// [task13 / Minor 3] マジックナンバー定数化（リトライ待機間隔 100ms）
+								await Task.Delay(WebCodecsFrameRetryDelayMs, token);
 								continue;
 							}
 							// 再初期化後は次フレームをキーフレームとして強制（SPS/PPS 再生成が必要）
@@ -3797,7 +4128,13 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 						{
 							var encodeError = encodeDict.TryGetValue("error", out var encodeErrVal) ? encodeErrVal as string : null;
 							Log(3, $"[RemoteController] WebCodecs encodeFrame() 失敗（このフレームをスキップ）: {encodeError ?? "unknown"}");
-							await Task.Delay(100, token);
+							// [task13 / A-3] encode 失敗（success:false: Encoder not running 等）時にバックオフ付き再初期化を試行。
+							// JS 側の encodeFrame() は videoEncoder==null 状態では action:'reinit' を返さないため、
+							// この success:false 経路でも再初期化を行うことで自己回復する（JS 側変更なし）。
+							// 成功時は次フレームをキーフレームとして強制（SPS/PPS 再生成が必要）。
+							if (await TryReinitWebCodecsEncoderAsync(token, $"encode failed: {encodeError}")) isWebCodecsFirstFrame = true;
+							// [task13 / Minor 3] マジックナンバー定数化（リトライ待機間隔 100ms）
+							await Task.Delay(WebCodecsFrameRetryDelayMs, token);
 							continue;
 						}
 
@@ -3812,7 +4149,8 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 					{
 						// AGENTS.md: 空 catch 禁止 — 警告ログを出力し、そのフレームをスキップしてループ継続
 						Log(3, $"[RemoteController] WebCodecs encodeFrame() 例外（このフレームをスキップ）: {ex.Message}");
-						await Task.Delay(100, token);
+						// [task13 / Minor 3] マジックナンバー定数化（リトライ待機間隔 100ms）
+						await Task.Delay(WebCodecsFrameRetryDelayMs, token);
 						continue;
 					}
 
@@ -3821,7 +4159,8 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 					if (pullResult.data == null || pullResult.data.Length == 0)
 					{
 						// 【レビュー修正】 アダプティブ FPS 制御: 未データ時は短待機
-						await Task.Delay(100, token);
+						// [task13 / Minor 3] マジックナンバー定数化（リトライ待機間隔 100ms）
+						await Task.Delay(WebCodecsFrameRetryDelayMs, token);
 						continue;
 					}
 
@@ -3983,10 +4322,75 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 
 				lock (_modeLock)
 				{
-					_webCodecsCaptureTask = null;
+					// [task13 / R1-CRIT-1] 自分のトークン（token 引数）が現在有効な CTS のトークンと一致する場合のみ null にクリアする
+					// （新タスク起動で _webCodecsCaptureCts が差し替えられた場合、旧タスクの finally はクリアしない・S3 解消）
+					// [task13 / R3-CRIT-2] null チェック先行: _webCodecsCaptureCts == null（サーバ停止済 / CTS 未作成）の場合、
+					// && の短絡評価で .Token アクセスが回避され、タスク参照はクリアしない。ループメソッドは起動時に必ず
+					// 専用 CTS のトークンを引数として受け取るため、CancellationToken.None による偽陽性は発生しない
+					// [task13 / R1-CRIT-1・Dispose リスク対策] .Token アクセスを try-catch で保護
+					// （Dispose() メソッドで CTS が Dispose された場合、.Token アクセスで ObjectDisposedException を投げる）
+					try
+					{
+						if (_webCodecsCaptureCts != null && _webCodecsCaptureCts.Token == token)
+						{
+							_webCodecsCaptureTask = null;
+							// [task13 / SEC-R3-CRIT-1・R3-MINOR-2・R3-MINOR-3] 判定結果（一致）をログ出力（§5 L7 と整合、優先度2）
+							Log(2, "[RemoteController] WebCodecs ループ終了: token一致でタスク参照をクリア");
+						}
+						else
+						{
+							// [task13 / SEC-R3-CRIT-1] token 不一致（新ループが既に起動済み）または CTS null の場合、クリアしない（§5 L7 と整合）
+							Log(2, "[RemoteController] WebCodecs ループ終了: token不一致（またはCTS null）でタスク参照をクリアしない");
+						}
+					}
+					catch (ObjectDisposedException)
+					{
+						// [task13 / R3-CRIT-1] CTS が Dispose された場合（サーバ停止時）はクリアしない（サーバ停止時なので無害）。
+						// サイレントに握りつぶさず必ずログ出力する（AGENTS.md NEVER「サイレントな例外の握りつぶし」遵守）
+						Log(3, "[RemoteController] WebCodecs ループ終了: CTSがDispose済みのためtoken比較をスキップ");
+					}
 				}
 				Log(2, "[RemoteController] WebCodecs キャプチャループが完全に終了しました");
 			}
+		}
+
+		//------------------------------------------------------------------------------------
+		// 処理ブロック名 : TryReinitWebCodecsEncoderAsync
+		// 概要           : [task13 / A-3] encode 失敗時のバックオフ付き再初期化ハンドラ。
+		//                  JS エンジンが iframe 破棄で消滅・再注入されても _isWebCodecsInitialized が
+		//                  true のままで再初期化されない問題（W2）を解消する。
+		//------------------------------------------------------------------------------------
+		// [task13 / CRIT-2] バックオフ判定（比較→更新）を lock 内で原子化し、並行呼び出しでの
+		// 過剰な再初期化発火・過剰な抑制を防ぐ。InitializeWebCodecsEncoderAsync への呼び出しは
+		// ロック解放後（_modeLock / _captureStartLock の同時取得禁止、§6.3 参照）。
+		private async Task<bool> TryReinitWebCodecsEncoderAsync(CancellationToken token, string reason)
+		{
+			var nowUtc = DateTime.UtcNow;
+			lock (_webCodecsReinitLock)
+			{
+				if ((nowUtc - _lastWebCodecsReinitUtc).TotalMilliseconds < WebCodecsReinitBackoffMs)
+				{
+					// バックオフ期間中は再初期化をスキップ（100ms 待機は呼び出し側で実施）
+					// [task13 / Minor・一次] スキップ理由もログに残す（可観測性向上、§5 L1 参照）
+					// 優先度1（デバッグレベル）: 既定の LogLevel=2 では非表示
+					// （FormLog は Priority >= LogLevel で表示、既定 LogLevel=2）。
+					// 検証時は LogLevel=1 へ変更して確認（§7.4 / SEC-MINOR-2 参照）
+					Log(1, $"[RemoteController] WebCodecs 再初期化をバックオフでスキップ (reason: {reason})");
+					return false;
+				}
+				_lastWebCodecsReinitUtc = nowUtc;
+			}
+			Log(3, $"[RemoteController] WebCodecs 再初期化を試行 (reason: {reason})");
+			var ok = await InitializeWebCodecsEncoderAsync(token, force: true);
+			if (ok)
+			{
+				Log(3, "[RemoteController] WebCodecs 再初期化成功（force）");
+			}
+			else
+			{
+				Log(3, $"[RemoteController] WebCodecs 再初期化失敗 (reason: {reason})、次回バックオフ後に再試行");
+			}
+			return ok;
 		}
 
 		//------------------------------------------------------------------------------------
@@ -3994,18 +4398,61 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 		// 概要           : CefSharp 経由で JS の initEncoder() を呼び出し、WebCodecs エンコーダを初期化する。
 		//                  タイムアウト（5秒）制御付き。
 		//------------------------------------------------------------------------------------
-		private async Task<bool> InitializeWebCodecsEncoderAsync(CancellationToken cancellationToken = default)
+		// [task13 / A-2] force パラメータを追加し、_isWebCodecsInitialized の早期 true 返却を回避する
+		// （iframe 破棄で JS エンジンが消滅してもフラグが true のままで再初期化されない問題 W2 の解消）。
+		// [task13 / D・MAJOR-2・SEC-MAJOR-2] メソッド全体を _webCodecsInitSemaphore（SemaphoreSlim(1,1)）で
+		// 直列化し、force=true 経路が複数スレッドから同時呼ばれる場合の二重初期化・二重 SPS/PPS 再送を防ぐ。
+		// [task13 / R3-MINOR-1] WaitAsync は try ブロックの**外側**に配置する:
+		// 待機中に cancellationToken がキャンセルされて OperationCanceledException が投げられた場合は
+		// セマフォが未取得（カウント未減算）であり、この状態で Release() を呼び出すと
+		// SemaphoreFullException を投げる。try に入る前に例外が発生するため finally は実行されず、
+		// 未取得のまま Release() を呼ばないという正しい挙動となる。
+		private async Task<bool> InitializeWebCodecsEncoderAsync(
+			CancellationToken cancellationToken = default,
+			bool force = false)
 		{
-			// 既に初期化済みなら即座に完了
-			if (_isWebCodecsInitialized) return true;
-
+			// [task13 / Minor 4] _webCodecsInitSemaphore.Dispose() 後の WaitAsync を防止するガード:
+			// RemoteController.Dispose() 後にはセマフォが破棄済みとなり、WaitAsync が ObjectDisposedException を投げる。
+			// _webCodecsDisposed フラグを事前チェックして通常経路で例外を回避する（Dispose と初期化呼び出しの競合防御）。
+			if (_webCodecsDisposed)
+			{
+				Log(3, "[RemoteController] WebCodecs エンコーダ初期化: コントローラ破棄済み、初期化をスキップ");
+				return false;
+			}
+			// [task13 / Minor 4] 上記フラグチェックと WaitAsync 間の TOCTOU ウィンドウで、セマフォが
+			// Dispose() により破棄され、WaitAsync が ObjectDisposedException を投げ得る。
+			// 捕捉してログ出力する（サイレントな握りつぶし禁止）。許可未取得のため Release は不要。
+			// 注意: WaitAsync の OperationCanceledException はここでは捕捉せず従来通り呼び出し側に伝播させる
+			// （R3-MINOR-1 の「try ブロック外配置」の正しいパターンを維持）。
 			try
 			{
+				await _webCodecsInitSemaphore.WaitAsync(cancellationToken);
+			}
+			catch (ObjectDisposedException)
+			{
+				Log(3, "[RemoteController] WebCodecs エンコーダ初期化: セマフォ破棄済み、初期化をスキップ");
+				return false;
+			}
+			try
+			{
+				// [task13] force=true の場合は _isWebCodecsInitialized をリセットして再初期化を行う
+				if (force) _isWebCodecsInitialized = false;
+				// 既に初期化済みなら即座に完了
+				if (_isWebCodecsInitialized) return true;
+
 				// CefSharp 経由で JS の initEncoder() を呼び出す
+				// [task13 / A-4] IFrame.IsValid ガード（CefSharp Issue #1354/#1509）:
+				// 破棄フレーム（IsValid == false）への EvaluateScriptAsync は exit code 1073741855
+				// （アクセス違反）でプロセスクラッシュを引き起こし得るため、null チェックと併せて IsValid を確認する
 				var kancolleFrame = _parent.GetKanColleFrame();
 				if (kancolleFrame == null)
 				{
 					Log(3, "[RemoteController] WebCodecs エンコーダ初期化: Kancolle frame not found");
+					return false;
+				}
+				if (!kancolleFrame.IsValid)
+				{
+					Log(3, "[RemoteController] WebCodecs エンコーダ初期化: frame invalid（破棄フレーム）");
 					return false;
 				}
 
@@ -4127,6 +4574,12 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 				_isWebCodecsInitialized = false;
 				Log(3, $"[RemoteController] WebCodecs エンコーダ初期化例外: {ex.Message}");
 				return false;
+			}
+			finally
+			{
+				// [task13 / D・MAJOR-2] 直列化シグナルの解放
+				// （WaitAsync が try 内側にあるため、この finally に到達した場合必ずシグナルを取得済み）
+				_webCodecsInitSemaphore.Release();
 			}
 		}
 
@@ -4552,6 +5005,14 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 				_webCodecsCaptureCts.Dispose();
 			}
 
+			// [task13 / Minor 4] WebCodecs 初期化セマフォ（_webCodecsInitSemaphore）の Dispose:
+			// SemaphoreSlim は IDisposable を実装しており、公式ドキュメントに従い破棄して内部リソースを解放する。
+			// 先に _webCodecsDisposed を true（volatile）にして以降の InitializeWebCodecsEncoderAsync 入口をブロックし、
+			// フラグチェックを通過済み・WaitAsync 直前という TOCTOU 競合は InitializeWebCodecsEncoderAsync 入口の
+			// ObjectDisposedException catch（ログ出力・握りつぶしなし）で吸収する。
+			_webCodecsDisposed = true;
+			_webCodecsInitSemaphore.Dispose();
+
 			// [二次レビュー Minor 指摘3 / CriticalReview 指摘3] タスク参照をローカル変数にキャプチャしてから監視
 			var task = _centralCaptureTask;
 			if (task != null)
@@ -4740,43 +5201,112 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 			{
 				case CaptureMode.WebCodecs:
 					{
-						var initResult = await InitializeWebCodecsEncoderAsync();
-						if (initResult)
-						{
-							var cts = new CancellationTokenSource();
-							lock (_modeLock)
-							{
-								_webCodecsCaptureCts = cts;
-								_webCodecsCaptureTask = Task.Run(
-									() => WebCodecsCaptureLoopAsync(cts.Token));
-							}
-							Log(2, "[RemoteController] WebCodecs キャプチャループを起動しました");
-						}
-						else
-						{
-							Log(3, "[RemoteController] WebCodecs 初期化失敗、WebP にフォールバック");
-							// 【Major修正】 初期化失敗時はWebPループを再起動（モード切替のみの旧実装は配信停止を発生）
-							await SetCaptureModeAsync(CaptureMode.WebP);
-						}
+						// [task13 / A-1・CRIT-1・SEC-CRIT-1] 既存のインライン実装（InitializeWebCodecsEncoderAsync 直接呼び出し +
+						// CTS/タスク作成・WebP フォールバック）を StartWebCodecsCaptureLoopAsync に置換し、
+						// 生存性チェック・force 初期化・二重起動防止を単一化する。
+						// ヘルパーは内部で InitializeWebCodecsEncoderAsync(force: true) を呼ぶが、
+						// JS 側 initEncoder() は再入防止付きで冪等（FormBrowser.cs）のため安全。
+						await StartWebCodecsCaptureLoopAsync();
 					}
 					break;
 				case CaptureMode.WebP:
 					{
-						// WebP ループの起動（中央キャプチャループは接続時に自動起動）
-						// 既に接続クライアントがいる場合は明示的に起動
-						if (_centralCaptureCts == null || _centralCaptureCts.IsCancellationRequested)
-						{
-							var cts = new CancellationTokenSource();
-							lock (_modeLock)
-							{
-								_centralCaptureCts = cts;
-							}
-							_forceNextKeyFrame = true;
-							_centralCaptureTask = Task.Run(() => CentralCaptureLoopAsync(cts.Token));
-							Log(2, "[RemoteController] 中央キャプチャループ(WebP)を起動しました");
-						}
+						// [task13 / B-2・R3-MAJOR-1] 中央キャプチャループの起動判定を EnsureCentralCaptureLoopStarted に抽出・置換
+						// （接続数チェックと起動を _captureStartLock 内で一貫実行、二重起動防止の単一実装化）
+						EnsureCentralCaptureLoopStarted("mode_switch");
 					}
 					break;
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : StartWebCodecsCaptureLoopAsync
+		// 概要           : [task13 / A-1] WCS ループの起動（事前稼働チェック + force 初期化 + 二重起動防止）。
+		//                  SetCaptureModeAsync の WebCodecs 分岐と switch_mode ハンドラの生存性チェックで共用する。
+		//------------------------------------------------------------------------------------
+		// [task13 / R1-MAJOR-2] 事前稼働チェック（Fast-Path）:
+		// WCS ループが既に稼働中（タスク存在かつ未完了）なら、force 初期化自体を行わず早期リターンする。
+		// これにより、並行接続（2台が同時 switch_mode webcodecs）で 2 番目の呼び出しが
+		// InitializeWebCodecsEncoderAsync(force: true) を実行して稼働中エンコーダを強制再初期化
+		// （_isWebCodecsInitialized = false の再設定 + JS 側 initEncoder() 再実行 + SPS/PPS 再送）するのを防止する。
+		private async Task StartWebCodecsCaptureLoopAsync()
+		{
+			// [task13 / R1-MAJOR-2] 事前稼働チェック（Fast-Path）: _modeLock 内で「タスク存在かつ未完了」を検査し、
+			// 稼働中なら force 初期化前に早期リターンする
+			lock (_modeLock)
+			{
+				var existing = _webCodecsCaptureTask;
+				if (existing != null && !existing.IsCompleted)
+				{
+					// [task13 / L2] 既に稼働中（スキップ）
+					Log(3, "[RemoteController] WebCodecs ループは既に稼働中のため、起動処理をスキップ");
+					return;
+				}
+			}
+
+			// [task13 / L3] force 再初期化（_isWebCodecsInitialized フラグを無視して initEncoder() を実行）
+			var initResult = await InitializeWebCodecsEncoderAsync(force: true);
+			if (!initResult)
+			{
+				// [task13 / L3] 再初期化失敗時は WebP にフォールバック（既存挙動 [4759] の維持）
+				// ※ 呼び出し元は _currentCaptureMode == WebCodecs 状態なので [4710] の早期リターンには到達しない
+				// [task13 / Minor 5] このフォールバック経路には破棄すべき CTS は存在しない:
+				// ローカル変数 cts は本チェック通過後（下段）に初めて new されるため、init 失敗経路では
+				// 未生成・未使用であり cts.Dispose() が不要。従ってこの経路で CTS リークは発生しない。
+				// B-1 方針（旧 CTS の Dispose は省略し GC に委譲）とも整合（孤立 CTS を一切生成しない）。
+				Log(3, "[RemoteController] WebCodecs 生存性チェック: 再初期化失敗、WebP にフォールバック");
+				await SetCaptureModeAsync(CaptureMode.WebP);
+				return;
+			}
+			var cts = new CancellationTokenSource();
+			lock (_modeLock)
+			{
+				// [task13 / R1-MAJOR-2] 二重起動防止（ダブルチェック）: 事前チェックと初期化の間に並行呼び出しが起動した場合は、
+				// 作成した CTS を破棄して返却（force 初期化は冪等なため実行済みでも無害）
+				var existing = _webCodecsCaptureTask;
+				if (existing != null && !existing.IsCompleted)
+				{
+					cts.Dispose();
+					Log(3, "[RemoteController] WebCodecs ループは並行起動されたため、CTS を破棄してスキップ");
+					return;
+				}
+				_webCodecsCaptureCts = cts;
+				_webCodecsCaptureTask = Task.Run(() => WebCodecsCaptureLoopAsync(cts.Token));
+			}
+			// [task13 / L3] 生存性チェックによる起動
+			Log(2, "[RemoteController] WebCodecs キャプチャループを生存性チェックにより起動しました");
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : EnsureCentralCaptureLoopStarted
+		// 概要           : [task13 / B-2] 中央キャプチャループの起動保証（起動判定の単一実装）。
+		//                  WebP モードかつ接続数>0で、ループが不在（cts null/cancelled / task null/completed）の場合に起動する。
+		//                  ダブルチェックロックパターンで二重起動を防止する。
+		//------------------------------------------------------------------------------------
+		// [task13 / SEC-MAJOR-1] 接続数チェック（Interlocked.CompareExchange）とループ起動を _captureStartLock 内で
+		// 一貫して実行し、自己救済経路の TOCTOU ギャップ（接続数 > 0 を確認 → 別セッション切断 → 即自終了）を回避する。
+		// 戻り値: true = 起動した、false = 起動しなかった（既に稼働中 / WebP モード以外 / 接続数0）
+		private bool EnsureCentralCaptureLoopStarted(string reason)
+		{
+			if (_currentCaptureMode != CaptureMode.WebP) return false;
+			lock (_captureStartLock)
+			{
+				if (Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0) <= 0) return false;
+				if (_centralCaptureCts != null && !_centralCaptureCts.IsCancellationRequested &&
+					_centralCaptureTask != null && !_centralCaptureTask.IsCompleted)
+				{
+					return false; // 既に稼働中
+				}
+				// [task13 / CRIT-3・SEC-MINOR-1] 旧 CTS の Dispose は省略し GC に委ねる（B-1 参照）。
+				// Cancel 済み CTS は内部 callbacks がクリア済みで、ループは token ローカル変数（value type）を参照するため、
+				// Dispose による ObjectDisposedException 競合を回避しつつメモリは GC で回収される。
+				_centralCaptureCts = new CancellationTokenSource();
+				// [外部レビュー 指摘1] 再起動時は必ずフルキーフレームを要求
+				_forceNextKeyFrame = true;
+				_centralCaptureTask = Task.Run(() => CentralCaptureLoopAsync(_centralCaptureCts.Token));
+				// [task13 / L5] 起動ログ（reason 付きで起動原因を追跡: ws_connect / mode_switch / fanout_self_heal）
+				Log(2, $"[RemoteController] 中央キャプチャループ(WebP)を起動しました (reason: {reason})");
+				return true;
 			}
 		}
 
@@ -4935,31 +5465,11 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 
 				Log(2, $"[RemoteController] WebSocket 接続確立: SessionID={sessionId}, IP={req.RemoteEndPoint}, 接続数={count}/{MaxConcurrentClients}");
 
-				// 中央キャプチャループが起動していない場合は起動（フェーズ5）
-				// [Task05-対策1] タスク完了状態も判定条件に追加（自動停止後の再起動を確実に検知）
-				// [外部レビュー 指摘2] _centralCaptureTask == null を含める（TOCTOU 競合対策）
-				// 【Critical修正】 WebP モード時のみ中央キャプチャループ(WebP)を起動
-				// WebCodecs モード中は WebP ループが二重起動するのを防止
-				if (_currentCaptureMode == CaptureMode.WebP &&
-					(_centralCaptureCts == null || _centralCaptureCts.IsCancellationRequested ||
-					 _centralCaptureTask == null || _centralCaptureTask.IsCompleted))
-				{
-					lock (_captureStartLock)
-					{
-						// 再チェック（ダブルチェックロックパターン）
-						if (_currentCaptureMode == CaptureMode.WebP &&
-							(_centralCaptureCts == null || _centralCaptureCts.IsCancellationRequested ||
-							 _centralCaptureTask == null || _centralCaptureTask.IsCompleted))
-						{
-							_centralCaptureCts?.Dispose();
-							_centralCaptureCts = new CancellationTokenSource();
-							// [外部レビュー 指摘1] 再起動時は必ずフルキーフレームを要求
-							_forceNextKeyFrame = true;
-							_centralCaptureTask = Task.Run(() => CentralCaptureLoopAsync(_centralCaptureCts.Token));
-							Log(2, "[RemoteController] 中央キャプチャループ(WebP)を起動しました (フェーズ5)");
-						}
-					}
-				}
+				// [task13 / B-2] 中央キャプチャループ起動判定を EnsureCentralCaptureLoopStarted() に統合
+				// （TOCTOU 解消: _captureStartLock 内での再チェック / 旧 CTS は Dispose せず GC に委譲 —
+				// dotnet/runtime#105811 参照: Dispose 後 .Token アクセスが ObjectDisposedException を投げ得るため
+				// 旧タスク finally 側の try-catch と連携）
+				EnsureCentralCaptureLoopStarted("ws_connect");
 
 				// セッション固有のタスクを開始（ファンアウト / 送信 / 受信）
 				session.CaptureTask = Task.Run(() => WebSocketFanoutLoopAsync(session));
@@ -5017,8 +5527,15 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 						{
 							if (Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0) <= 0)
 							{
-								Log(2, "[RemoteController] 接続クライアントが0台になったため、中央キャプチャループを停止します");
+								// [task13 / B-1・L4] CTS も Cancel して「ループ不在」状態を
+								// (cts==null || cts.Cancelled || task==null || task.Completed) に統一する。
+								// これにより起動判定（B-2 のヘルパー）が確実に再起動をトリガーする。
+								// [task13 / CRIT-3] 旧 CTS の Dispose は省略し GC に委譲
+								// （dotnet/runtime#105811: Dispose 後 .Token アクセスが ObjectDisposedException を
+								// 投げ得るため、finally 側は try-catch で保護済み）
+								Log(2, "[RemoteController] 接続クライアントが0台になったため、中央キャプチャループを停止します (CTS Cancel)");
 								_centralCaptureTask = null;
+								_centralCaptureCts?.Cancel();
 								break;
 							}
 						}
@@ -5140,10 +5657,33 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 			}
 			finally
 			{
-				// [外部レビュー 指摘2] タスク終了時に参照をクリアし、TOCTOU レース条件を排除
+				// [task13 / B-3・R1-CRIT-1] 自分のトークン（token 引数）が現在有効な CTS のトークンと一致する場合のみ null にクリアする
+				// （新タスク起動で _centralCaptureCts が差し替えられた場合、旧タスクの finally はクリアしない）
+				// これにより、旧タスクの遅延 finally が新タスク参照を null 上書きして
+				// 「ループ稼働中なのに task==null」状態になるのを防ぐ（S3 解消）
 				lock (_captureStartLock)
 				{
-					_centralCaptureTask = null;
+					// [task13 / R3-CRIT-2] null チェック先行: _centralCaptureCts == null の場合、
+					// && の短絡評価で .Token アクセスが回避され、タスク参照は**クリアしない**
+					// [task13 / R1-CRIT-1・Dispose リスク対策] .Token アクセスを try-catch で保護
+					// （dotnet/runtime#105811: Dispose 後 .Token アクセスが ObjectDisposedException を投げ得る）
+					try
+					{
+						if (_centralCaptureCts != null && _centralCaptureCts.Token == token)
+						{
+							_centralCaptureTask = null;
+							Log(2, "[RemoteController] 中央キャプチャループ終了: token一致でタスク参照をクリア");
+						}
+						else
+						{
+							Log(2, "[RemoteController] 中央キャプチャループ終了: token不一致（またはCTS null）でタスク参照をクリアしない");
+						}
+					}
+					catch (ObjectDisposedException)
+					{
+						// [task13 / L7] 例外をサイレントに握りつぶさない（Log で記録）
+						Log(3, "[RemoteController] 中央キャプチャループ終了: CTSがDispose済みのためtoken比較をスキップ");
+					}
 				}
 				Log(2, "[RemoteController] 中央キャプチャループが完全に終了しました");
 			}
@@ -5208,6 +5748,8 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 			double ticksPerMs = (double)System.Diagnostics.Stopwatch.Frequency / 1000.0;
 			long droppedFramesCount = 0;
 			int sessionFrameCounter = 0;
+			// [task13 / B-4] フレーム到着待機連続タイムアウト回数（try 外で初期化、§7.4-5）
+			int frameWaitTimeoutStreak = 0;
 		
 			try
 			{
@@ -5218,6 +5760,8 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 			
 					if (frameReady)
 					{
+						// [task13 / R1-MINOR-1] 成功時のみリセット（失敗は else 分支でカウント）
+						frameWaitTimeoutStreak = 0;
 						int centralInterval = GetMaxFpsIntervalMs();
 		
 						// [バイパス判定]
@@ -5310,6 +5854,24 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 						{
 							_sharedFrameBuffer.ReleaseFrame(data);
 						}
+					}
+					else
+					{
+						// [task13 / B-4・L6] 自己救済: フレーム到着待ちが連続3回タイムアウトした場合、
+						// 中央キャプチャループ不在を検知して再起動を試行する
+						// [task13 / R1-MINOR-1] 失敗時のみカウント（成功時のみリセットする方式）
+						frameWaitTimeoutStreak++;
+						// [task13 / Minor 3] 連続タイムアウト閾値の定数化（フレーム到着待機が3回連続でタイムアウトで自己救済）
+						if (frameWaitTimeoutStreak >= FrameWaitTimeoutStreakThreshold)
+						{
+							// [task13 / R1-MINOR-1] 戻り値に関わらずリセットして毎フレームのロック取得を防止
+							frameWaitTimeoutStreak = 0;
+							if (EnsureCentralCaptureLoopStarted("fanout_self_heal"))
+							{
+								Log(3, $"[RemoteController] Fanout 自己救済: 中央キャプチャループを再起動しました (session={session.SessionId})");
+							}
+						}
+						// 中央ループは WebP モードのみ起動されるため、WCS モードでは何もしない（WCS は A-3 のループ自己救済で回復）
 					}
 				}
 			}
@@ -5790,44 +6352,79 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 						// FPS 制御は C# WCS キャプチャループ（Task.Delay によるアダプティブ FPS）が唯一の正（source of truth）
 					}
 				}
+				// [task14] クライアント中継イベントログの受信（§3.5a: move 分岐より前に配置）
+				else if (action == "event_log")
+				{
+					string evJson = ExtractJsonString(message, "ev"); // 既存ヘルパを流用（JSON ライブラリ不使用・既存パターン）
+					// [task14 Major-S2] 受信検証: 空・サイズ上限超過・JSON オブジェクト形状以外を拒否
+					if (string.IsNullOrEmpty(evJson) || evJson.Length > 4096 ||
+						!evJson.TrimStart().StartsWith("{") || !evJson.TrimEnd().EndsWith("}"))
+					{
+						Log(3, $"[RemoteController] event_log 無効な payload を拒否: len={evJson?.Length ?? 0} (Session: {session.SessionId})");
+						return;
+					}
+					RemoteDedicatedLog.Event.Append(evJson);
+				}
 				else if (action == "move" && double.TryParse(xStr, out double x) && double.TryParse(yStr, out double y))
 				{
 					session.SetCursorX(Math.Max(0, Math.Min(1.0, x)));
 					session.SetCursorY(Math.Max(0, Math.Min(1.0, y)));
 					await TriggerMouseMoveAsync(session);
+					// [task14 §3.5b] サーバ側アクション実行ログ（クライアント送信ログと時系列で突き合わせる）
+					AppendServerActionLog("move", x, y, session.SessionId, "ws");
 				}
 				else if (action == "click")
 				{
-					if (double.TryParse(xStr, out double cx) && double.TryParse(yStr, out double cy))
+					double? cx = null;
+					double? cy = null;
+					if (double.TryParse(xStr, out double cxx) && double.TryParse(yStr, out double cyy))
 					{
-						session.SetCursorX(Math.Max(0, Math.Min(1.0, cx)));
-						session.SetCursorY(Math.Max(0, Math.Min(1.0, cy)));
+						cx = cxx;
+						cy = cyy;
+						session.SetCursorX(Math.Max(0, Math.Min(1.0, cxx)));
+						session.SetCursorY(Math.Max(0, Math.Min(1.0, cyy)));
 					}
 					await TriggerMouseClickAsync(session);
+					// [task14 §3.5b] サーバ側アクション実行ログ
+					AppendServerActionLog("click", cx, cy, session.SessionId, "ws");
 				}
 				else if (action == "touch_click" && double.TryParse(xStr, out double tx) && double.TryParse(yStr, out double ty))
 				{
 					session.SetCursorX(Math.Max(0, Math.Min(1.0, tx)));
 					session.SetCursorY(Math.Max(0, Math.Min(1.0, ty)));
 					await TriggerMouseClickAsync(session);
+					// [task14 §3.5b] サーバ側アクション実行ログ
+					AppendServerActionLog("touch_click", tx, ty, session.SessionId, "ws");
 				}
 				else if (action == "mousedown")
 				{
-					if (double.TryParse(xStr, out double mx) && double.TryParse(yStr, out double my))
+					double? mx = null;
+					double? my = null;
+					if (double.TryParse(xStr, out double mxx) && double.TryParse(yStr, out double myy))
 					{
-						session.SetCursorX(Math.Max(0, Math.Min(1.0, mx)));
-						session.SetCursorY(Math.Max(0, Math.Min(1.0, my)));
+						mx = mxx;
+						my = myy;
+						session.SetCursorX(Math.Max(0, Math.Min(1.0, mxx)));
+						session.SetCursorY(Math.Max(0, Math.Min(1.0, myy)));
 					}
 					await TriggerMouseDownAsync(session);
+					// [task14 §3.5b] サーバ側アクション実行ログ
+					AppendServerActionLog("mousedown", mx, my, session.SessionId, "ws");
 				}
 				else if (action == "mouseup")
 				{
-					if (double.TryParse(xStr, out double ux) && double.TryParse(yStr, out double uy))
+					double? ux = null;
+					double? uy = null;
+					if (double.TryParse(xStr, out double uxx) && double.TryParse(yStr, out double uyy))
 					{
-						session.SetCursorX(Math.Max(0, Math.Min(1.0, ux)));
-						session.SetCursorY(Math.Max(0, Math.Min(1.0, uy)));
+						ux = uxx;
+						uy = uyy;
+						session.SetCursorX(Math.Max(0, Math.Min(1.0, uxx)));
+						session.SetCursorY(Math.Max(0, Math.Min(1.0, uyy)));
 					}
 					await TriggerMouseUpAsync(session);
+					// [task14 §3.5b] サーバ側アクション実行ログ
+					AppendServerActionLog("mouseup", ux, uy, session.SessionId, "ws");
 				}
 				// [task19 P3] WCS モード切替（クライアント switchToWcsMode() → { action: 'switch_mode', mode: 'webcodecs' }）
 				// 設計書 §5.2 整合: クライアントは既存 WebSocket 接続を維持したまま
@@ -5871,11 +6468,29 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 					// SetCaptureModeAsync は早期リターン（旧=新モード）するため SPS/PPS 再送信されない。
 					// 一方、クライアント switchToWcsMode() はデコーダ状態をリセット済み（_videoDecoderDescription=null）
 					// であるため、DescriptionSent をリセットし、次フレームで SPS/PPS を再送信させる
-					if (targetMode == CaptureMode.WebCodecs)
+					// [task13] 生存性チェック: サーバが既に WebCodecs モードの場合、SetCaptureModeAsync は
+					// 早期リターン（旧=新モード）するため、WCS ループが不在（前回 WebP 切替、または
+					// モード切替で停止済み）の場合に再起動する。
+					// ※ WCS ループは接続数0で自終了しない（停止は SetCaptureModeAsync の Cancel 経由のみ）。
+					// [task13 / R1-MAJOR-1] 判定基準はクライアント送信の targetMode ではなく、
+					// SetCaptureModeAsync 実行後の実効モード _currentCaptureMode を用いる。
+					// SetCaptureModeAsync 内で初期化失敗 → WebP フォールバックした場合は _currentCaptureMode == WebP となり、
+					// 生存性チェック（StartWebCodecsCaptureLoopAsync 再呼び出し）がスキップされるため、
+					// 二重初期化・多重フォールバック（フォールバック後に再度 force 初期化失敗 → 再度 WebP フォールバック）を回避する。
+					if (_currentCaptureMode == CaptureMode.WebCodecs)
 					{
 						session.DescriptionSent = false;
 						// [task19 レビュー指摘 M1] バックオフ状態もリセットし、即座に再送を許可する
 						session.ResetDescriptionSendState();
+						// [task13] ループ不在（_webCodecsCaptureTask が null または完了）なら再起動
+						// （_currentCaptureMode 基準のため、WebP フォールバック後の多重起動・多重フォールバックは起きない）
+						var wcsTask = _webCodecsCaptureTask;
+						if (wcsTask == null || wcsTask.IsCompleted)
+						{
+							// [task13 / L2] WCS ループ不在を検知、再起動
+							Log(2, $"[RemoteController] switch_mode(WebCodecs) で WCS ループ不在を検知、再起動します (Session: {session.SessionId})");
+							await StartWebCodecsCaptureLoopAsync();
+						}
 						Log(2, $"[RemoteController] switch_mode(WebCodecs) で SPS/PPS 再送トリガー (Session: {session.SessionId})");
 					}
 				}

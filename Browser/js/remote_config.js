@@ -105,6 +105,12 @@ let targetZoom = parseFloat(localStorage.getItem('targetZoom')) || 3.0;
 let dragThreshold = parseInt(localStorage.getItem('dragThreshold'), 10) || 10;
 let tapTimeout = parseInt(localStorage.getItem('tapTimeout'), 10) || 300;
 let hudBarPosition = localStorage.getItem('hudBarPosition') || 'right';
+// [task14 P2] touchend 直後のマウスイベントを合成とみなす時間窓（ms）。
+// 合成マウスイベントは touchend 直後（通常数 ms 以内）に発火するため 700ms には余裕がある。
+// ハイブリッドデバイスでの実マウス誤爆が許容できない場合は DevTools/localStorage で短縮可能。
+let touchMouseGuardMs = parseInt(localStorage.getItem('touchMouseGuardMs'), 10) || 700;
+// [task14] move 系ログのスロットリング間隔（ms）
+let eventLogMoveThrottleMs = parseInt(localStorage.getItem('eventLogMoveThrottleMs'), 10) || 100;
 
 // HUDタップ/ドラッグ判定用定数
 const HUD_TAP_THRESHOLD_PX = 8;    // タップ/ドラッグの移動閾値（px）

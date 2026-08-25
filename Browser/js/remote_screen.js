@@ -197,6 +197,7 @@ async function updateScreenDiff() {
 
         if (response.status === 401) {
             console.warn("Screen: Session expired. Redirecting to login...");
+            if (window.__eventLog) window.__eventLog.consoleLog('warn', 'Screen: Session expired. Redirecting to login...', 'SCREEN_SESSION_EXPIRED');
             window.location.href = '/login-page';
             return;
         }
@@ -254,6 +255,7 @@ async function updateScreenDiff() {
                 updateFpsDisplay();
             } catch (err) {
                 console.error("[remote_screen] img.onload render error:", err);
+                if (window.__eventLog) window.__eventLog.consoleLog('error', '[remote_screen] img.onload render error: ' + (err && err.message ? err.message : err), 'SCREEN_IMG_ERR');
             } finally {
                 // [v5] 例外発生時も確実にリソース解放・更新フラグ解除・タイマー再予約
                 URL.revokeObjectURL(img.src);
@@ -461,6 +463,7 @@ function drawVideoFrame(frame) {
         if (!frame) return;
         if (!gameCtx || !screen) {
             console.error('[drawVideoFrame] gameCtx or screen is null - draw skipped');
+            if (window.__eventLog) window.__eventLog.consoleLog('error', '[drawVideoFrame] gameCtx or screen is null - draw skipped', 'SCREEN_DRAW_CTX_NULL');
             return;
         }
         gameCtx.clearRect(0, 0, screen.width, screen.height);
@@ -469,6 +472,7 @@ function drawVideoFrame(frame) {
     } catch (e) {
         // [AGENTS.md NEVER] サイレントな例外の握りつぶし禁止
         console.error('[drawVideoFrame] draw error:', e);
+        if (window.__eventLog) window.__eventLog.consoleLog('error', '[drawVideoFrame] draw error: ' + (e && e.message ? e.message : e), 'SCREEN_DRAW_ERR');
     } finally {
         // [task23 F-0-2] frame.close() の所有権は drawVideoFrame に単一化（drawImage の直後に解放）
         // MDN 公式パターン: ctx.drawImage(frame, 0, 0); frame.close();

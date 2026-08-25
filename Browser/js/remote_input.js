@@ -16,6 +16,7 @@ let viewportTouchStartY = 0;
 let viewportTouchStartTime = 0;
 let isDraggingOnViewport = false;
 let isMouseDownOnViewport = false;
+let lastTouchEndTime = 0; // [task14 P2] 合成マウスイベントの時間窓判定用
 
 function activateViewportFpsControl() {
     const isSlowFpsMode = (Date.now() - lastOperationTime) >= ACTIVE_TIMEOUT;
@@ -44,14 +45,17 @@ function handleViewportMove(clientX, clientY) {
     vCursorY = y;
     scheduleCursorUpdate();
     sendMoveControl(x, y);
+    // [task14] イベントログ計装: touchstart/touchmove/mousemove/trackpad の全経路で通る
+    //（スロットリングは remote_eventlog.js 内で行う）
+    if (window.__eventLog) window.__eventLog.moveThrottled('mousemove', x, y);
 }
 
 // viewport touchstart
-// 【二次レビュー💡指摘3対応】 passive: false について:
+// passive: false について:
 // このイベントはタッチサイクル中のゲーム操作防止（preventDefault）のために passive: false を必要とする。
-// touch-action: none が #viewport に設定されている場合、デフォルトアクションは既に無効化されており、
-// preventDefault() の呼び出しは安全である。一部のブラウザで「passive:false イベントで preventDefault を
-// 呼んだがデフォルトアクションが存在しない」警告が出る可能性があるが、機能的な影響はない。
+// 注意: touch-action: none（remote_base.css:96）はスクロール/ピンチズームのみ無効化し、
+// 合成マウスイベント（mousedown/mouseup/click）は抑制しない（MDN/W3C 仕様）。
+// 合成マウスイベントの抑制は [task14 P1]（touchstart での e.preventDefault()）で対応する。
 viewport.addEventListener('touchstart', (e) => {
     // [task15] HUDバー上の操作を無視（バブリング防止）
     if (isHudControlBarEvent(e)) return;
@@ -62,6 +66,15 @@ viewport.addEventListener('touchstart', (e) => {
         return;
     }
 
+    // [task14 主修正 P1] 合成マウスイベント（mousedown/mouseup/click）を抑制する。
+    // 注意: touch-action: none（remote_base.css:96）は合成マウスイベントを抑制しない
+    //（タッチのデフォルト動作＝スクロール・ピンチズームのみ無効化する CSS プロパティ）。
+    // W3C Touch Events Level 2 仕様: touchstart/touchmove/touchend いずれかが
+    // preventDefault() でキャンセルされると、同一タッチインタラクションのマウス系
+    // イベント（mousedown/mouseup/click）は発火しない。passive: false 登録済み
+    //（72 行）であるため preventDefault() は有効に動作する。
+    e.preventDefault();
+
     const touch = e.touches[0];
     viewportTouchStartX = touch.clientX;
     viewportTouchStartY = touch.clientY;
@@ -69,6 +82,9 @@ viewport.addEventListener('touchstart', (e) => {
     isDraggingOnViewport = false;
     activateViewportFpsControl();
     handleViewportMove(touch.clientX, touch.clientY);
+    // [task14] イベントログ計装: handleViewportMove 後の正規化座標 vCursorX/vCursorY を記録
+    //（rect が未利用（ゼロサイズ guard）の場合は前回値になる点に注意）
+    if (window.__eventLog) window.__eventLog.gesture('touchstart', e, vCursorX, vCursorY);
 }, { passive: false });
 
 // viewport touchmove
@@ -96,6 +112,7 @@ viewport.addEventListener('touchmove', (e) => {
 viewport.addEventListener('touchend', (e) => {
     // [task15] HUDバー上の操作を無視（バブリング防止）
     if (isHudControlBarEvent(e)) return;
+    lastTouchEndTime = Date.now(); // [task14 P2] touchend 時刻記録（合成マウスイベント時間窓用）
 
     // 注意: touchend では dismissIfExpanded(e) を呼ばない（二次レビュー💡指摘4対応）。
     // パネル折り畳みは touchstart/click 時点で完了しているため、touchend では
@@ -115,6 +132,12 @@ viewport.addEventListener('touchend', (e) => {
     vCursorY = y;
     scheduleCursorUpdate();
 
+    // [task14] イベントログ計装（正規化座標 x/y を記録）＋ gesture 終了時の move 区間サマリー flush
+    if (window.__eventLog) {
+        window.__eventLog.gesture('touchend', e, x, y);
+        window.__eventLog.flushOnGestureEnd();
+    }
+
     if (isDraggingOnViewport) {
         sendControlAction('mouseup', vCursorX, vCursorY);
     } else if (elapsed <= tapTimeout) {
@@ -132,23 +155,31 @@ viewport.addEventListener('mousedown', (e) => {
     // [task15] HUDバー上の操作を無視（バブリング防止）
     if (isHudControlBarEvent(e)) return;
 
+    // [task14 補強 P2] touchend 後 touchMouseGuardMs 以内のマウスイベントは合成とみなして無視。
+    // 合成マウスイベントは isTrusted === true で実マウスと区別できないため時間窓で判定。
+    // 位置: button/HUD チェック通過後（HUD バー上操作を時間窓で誤爆させないため）。
+    if (Date.now() - lastTouchEndTime < touchMouseGuardMs) return;
+
     // HUD展開中のクリックであれば、パネルをたたんでゲームアクション送信をスキップ
     // dismissIfExpanded は remote_main.js 側の initTrackpadPanel IIFE 内で定義・公開
     if (typeof window.dismissIfExpanded === 'function' && window.dismissIfExpanded(e)) {
         return;
     }
 
-    e.preventDefault();
+    e.preventDefault(); // 既存（実マウス用・テキスト選択抑制）を維持（§2.6 参照）
 
     isMouseDownOnViewport = true;
     viewportTouchStartX = e.clientX;
     viewportTouchStartY = e.clientY;
     viewportTouchStartTime = Date.now();
 
+    // [task14] 計装用座標: rect 未利用（ゼロサイズ guard）時は null
+    let x = null;
+    let y = null;
     const rect = window.getCachedGameScreenRect();
     if (rect.width > 0 && rect.height > 0) {
-        const x = Math.max(0, Math.min(1.0, (e.clientX - rect.left) / rect.width));
-        const y = Math.max(0, Math.min(1.0, (e.clientY - rect.top) / rect.height));
+        x = Math.max(0, Math.min(1.0, (e.clientX - rect.left) / rect.width));
+        y = Math.max(0, Math.min(1.0, (e.clientY - rect.top) / rect.height));
         vCursorX = x;
         vCursorY = y;
         scheduleCursorUpdate();
@@ -156,6 +187,8 @@ viewport.addEventListener('mousedown', (e) => {
     } else {
         sendControlAction('mousedown');
     }
+    // [task14] イベントログ計装（P2 ガード通過後＝実マウスと判定されたときのみ記録）
+    if (window.__eventLog) window.__eventLog.gesture('mousedown', e, x, y);
     activateViewportFpsControl();
     handleViewportMove(e.clientX, e.clientY);
 });
@@ -168,6 +201,10 @@ viewport.addEventListener('mousemove', (e) => {
 
 // viewport mouseup
 viewport.addEventListener('mouseup', (e) => {
+    // [task14 補強 P2] 二重安全: 通常は合成 mousedown が P2 で無効化されるため
+    // isMouseDownOnViewport が false となり早期 return する。
+    // ここは実装差（mousedown なしで mouseup のみ発火するケース）に対する最終防御。
+    if (Date.now() - lastTouchEndTime < touchMouseGuardMs) return;
     if (!isMouseDownOnViewport) return;
     isMouseDownOnViewport = false;
 
@@ -179,6 +216,9 @@ viewport.addEventListener('mouseup', (e) => {
     const rect = window.getCachedGameScreenRect();
     const x = (rect.width > 0) ? Math.max(0, Math.min(1.0, (e.clientX - rect.left) / rect.width)) : vCursorX;
     const y = (rect.height > 0) ? Math.max(0, Math.min(1.0, (e.clientY - rect.top) / rect.height)) : vCursorY;
+
+    // [task14] イベントログ計装
+    if (window.__eventLog) window.__eventLog.gesture('mouseup', e, x, y);
 
     if (elapsed <= tapTimeout && dist <= dragThreshold) {
         // 短時間クリック（タップ判定）: touch_click で確実に発火
@@ -240,6 +280,7 @@ function handleTrackpadPointerDown(e) {
             pad.setPointerCapture(e.pointerId);
         } catch (err) {
             console.error('pad.setPointerCapture failed:', err);
+            if (window.__eventLog) window.__eventLog.consoleLog('error', 'pad.setPointerCapture failed: ' + err, 'INPUT_PTR_CAP_FAIL');
         }
     }
 
@@ -302,6 +343,7 @@ function handleTrackpadPointerUp(e) {
             // NotFoundError は既に解放済みの場合の正常系
             if (err.name !== 'NotFoundError') {
                 console.error('releasePointerCapture failed:', err);
+                if (window.__eventLog) window.__eventLog.consoleLog('error', 'releasePointerCapture failed: ' + err, 'INPUT_PTR_RELEASE_FAIL');
             }
         }
     }

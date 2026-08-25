@@ -162,10 +162,12 @@ const ProtocolManager = {
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${location.hostname}${portStr}/ws`;
         console.log('[ProtocolManager] WebSocket 接続試行中:', wsUrl);
+        if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] WebSocket 接続試行中: ' + wsUrl, 'WS_CONNECT');
         try {
             this.wsConnection = new WebSocket(wsUrl);
         } catch (e) {
             console.warn('[ProtocolManager] WebSocket creation failed:', e.message);
+            if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] WebSocket creation failed: ' + e.message, 'WS_CREATE_FAIL');
             if (this.currentMode === this.MODES.WEBSOCKET) {
                 this.reconnectWebSocket();
             } else if (this.currentMode === this.MODES.AUTO) {
@@ -184,6 +186,7 @@ const ProtocolManager = {
 
         this.wsConnection.onopen = () => {
             console.log('[ProtocolManager] WebSocket connected successfully:', wsUrl);
+            if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] WebSocket connected successfully: ' + wsUrl, 'WS_OPEN');
             // [A1 fix] 新 WS 確立後に意図的 close フラグをリセット（二重安全: 新 WS の onopen 後リセット）
             this._intentionalClose = false;
             this.wsReconnectAttempts = 0;
@@ -209,6 +212,7 @@ const ProtocolManager = {
             this._hudInitTimeout = setTimeout(() => {
                 if (!this._hudInitialized) {
                     console.error(`[ProtocolManager] init_hud timeout (5s): proceeding without HUD`);
+                    if (window.__eventLog) window.__eventLog.consoleLog('error', '[ProtocolManager] init_hud timeout (5s): proceeding without HUD', 'HUD_INIT_TIMEOUT');
                     this._hudInitialized = true; // フォース初期化
                 }
             }, 5000);
@@ -219,11 +223,13 @@ const ProtocolManager = {
             // Version 2 = 7Bヘッダー (Version + Type + Flags + Seq)
             this.sendWsControl({ action: 'PROTOCOL_VERSION', version: 2 });
             console.log('[ProtocolManager] PROTOCOL_VERSION=2 を送信しました');
+            if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] PROTOCOL_VERSION=2 を送信しました', 'PROTO_VERSION');
 
             setTimeout(() => {
                 console.log('[ProtocolManager] init キーフレーム要求を送信します');
                 ProtocolManager._initRequestCount++;
                 console.log(`[ProtocolManager] init 要求カウント: ${ProtocolManager._initRequestCount}`);
+                if (window.__eventLog) window.__eventLog.consoleLog('log', `[ProtocolManager] init 要求カウント: ${ProtocolManager._initRequestCount}`, 'INIT_REQ');
                 this.sendWsControl({ action: 'init' });
             }, 100);
 
@@ -235,6 +241,7 @@ const ProtocolManager = {
             if (this.currentMode === this.MODES.WEBCODECS) {
                 this.sendWsControl({ action: 'switch_mode', mode: 'webcodecs' });
                 console.log('[ProtocolManager] WCS mode: sent switch_mode webcodecs');
+                if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] WCS mode: sent switch_mode webcodecs', 'SWITCH_MODE');
             }
         };
 
@@ -268,6 +275,7 @@ const ProtocolManager = {
 
         this.wsConnection.onerror = () => {
             console.warn('[ProtocolManager] WebSocket error');
+            if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] WebSocket error', 'WS_ERROR');
         };
 
         this.wsConnection.onclose = () => {
@@ -277,6 +285,7 @@ const ProtocolManager = {
 
     onWsClose() {
         console.warn('[ProtocolManager] WebSocket closed');
+        if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] WebSocket closed', 'WS_CLOSE');
         this.stopHeartbeat();
         if (ProtocolManager._pongTimeoutId) {
             clearTimeout(ProtocolManager._pongTimeoutId);
@@ -298,6 +307,7 @@ const ProtocolManager = {
         // 以下に fall-through して従来通り再接続・フォールバックを行う。
         if (this._intentionalClose) {
             console.log('[ProtocolManager] Intentional close detected: skipping reconnection (suppressed)');
+            if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] Intentional close detected: skipping reconnection (suppressed)', 'WS_INTENTIONAL_CLOSE');
             this._intentionalClose = false;
             return;
         }
@@ -317,6 +327,7 @@ const ProtocolManager = {
         this._intentionalClose = false;
         if (this.wsReconnectAttempts >= this.maxReconnectAttempts) {
             console.warn('[ProtocolManager] Max reconnect attempts reached, falling back to HTTP');
+            if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] Max reconnect attempts reached, falling back to HTTP', 'WS_MAX_RECONNECT');
             this.fallbackToHttp();
             return;
         }
@@ -327,6 +338,7 @@ const ProtocolManager = {
         this.wsReconnectAttempts++;
         this.updateConnStatus(`WS RETRY (${this.wsReconnectAttempts})`, false);
         console.warn(`[ProtocolManager] 再接続を試みます (delay=${delay}ms, base=${this._currentBackoffMs}ms, jitter=${jitter}ms)`);
+        if (window.__eventLog) window.__eventLog.consoleLog('warn', `[ProtocolManager] 再接続を試みます (delay=${delay}ms, base=${this._currentBackoffMs}ms, jitter=${jitter}ms)`, 'WS_RECONNECT');
 
         // 次回以降のバックオフ間隔を算出（最大値で飽和）
         this._currentBackoffMs = Math.min(
@@ -339,6 +351,7 @@ const ProtocolManager = {
 
     fallbackToHttp() {
         console.log('[ProtocolManager] Falling back to HTTP Polling');
+        if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] Falling back to HTTP Polling', 'FALLBACK_HTTP');
 
         // [task19 v3] 順序を明示: closeWebSocket → effectiveMode → initializeHudViaHttp
         // 1. WebSocket 切断（先に切断し、その後にモード切替）
@@ -386,14 +399,17 @@ const ProtocolManager = {
             this._hudInitialized = true;
             this._hudInitRetryCount = 0;
             console.log('[ProtocolManager] HTTP HUD initialized');
+            if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] HTTP HUD initialized', 'HTTP_HUD_INIT');
         } catch (e) {
             console.warn(`[ProtocolManager] HTTP HUD init error: ${e.message}`);
+            if (window.__eventLog) window.__eventLog.consoleLog('warn', `[ProtocolManager] HTTP HUD init error: ${e.message}`, 'HTTP_HUD_INIT_ERR');
 
             if (this._hudInitRetryCount < 3) {
                 console.log(`[ProtocolManager] Retrying HUD init (${this._hudInitRetryCount}/3)`);
                 setTimeout(() => this.initializeHudViaHttp(), 1000);
             } else {
                 console.error('[ProtocolManager] HUD init failed after 3 retries');
+                if (window.__eventLog) window.__eventLog.consoleLog('error', '[ProtocolManager] HUD init failed after 3 retries', 'HTTP_HUD_INIT_FAIL');
             }
         }
     },
@@ -414,6 +430,7 @@ const ProtocolManager = {
             try { this.wsConnection.close(); } catch (e) {
                 // [A1 fix] Do not swallow exceptions silently: log the cause of close() failure (AGENTS.md NEVER)
                 console.warn('[ProtocolManager] WebSocket close() failed:', e && e.message ? e.message : e);
+                if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] WebSocket close() failed: ' + (e && e.message ? e.message : e), 'WS_CLOSE_FAIL');
             }
             this.wsConnection = null;
         }
@@ -446,6 +463,7 @@ const ProtocolManager = {
                 }
                 ProtocolManager._pongTimeoutId = setTimeout(() => {
                     console.warn('[ProtocolManager] Pong timeout - connection may be dead');
+                    if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] Pong timeout - connection may be dead', 'PONG_TIMEOUT');
                     this.closeWebSocket();
                     this.reconnectWebSocket();
                 }, ProtocolManager._pongTimeoutMs);
@@ -483,6 +501,7 @@ const ProtocolManager = {
         if (this.effectiveMode === 'ws') {
             this.sendWsControl({ action: 'set_fps', intervalMs: intervalMs });
             console.log('[ProtocolManager] syncFps送信: intervalMs=' + intervalMs + ', force=' + force);
+            if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] syncFps送信: intervalMs=' + intervalMs + ', force=' + force, 'SYNC_FPS');
         }
     },
 
@@ -491,6 +510,7 @@ const ProtocolManager = {
             const msg = JSON.parse(jsonStr);
             if (msg.type === 'set_quality') {
                 console.log('[ProtocolManager] Server set quality:', msg.quality);
+                if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] Server set quality: ' + msg.quality, 'SRV_SET_QUALITY');
                 if (typeof msg.quality === 'number') {
                     targetQuality = msg.quality;
                     localStorage.setItem('targetQuality', msg.quality);
@@ -501,12 +521,14 @@ const ProtocolManager = {
                 }
             } else if (msg.type === 'navigate') {
                 console.log('[ProtocolManager] Server navigate:', msg.url);
+                if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] Server navigate: ' + msg.url, 'SRV_NAVIGATE');
                 if (msg.url) {
                     window.location.href = msg.url;
                 }
             } else if (msg.type === 'init_hud') {
                 // [HUD同期] 初期HUDデータを受信
                 console.log('[ProtocolManager] Received init_hud data');
+                if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] Received init_hud data', 'SRV_INIT_HUD');
                 this._hudInitialized = true;
                 // タイムアウトをクリア
                 if (this._hudInitTimeout) {
@@ -519,6 +541,7 @@ const ProtocolManager = {
             }
         } catch (e) {
             console.warn('[ProtocolManager] Invalid control message:', e.message);
+            if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] Invalid control message: ' + e.message, 'INVALID_CTRL_MSG');
         }
     },
 
@@ -587,6 +610,7 @@ const ProtocolManager = {
         			ProtocolManager._videoDecoderDescription = description;
         		}
         		console.log('[ProtocolManager] SPS/PPS received, length:', description.byteLength || description.length);
+        		if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] SPS/PPS received, length: ' + (description.byteLength || description.length), 'SPS_PPS');
         	
         		if (!ProtocolManager._videoDecoderInitialized) {
         			// [task23 F-1] 保持中の SPS/PPS（description）を渡与（引数なしだと 919 行で undefined 上書き破棄される）
@@ -638,6 +662,7 @@ const ProtocolManager = {
         		return;
         	} else {
         		console.warn('[ProtocolManager] Unknown frame type:', type);
+        		if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] Unknown frame type: ' + type, 'UNKNOWN_FRAME');
         		return;
         	}
         }
@@ -649,6 +674,7 @@ const ProtocolManager = {
 
         if (version > 1) {
             console.warn('[ProtocolManager] Unknown protocol version:', version, '(Expected: 0 or 1)');
+            if (window.__eventLog) window.__eventLog.consoleLog('warn', `[ProtocolManager] Unknown protocol version: ${version} (Expected: 0 or 1)`, 'UNKNOWN_VERSION');
             return;
         }
 
@@ -671,6 +697,7 @@ const ProtocolManager = {
 
         if (shouldValidate && !validateWebpData(frameDataV1)) {
             console.warn('[ProtocolManager] Invalid WebP data (validation failed, sampled)');
+            if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] Invalid WebP data (validation failed, sampled)', 'INVALID_WEBP');
             ProtocolManager._decodeErrorCount++;
             // [カウンター整合性] 検証失敗時は有効化を再開 + カウンターをリセット
             ProtocolManager._validationEnabled = true;
@@ -682,6 +709,7 @@ const ProtocolManager = {
                     if (now2 - ProtocolManager._lastInitRequestTime >= ProtocolManager._minInitInterval) {
                         ProtocolManager._initRequestCount++;
                         console.log(`[ProtocolManager] 3回連続WebP検証失敗 → init要求を送信します (seq=${seqV1}, init要求回数: ${ProtocolManager._initRequestCount})`);
+                        if (window.__eventLog) window.__eventLog.consoleLog('log', `[ProtocolManager] 3回連続WebP検証失敗 → init要求を送信します (seq=${seqV1}, init要求回数: ${ProtocolManager._initRequestCount})`, 'WEBP_INIT_REQ');
                         this.sendWsControl({ action: 'init' });
                         ProtocolManager._lastInitRequestTime = now2;
                         ProtocolManager._initProtectionActive = true;
@@ -710,6 +738,7 @@ const ProtocolManager = {
             .then(() => ProtocolManager.decodeAndDraw(frameDataV1, seqV1))
             .catch(e => {
                 console.warn('[ProtocolManager] createImageBitmap decode error:', e.message);
+                if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] createImageBitmap decode error: ' + e.message, 'DECODE_ERR');
                 ProtocolManager._decodeErrorCount++;
                 // [カウンター整合性] デコードエラー時は検証を有効化 + カウンターリセット
                 ProtocolManager._validationEnabled = true;
@@ -721,6 +750,7 @@ const ProtocolManager = {
                         if (now2 - ProtocolManager._lastInitRequestTime >= ProtocolManager._minInitInterval) {
                             ProtocolManager._initRequestCount++;
                             console.log(`[ProtocolManager] 3回連続デコードエラー → init要求を送信します (seq=${seqV1}, init要求回数: ${ProtocolManager._initRequestCount})`);
+                            if (window.__eventLog) window.__eventLog.consoleLog('log', `[ProtocolManager] 3回連続デコードエラー → init要求を送信します (seq=${seqV1}, init要求回数: ${ProtocolManager._initRequestCount})`, 'DECODE_INIT_REQ');
                             this.sendWsControl({ action: 'init' });
                             ProtocolManager._lastInitRequestTime = now2;
                             ProtocolManager._initProtectionActive = true;
@@ -760,6 +790,7 @@ const ProtocolManager = {
                 // [🔍 plan03 1-0a] デコード失敗時の詳細ログ（100フレームに1回に抑制）
                 if (++ProtocolManager._plan03FailLogCounter % 100 === 0) {
                     console.warn(`[plan03-1-0a] DECODE_FAIL (sampled): seq=${seq}, sinceLastInit=${sinceLastInit}, isInit=${isInitFrame}, blobSize=${frameData.length}, RIFF=${riffOk}`);
+                    if (window.__eventLog) window.__eventLog.consoleLog('warn', `[plan03-1-0a] DECODE_FAIL (sampled): seq=${seq}, sinceLastInit=${sinceLastInit}, isInit=${isInitFrame}, blobSize=${frameData.length}, RIFF=${riffOk}`, 'DECODE_FAIL_SAMPLED');
                 }
                 return;
             }
@@ -773,11 +804,13 @@ const ProtocolManager = {
                 // [💡 Minor 修正] gameCtx の null チェック追加
                 if (!gameCtx) {
                     console.error('[ProtocolManager] gameCtx is null - draw skipped');
+                    if (window.__eventLog) window.__eventLog.consoleLog('error', '[ProtocolManager] gameCtx is null - draw skipped', 'DRAW_CTX_NULL');
                     return;
                 }
                 // [🔍 plan02 修正] screen オブジェクトへのアクセス前に null チェック
                 if (!screen) {
                     console.error('[ProtocolManager] screen is null - draw skipped');
+                    if (window.__eventLog) window.__eventLog.consoleLog('error', '[ProtocolManager] screen is null - draw skipped', 'DRAW_CTX_NULL');
                     return;
                 }
                 gameCtx.clearRect(0, 0, screen.width, screen.height);
@@ -907,6 +940,7 @@ const ProtocolManager = {
 
         if (!('VideoDecoder' in window)) {
             console.warn('[ProtocolManager] VideoDecoder not supported');
+            if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] VideoDecoder not supported', 'VD_NOT_SUPPORTED');
             this._videoDecoderInitializing = false;
             return false;
         }
@@ -917,6 +951,7 @@ const ProtocolManager = {
                 try { this._videoDecoder.close(); } catch (e) {
                     // [task19 第4回Minor] 例外の握りつぶし禁止（AGENTS.md NEVER）: 旧デコーダ解放時の close() 失敗をログに記録
                     console.warn('[ProtocolManager] VideoDecoder.close() failed (initVideoDecoder old decoder release path):', e && e.message ? e.message : e);
+                    if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] VideoDecoder.close() failed (initVideoDecoder old decoder release path): ' + (e && e.message ? e.message : e), 'VD_CLOSE_FAIL');
                 }
                 this._videoDecoder = null;
             }
@@ -955,19 +990,23 @@ const ProtocolManager = {
                         // updateFpsDisplay / drawMagnifier / status 更新）は実行せず、
                         // frame のリーク防止のため安全に close() して解放する。
                         console.warn('[ProtocolManager] drawVideoFrame not defined, closing frame');
+                        if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] drawVideoFrame not defined, closing frame', 'DRAW_FN_MISSING');
                         if (frame && typeof frame.close === 'function') frame.close();
                     }
                 },
                 error: (e) => {
                     console.error('[ProtocolManager] VideoDecoder error:', e);
+                    if (window.__eventLog) window.__eventLog.consoleLog('error', '[ProtocolManager] VideoDecoder error: ' + (e && e.message ? e.message : e), 'VD_ERROR');
                     this._videoDecoderErrorCount++;
                     // [task19 v5] 最大3回までリトライ
                     if (this._videoDecoderErrorCount <= this._videoDecoderMaxErrors) {
                         console.warn(`[ProtocolManager] VideoDecoder error retry ${this._videoDecoderErrorCount}/${this._videoDecoderMaxErrors}`);
+                        if (window.__eventLog) window.__eventLog.consoleLog('warn', `[ProtocolManager] VideoDecoder error retry ${this._videoDecoderErrorCount}/${this._videoDecoderMaxErrors}`, 'VD_ERROR_RETRY');
                         if (this._videoDecoderDescription) {
                             try { this._videoDecoder.close(); } catch (e2) {
                                 // [task19 第3回二次Minor] 例外の握りつぶし禁止（AGENTS.md NEVER）: close() 失敗をログに記録
                                 console.warn('[ProtocolManager] VideoDecoder.close() failed (error retry path):', e2 && e2.message ? e2.message : e2);
+                                if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] VideoDecoder.close() failed (error retry path): ' + (e2 && e2.message ? e2.message : e2), 'VD_CLOSE_FAIL');
                             }
                             this._videoDecoder = null;
                             this._videoDecoderInitialized = false;
@@ -985,6 +1024,7 @@ const ProtocolManager = {
                         }
                     } else {
                         console.error('[ProtocolManager] VideoDecoder max errors exceeded, falling back to WebP');
+                        if (window.__eventLog) window.__eventLog.consoleLog('error', '[ProtocolManager] VideoDecoder max errors exceeded, falling back to WebP', 'VD_FALLBACK_WEBP');
                         this._videoDecoder = null;
                         this._videoDecoderInitialized = false;
                         this._videoDecoderErrorCount = 0;
@@ -1011,17 +1051,20 @@ const ProtocolManager = {
 
             this._videoDecoderInitialized = true;
             console.log('[ProtocolManager] VideoDecoder 初期化成功');
+            if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] VideoDecoder 初期化成功', 'VD_INIT_OK');
             return true;
         } catch (e) {
             // [task19 v3] Major 4 修正: catch した例外もエラーカウントに反映
             this._videoDecoderErrorCount++;
             console.error(`[ProtocolManager] initVideoDecoder exception (count: ${this._videoDecoderErrorCount}):`, e);
+            if (window.__eventLog) window.__eventLog.consoleLog('error', `[ProtocolManager] initVideoDecoder exception (count: ${this._videoDecoderErrorCount}):` + (e && e.message ? ' ' + e.message : ' ' + e), 'VD_INIT_EX');
 
             // [task19 v4] Major 1 修正: デコーダ生成後の例外時にリソースを確実に解放
             if (this._videoDecoder) {
                 try { this._videoDecoder.close(); } catch (e2) {
                     // [task19 第3回二次Minor] 例外の握りつぶし禁止（AGENTS.md NEVER）: close() 失敗をログに記録
                     console.warn('[ProtocolManager] VideoDecoder.close() failed (initVideoDecoder exception path):', e2 && e2.message ? e2.message : e2);
+                    if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] VideoDecoder.close() failed (initVideoDecoder exception path): ' + (e2 && e2.message ? e2.message : e2), 'VD_CLOSE_FAIL');
                 }
                 this._videoDecoder = null;
             }
@@ -1053,6 +1096,7 @@ const ProtocolManager = {
             this._clampConsecutiveCount++;
             if (this._clampConsecutiveCount === 1 || this._clampConsecutiveCount % 10 === 0) {
                 console.warn(`[ProtocolManager] Timestamp not monotonically increasing, clamping (consecutive=${this._clampConsecutiveCount}, total=${this._clampTotalCount})`);
+                if (window.__eventLog) window.__eventLog.consoleLog('warn', `[ProtocolManager] Timestamp not monotonically increasing, clamping (consecutive=${this._clampConsecutiveCount}, total=${this._clampTotalCount})`, 'TS_CLAMP');
             }
 
             // [task19 P4] 連続 3 回 Clamp 発生はサーバー側のフレーム生成に問題がある可能性
@@ -1063,6 +1107,7 @@ const ProtocolManager = {
                 if (now - this._videoDecoderReinitRequestTime >= this._clampReinitIntervalMs) {
                     this._videoDecoderReinitRequestTime = now;
                     console.warn(`[ProtocolManager] Clamp consecutive count reached ${this._clampConsecutiveCount}, requesting reinit_decoder`);
+                    if (window.__eventLog) window.__eventLog.consoleLog('warn', `[ProtocolManager] Clamp consecutive count reached ${this._clampConsecutiveCount}, requesting reinit_decoder`, 'VD_REINIT_REQ');
                     if (typeof sendControlAction === 'function') {
                         sendControlAction('reinit_decoder');
                     }
@@ -1090,6 +1135,7 @@ const ProtocolManager = {
             // [task19 v3] Major 4 修正: decode 例外をエラーカウントに反映
             this._videoDecoderErrorCount++;
             console.error(`[ProtocolManager] decode exception (count: ${this._videoDecoderErrorCount}):`, e);
+            if (window.__eventLog) window.__eventLog.consoleLog('error', `[ProtocolManager] decode exception (count: ${this._videoDecoderErrorCount}):` + (e && e.message ? ' ' + e.message : ' ' + e), 'VD_DECODE_EX');
 
             // エラー上限到達時はリトライ
             if (this._videoDecoderErrorCount >= this._videoDecoderMaxErrors) {
@@ -1122,6 +1168,7 @@ function switchToWcsMode() {
             } catch (e) {
                 // [task19 P4] 例外の握りつぶし禁止（AGENTS.md NEVER）: close() 失敗をログに記録
                 console.warn('[switchToWcsMode] decoder.close() failed:', e && e.message ? e.message : e);
+                if (window.__eventLog) window.__eventLog.consoleLog('warn', '[switchToWcsMode] decoder.close() failed: ' + (e && e.message ? e.message : e), 'VD_CLOSE_FAIL');
             }
         }
 
@@ -1257,6 +1304,7 @@ function calculateDelayByFps(fps) {
 // 移動制御通信の最適化
 //============================================================================================
 function sendMoveControl(x, y) {
+    if (window.__eventLog) window.__eventLog.moveThrottled('move', x, y);
     if (ProtocolManager.effectiveMode === 'ws') {
         ProtocolManager.sendWsControl({ action: 'move', x, y });
         return;
@@ -1288,6 +1336,7 @@ function sendMoveControl(x, y) {
 // 制御コマンド送信
 //============================================================================================
 function sendControlAction(action, x, y) {
+    if (window.__eventLog) window.__eventLog.action(action, x, y);
     if (ProtocolManager.effectiveMode === 'ws') {
         const data = { action };
         if (x !== undefined) data.x = x;

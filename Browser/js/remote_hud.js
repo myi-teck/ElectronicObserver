@@ -341,6 +341,7 @@ async function updateHud() {
 
         if (response.status === 401) {
             console.warn("HUD: Session expired. Redirecting to login...");
+            if (window.__eventLog) window.__eventLog.consoleLog('warn', 'HUD: Session expired. Redirecting to login...', 'HUD_SESSION_EXPIRED');
             window.location.href = '/login-page';
             return;
         }
@@ -355,6 +356,7 @@ async function updateHud() {
                 // _hudInitialized の復旧イベントは運用上重要な異常復旧シグナルであり、
                 // console.log では見落としやすいため console.warn にレベルを向上させる
                 console.warn('[remote_hud] _hudInitialized restored via 204 response (safety net)');
+                if (window.__eventLog) window.__eventLog.consoleLog('warn', '[remote_hud] _hudInitialized restored via 204 response (safety net)', 'HUD_INIT_RESTORED');
             }
             if (typeof updateDataUsage === 'function') {
                 updateDataUsage(getResponseHeaderBytes(response));
@@ -713,6 +715,7 @@ async function updateHud() {
         }
     } catch (error) {
         console.error("HUD synchronization error:", error);
+        if (window.__eventLog) window.__eventLog.consoleLog('error', 'HUD synchronization error: ' + (error && error.message ? error.message : error), 'HUD_SYNC_ERR');
     }
     setTimeout(updateHud, 2000);
 }
@@ -774,6 +777,7 @@ function updateHudData(data) {
         console.log('[HUD] HUD data updated via WebSocket');
     } catch (error) {
         console.error('[HUD] updateHudData error:', error);
+        if (window.__eventLog) window.__eventLog.consoleLog('error', '[HUD] updateHudData error: ' + (error && error.message ? error.message : error), 'HUD_UPDATE_ERR');
     }
 }
 
@@ -842,6 +846,7 @@ function renderBattleHud(bat) {
         setElText('battle-predict', bat.predict);
     } catch (error) {
         console.error('[HUD] renderBattleHud error:', error);
+        if (window.__eventLog) window.__eventLog.consoleLog('error', '[HUD] renderBattleHud error: ' + (error && error.message ? error.message : error), 'HUD_RENDER_BATTLE_ERR');
     }
 }
 
@@ -897,6 +902,7 @@ function renderCombatHud(com) {
         setElText('battle-enemy', `ENEMY: ${com.enemyDesc || 'NO SIGNAL'}`);
     } catch (error) {
         console.error('[HUD] renderCombatHud error:', error);
+        if (window.__eventLog) window.__eventLog.consoleLog('error', '[HUD] renderCombatHud error: ' + (error && error.message ? error.message : error), 'HUD_RENDER_COMBAT_ERR');
     }
 }
 
@@ -974,6 +980,7 @@ function renderQuestHud(qData) {
         }
     } catch (error) {
         console.error('[HUD] renderQuestHud error:', error);
+        if (window.__eventLog) window.__eventLog.consoleLog('error', '[HUD] renderQuestHud error: ' + (error && error.message ? error.message : error), 'HUD_RENDER_QUEST_ERR');
     }
 }
 
@@ -1003,5 +1010,6 @@ function renderLogHud(logData) {
         });
     } catch (error) {
         console.error('[HUD] renderLogHud error:', error);
+        if (window.__eventLog) window.__eventLog.consoleLog('error', '[HUD] renderLogHud error: ' + (error && error.message ? error.message : error), 'HUD_RENDER_LOG_ERR');
     }
 }
