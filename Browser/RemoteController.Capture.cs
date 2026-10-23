@@ -445,6 +445,10 @@ namespace Browser
 		//------------------------------------------------------------------------------------
 		private async Task SendScreenDiffWebPAsync(HttpListenerRequest req, HttpListenerResponse res)
 		{
+			// HTTP ポーリングの活性時刻を記録（WS を開かない旧クライアントの視聴中、
+			// 中央キャプチャループをコンシューマ不在判定で停止させないため）
+			Volatile.Write(ref _lastHttpPollTicks, DateTime.UtcNow.Ticks);
+
 			if (_parent.Browser == null || !_parent.Browser.IsBrowserInitialized)
 			{
 				res.StatusCode = 503;
@@ -887,6 +891,11 @@ namespace Browser
 							continue;
 						}
 
+						// 配信経路のフィルタ: WCS パイプラインは WebCodecs セッション（ClientMode=1）のみに配信する
+						// （WebP セッションは中央ループ→ファンアウト経路で受信するため、両経路配信は重複フレームになる）
+						if (session.ClientMode != 1)
+							continue;
+
 						// SPS/PPS 送信タイミング保証（設計書 §4.2.2 ステップ3: Critical 3 修正）
 						// description が未送信のセッションには、キーフレーム (Type=0x01) より前に
 						// SPS/PPS (Type=0x02) を必ず送信する。これによりクライアント側は
@@ -1289,7 +1298,6 @@ namespace Browser
 		//------------------------------------------------------------------------------------
 		// 処理ブロック名 : StopWebCodecsEncoderAsync
 		// 概要           : CefSharp 経由で JS の stopEncoder() を呼び出し、WebCodecs エンコーダを停止する。
-		//                  WaitForOldLoopCompletionAsync により旧ループの完全停止を待機する。
 		//------------------------------------------------------------------------------------
 		private async Task StopWebCodecsEncoderAsync()
 		{
@@ -1393,97 +1401,6 @@ namespace Browser
 
 			Log(2, $"[RemoteController] WebCodecs FPS変更: {_webCodecsFps} -> {fps}");
 			_webCodecsFps = fps; // volatile によりキャプチャループに即座に可視
-		}
-
-		//------------------------------------------------------------------------------------
-		// 処理ブロック名 : WaitForOldLoopCompletionAsync
-		// 概要           : 旧ループタスクの完了を待機する（タイムアウト付き）。
-		//                  デフォルトタイムアウト: 7000ms
-		//------------------------------------------------------------------------------------
-		private async Task WaitForOldLoopCompletionAsync(CancellationTokenSource oldCts, int timeoutMs = 7000)
-		{
-			// 旧ループのタスクを収集
-			Task[] oldTasks = null;
-			lock (_modeLock)
-			{
-				var list = new List<Task>();
-				if (_webCodecsCaptureTask != null) list.Add(_webCodecsCaptureTask);
-				if (_centralCaptureTask != null) list.Add(_centralCaptureTask);
-				if (list.Count > 0)
-				{
-					oldTasks = list.ToArray();
-				}
-			}
-
-			if (oldTasks == null || oldTasks.Length == 0)
-			{
-				return;
-			}
-
-			var sw = Stopwatch.StartNew();
-			bool timeoutOccurred = false;
-
-			try
-			{
-				// 旧ループタスクの完了を並列に待機（タイムアウト付き）
-				using (var timeoutCts = new CancellationTokenSource())
-				{
-					var allTasks = Task.WhenAll(oldTasks);
-					var delayTask = Task.Delay(timeoutMs);
-
-					var completedTask = await Task.WhenAny(allTasks, delayTask);
-
-					if (completedTask == allTasks)
-					{
-						// Task.WhenAll が完了した場合は正常終了
-						if (allTasks.IsFaulted)
-						{
-							var agg = allTasks.Exception?.Flatten();
-							foreach (var ex in agg?.InnerExceptions ?? Enumerable.Empty<Exception>())
-							{
-								Log(3, $"[RemoteController] 旧ループタスク例外: {ex.GetType().Name}: {ex.Message}");
-							}
-						}
-						Log(2, $"[RemoteController] 旧ループ完了待機完了（{sw.ElapsedMilliseconds}ms / タイムアウト{timeoutMs}ms）");
-						return;
-					}
-
-					// タイムアウト発生
-					timeoutOccurred = true;
-					if (oldCts != null)
-					{
-						try { if (!oldCts.IsCancellationRequested) oldCts.Cancel(); }
-						catch (ObjectDisposedException) { /* 既に破棄済み */ }
-						catch (Exception ex) {
-							Log(3, $"[RemoteController] oldCts.Cancel() 予期せぬ例外: {ex.GetType().Name}: {ex.Message}");
-							throw;
-						}
-					}
-				}
-			}
-			catch (AggregateException agg)
-			{
-				foreach (var ex in agg.InnerExceptions)
-				{
-					if (ex is OperationCanceledException)
-					{
-						// 正常なキャンセル
-					}
-					else
-					{
-						Log(3, $"[RemoteController] 旧ループタスク例外: {ex.GetType().Name}: {ex.Message}");
-					}
-				}
-			}
-			catch (OperationCanceledException)
-			{
-				timeoutOccurred = true;
-			}
-
-			if (timeoutOccurred)
-			{
-				Log(2, $"[RemoteController] 旧ループ待機タイムアウト（{sw.ElapsedMilliseconds}ms / タイムアウト{timeoutMs}ms）。旧ループを強制キャンセルし、新モードを開始します");
-			}
 		}
 
 		// 連続タイムアウトカウント（PullEncodedBinaryAsync）
@@ -1652,64 +1569,35 @@ namespace Browser
 
 		//====================================================================================
 		// 処理ブロック名 : SetCaptureModeAsync
-		// 概要           : キャプチャモードを切替える（設計書 §5.3.3 対応）。
-		//                  旧ループの停止・待機 → 新ループの起動を行う。
+		// 概要           : 非推奨（後方互換 shim）。旧経路（POST /capture-mode / WCS 初期化失敗フォールバック）
+		//                  の要求モードを _currentCaptureMode に記録し、要求種別に対応するパイプラインを起動保証する。
+		//                  反対側パイプラインの停止・旧ループ完了待機は行わない
+		//                  （WebP/WCS の共存を許容し、実効経路はセッション単位 ClientMode で判定するため）。
 		//------------------------------------------------------------------------------------
 		private async Task SetCaptureModeAsync(CaptureMode newMode)
 		{
-			CancellationTokenSource oldCts = null;
-			CaptureMode oldMode;
-
 			lock (_modeLock)
 			{
-				oldMode = _currentCaptureMode;
-				if (oldMode == newMode) return;
-
-				Log(2, $"[RemoteController] キャプチャモード切替開始: {oldMode} → {newMode}");
-
-				// 旧ループのキャンセル
-				switch (oldMode)
+				if (_currentCaptureMode != newMode)
 				{
-					case CaptureMode.WebP:
-						oldCts = _centralCaptureCts;
-						if (oldCts != null && !oldCts.IsCancellationRequested)
-							oldCts.Cancel();
-						break;
-					case CaptureMode.WebCodecs:
-						oldCts = _webCodecsCaptureCts;
-						if (oldCts != null && !oldCts.IsCancellationRequested)
-							oldCts.Cancel();
-						break;
+					Log(2, $"[RemoteController] キャプチャモード参照値更新（後方互換）: {_currentCaptureMode} → {newMode}");
+					_currentCaptureMode = newMode;
 				}
-
-				_currentCaptureMode = newMode;
 			}
 
-			// 旧ループの完了待機（デフォルト 7000ms）
-			if (oldCts != null)
-			{
-				await WaitForOldLoopCompletionAsync(oldCts);
-			}
-
-			// 新ループの起動
+			// 要求種別のパイプラインを起動保証（冪等。稼働中なら内部ガードでスキップ）。
+			// 旧モードのキャンセルを行わないため、切替後も反対側パイプラインは
+			// コンシューマが居る限り稼働を続ける（混合接続の維持）
 			switch (newMode)
 			{
 				case CaptureMode.WebCodecs:
-					{
-						// 既存のインライン実装（InitializeWebCodecsEncoderAsync 直接呼び出し +
-						// CTS/タスク作成・WebP フォールバック）を StartWebCodecsCaptureLoopAsync に置換し、
-						// 生存性チェック・force 初期化・二重起動防止を単一化する。
-						// ヘルパーは内部で InitializeWebCodecsEncoderAsync(force: true) を呼ぶが、
-						// JS 側 initEncoder() は再入防止付きで冪等（FormBrowser.cs）のため安全。
-						await StartWebCodecsCaptureLoopAsync();
-					}
+					await EnsureWcsPipelineStarted("mode_switch");
 					break;
 				case CaptureMode.WebP:
-					{
-						// 中央キャプチャループの起動判定を EnsureCentralCaptureLoopStarted に抽出・置換
-						// （接続数チェックと起動を _captureStartLock 内で一貫実行、二重起動防止の単一実装化）
-						EnsureCentralCaptureLoopStarted("mode_switch");
-					}
+					EnsureWebpPipelineStarted("mode_switch");
+					break;
+				case CaptureMode.HttpPolling:
+					// HTTP ポーリングは SendScreenDiffWebPAsync のオンデマンド配信であり、専用パイプラインを持たない
 					break;
 			}
 		}
@@ -1717,7 +1605,8 @@ namespace Browser
 		//====================================================================================
 		// 処理ブロック名 : StartWebCodecsCaptureLoopAsync
 		// 概要           : WCS ループの起動（事前稼働チェック + force 初期化 + 二重起動防止）。
-		//                  SetCaptureModeAsync の WebCodecs 分岐と switch_mode ハンドラの生存性チェックで共用する。
+		//                  SetCaptureModeAsync（後方互換 shim）・EnsureWcsPipelineStarted・
+		//                  switch_mode ハンドラの生存性チェックで共用する。
 		//------------------------------------------------------------------------------------
 		// 事前稼働チェック（Fast-Path）:
 		// WCS ループが既に稼働中（タスク存在かつ未完了）なら、force 初期化自体を行わず早期リターンする。
@@ -1743,8 +1632,7 @@ namespace Browser
 			var initResult = await InitializeWebCodecsEncoderAsync(force: true);
 			if (!initResult)
 			{
-				// 再初期化失敗時は WebP にフォールバック（既存挙動の維持）
-				// ※ 呼び出し元は _currentCaptureMode == WebCodecs 状態なので、早期リターンには到達しない
+				// 再初期化失敗時は WebP にフォールバック（SetCaptureModeAsync shim 経由: 参照値更新 + WebP パイプライン起動保証）
 				// このフォールバック経路には破棄すべき CTS は存在しない:
 				// ローカル変数 cts は本チェック通過後（下段）に初めて new されるため、init 失敗経路では
 				// 未生成・未使用であり cts.Dispose() が不要。従ってこの経路で CTS リークは発生しない。
@@ -1776,20 +1664,21 @@ namespace Browser
 		}
 
 		//====================================================================================
-		// 処理ブロック名 : EnsureCentralCaptureLoopStarted
-		// 概要           : 中央キャプチャループの起動保証（起動判定の単一実装）。
-		//                  WebP モードかつ接続数>0で、ループが不在（cts null/cancelled / task null/completed）の場合に起動する。
+		// 処理ブロック名 : EnsureWebpPipelineStarted
+		// 概要           : 中央キャプチャループ（WebP）の起動保証（起動判定の単一実装）。
+		//                  WebP コンシューマ（ClientMode=0 セッション or 活性中の HTTP ポーリング）が居て、
+		//                  ループが不在（cts null/cancelled / task null/completed）の場合に起動する。
 		//                  ダブルチェックロックパターンで二重起動を防止する。
 		//------------------------------------------------------------------------------------
-		// 接続数チェック（Interlocked.CompareExchange）とループ起動を _captureStartLock 内で
-		// 一貫して実行し、自己救済経路の TOCTOU ギャップ（接続数 > 0 を確認 → 別セッション切断 → 即自終了）を回避する。
-		// 戻り値: true = 起動した、false = 起動しなかった（既に稼働中 / WebP モード以外 / 接続数0）
-		private bool EnsureCentralCaptureLoopStarted(string reason)
+		// コンシューマ判定とループ起動を _captureStartLock 内で一貫して実行し、自己救済経路の
+		// TOCTOU ギャップ（コンシューマ存在を確認 → 別セッション切断 → 即自終了）を回避する。
+		// 全体モード _currentCaptureMode は参照しない（混合接続時でも WebP 経路を独立に起動するため）。
+		// 戻り値: true = 起動した、false = 起動しなかった（既に稼働中 / コンシューマ不在）
+		private bool EnsureWebpPipelineStarted(string reason)
 		{
-			if (_currentCaptureMode != CaptureMode.WebP) return false;
 			lock (_captureStartLock)
 			{
-				if (Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0) <= 0) return false;
+				if (!HasWebpConsumers()) return false;
 				if (_centralCaptureCts != null && !_centralCaptureCts.IsCancellationRequested &&
 					_centralCaptureTask != null && !_centralCaptureTask.IsCompleted)
 				{
@@ -1806,6 +1695,23 @@ namespace Browser
 				Log(2, $"[RemoteController] 中央キャプチャループ(WebP)を起動しました (reason: {reason})");
 				return true;
 			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : EnsureWcsPipelineStarted
+		// 概要           : WCS パイプラインの起動保証（コンシューマ判定付き）。
+		//                  WebCodecs セッション（ClientMode=1）が居てループが不在の場合に起動する。
+		//                  二重起動防止・force 初期化は StartWebCodecsCaptureLoopAsync の内部ガードに委譲する。
+		//------------------------------------------------------------------------------------
+		private async Task EnsureWcsPipelineStarted(string reason)
+		{
+			// コンシューマ不在なら起動しない（ループ自己終了後の自己救済経路で起動し直しを防止）
+			if (!HasWcsClientSessions())
+			{
+				Log(3, $"[RemoteController] WebCodecs セッションが不在のため WCS パイプラインを起動しません (reason: {reason})");
+				return;
+			}
+			await StartWebCodecsCaptureLoopAsync();
 		}
 
 		//====================================================================================

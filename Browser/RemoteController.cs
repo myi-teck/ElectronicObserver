@@ -228,7 +228,26 @@ namespace Browser
 		// （ゾンビクリーンアップ間隔：5秒）
 		private DateTime _lastZombieCleanupTime = DateTime.MinValue;
 
+		/// <summary>
+		/// 非推奨（後方互換用の参照値）: 旧経路（POST /capture-mode）で最後に要求されたモード。
+		/// パイプラインの起動・停止はゲートせず、実効的な配信経路はセッション単位の
+		/// WebSocketSession.ClientMode で判定する（WebP/WCS の混合接続対応のため）。
+		/// </summary>
 		private volatile CaptureMode _currentCaptureMode = CaptureMode.WebP;
+
+		/// <summary>
+		/// 最終 HTTP ポーリング（GET /screen/diff）受信時刻（UtcNow.Ticks）。
+		/// HTTP ハンドラスレッドが書き込み、キャプチャループ／起動判定スレッドが読む。
+		/// long は volatile 修飾不可のため Volatile.Read/Write で可視性と 64bit アトミック性を保証する
+		/// （32bit プロセスでの分割読み取り防止）。
+		/// </summary>
+		private long _lastHttpPollTicks = 0;
+
+		/// <summary>
+		/// HTTP ポーリングの活性窓（10秒）。WS 非対応の旧クライアントが HTTP ポーリングだけで
+		/// 視聴している間に中央キャプチャループを停止させないための猶予。
+		/// </summary>
+		private const long HttpPollActiveWindowTicks = TimeSpan.TicksPerSecond * 10;
 
 		// WebCodecs 状態管理
 		private volatile int _webCodecsBitrate = 800000; // 800 kbps 標準
@@ -391,6 +410,54 @@ namespace Browser
 			_cachedSessionCount = currentCount;
 
 			return result;
+		}
+
+		/// <summary>
+		/// WebP 経路（ClientMode=0）のセッション数を返す。
+		/// 中央キャプチャループのコンシューマ判定に使用する（列挙中にセッションが Dispose されても
+		/// ClientMode の読み取りは安全（volatile））
+		/// </summary>
+		private int CountWebpClientSessions()
+		{
+			int count = 0;
+			foreach (var session in _webSocketSessions.Values)
+			{
+				if (session.ClientMode == 0) count++;
+			}
+			return count;
+		}
+
+		/// <summary>
+		/// WebCodecs 経路（ClientMode=1）のセッションが1つ以上あるかを返す。
+		/// WCS パイプラインのコンシューマ判定に使用する
+		/// </summary>
+		private bool HasWcsClientSessions()
+		{
+			foreach (var session in _webSocketSessions.Values)
+			{
+				if (session.ClientMode == 1) return true;
+			}
+			return false;
+		}
+
+		/// <summary>
+		/// HTTP ポーリングが活性中（直近 10 秒以内に受信）かを返す。
+		/// WS を開かない旧クライアントの視聴中にパイプラインを止めないための判定
+		/// </summary>
+		private bool IsHttpPollingActive()
+		{
+			long last = Volatile.Read(ref _lastHttpPollTicks);
+			if (last == 0) return false;
+			return (DateTime.UtcNow.Ticks - last) <= HttpPollActiveWindowTicks;
+		}
+
+		/// <summary>
+		/// WebP パイプラインのコンシューマ（WS の WebP セッション or 活性中の HTTP ポーリング）
+		/// が存在するかを返す。コンシューマ不在なら中央キャプチャループは起動不要
+		/// </summary>
+		private bool HasWebpConsumers()
+		{
+			return CountWebpClientSessions() > 0 || IsHttpPollingActive();
 		}
 
 		/// <summary>

@@ -257,7 +257,7 @@ namespace Browser
 
 			/// <summary>
 			/// switch_mode のレートリミット判定（直近 SwitchModeMinIntervalMs 以内の連続受信を拒否）
-			/// SetCaptureModeAsync がキャプチャループの停止・起動を伴うため、連打時の再起動ストームを防止する
+			/// パイプライン起動（WCS はエンコーダ force 初期化を伴う）を繰り返すため、連打時の再起動ストームを防止する
 			/// </summary>
 			public bool TryAcceptSwitchMode()
 			{
@@ -531,11 +531,12 @@ namespace Browser
 
 				Log(2, $"[RemoteController] WebSocket 接続確立: SessionID={sessionId}, IP={req.RemoteEndPoint}, 接続数={count}/{MaxConcurrentClients}");
 
-				// 中央キャプチャループ起動判定を EnsureCentralCaptureLoopStarted() に統合
+				// WebP パイプライン起動判定を EnsureWebpPipelineStarted() に統合
 				// （TOCTOU 解消: _captureStartLock 内での再チェック / 旧 CTS は Dispose せず GC に委譲 —
 				// dotnet/runtime#105811 参照: Dispose 後 .Token アクセスが ObjectDisposedException を投げ得るため
 				// 旧タスク finally 側の try-catch と連携）
-				EnsureCentralCaptureLoopStarted("ws_connect");
+				// 新規セッションは未交渉（ClientMode=0 = WebP）のため、接続直後は常に WebP 経路のコンシューマとなる
+				EnsureWebpPipelineStarted("ws_connect");
 
 				// セッション固有のタスクを開始（ファンアウト / 送信 / 受信）
 				session.CaptureTask = Task.Run(() => WebSocketFanoutLoopAsync(session));
@@ -591,6 +592,12 @@ namespace Browser
 					{
 						// 成功時のみリセット（失敗は else 分支でカウント）
 						frameWaitTimeoutStreak = 0;
+
+						// 配信経路のフィルタ: WCS セッションは WebCodecs パイプライン経路でフレームを受信するため、
+						// WebP 共有フレームの配信をスキップ（両経路配信は重複フレームになる）
+						if (session.ClientMode != 0)
+							continue;
+
 						int centralInterval = GetMaxFpsIntervalMs();
 		
 						// [バイパス判定]
@@ -695,12 +702,13 @@ namespace Browser
 						{
 							// 戻り値に関わらずリセットして毎フレームのロック取得を防止
 							frameWaitTimeoutStreak = 0;
-							if (EnsureCentralCaptureLoopStarted("fanout_self_heal"))
+							if (EnsureWebpPipelineStarted("fanout_self_heal"))
 							{
 								Log(3, $"[RemoteController] Fanout 自己救済: 中央キャプチャループを再起動しました (session={session.SessionId})");
 							}
 						}
-						// 中央ループは WebP モードのみ起動されるため、WCS モードでは何もしない（WCS は A-3 のループ自己救済で回復）
+						// 中央ループは WebP コンシューマ存在時のみ起動されるため、WCS セッションのタイムアウトでは
+						// コンシューマ不在で起動しない（WCS は A-3 のループ自己救済で回復）
 					}
 				}
 			}
@@ -1248,10 +1256,11 @@ namespace Browser
 				}
 				// WCS モード切替（クライアント switchToWcsMode() → { action: 'switch_mode', mode: 'webcodecs' }）
 				// 設計書 §5.2 整合: クライアントは既存 WebSocket 接続を維持したまま
-				// sendWsControl を用いてモード切替を要求し、サーバーが SetCaptureModeAsync を実行する
+				// sendWsControl を用いてモード切替を要求し、サーバーはこのセッションの配信経路（ClientMode）を更新し
+				// 対応パイプラインの起動を保証する（反対側パイプラインは停止しない）
 				else if (action == "switch_mode")
 				{
-					// レートリミット: SetCaptureModeAsync はキャプチャループの停止・起動を伴うため、
+					// レートリミット: switch_mode はパイプライン起動（WCS はエンコーダ force 初期化）を伴うため、
 					// 5秒以内の連続要求は拒否して再起動ストームを防止する（クライアント側 sendWsControl にはスロットリングがない）
 					if (!session.TryAcceptSwitchMode())
 					{
@@ -1287,25 +1296,34 @@ namespace Browser
 					}
 					Log(2, $"[RemoteController] WebSocket switch_mode 受信: {targetMode} (Session: {session.SessionId})");
 
-					// 配信経路の判定はセッション単位で行う（サーバー全体モードでは WebP/WCS の混合接続を区別できないため）。
-					// 無効値フォールバック時は安全側（WebP=0）に確定する
-					session.ClientMode = targetMode == CaptureMode.WebCodecs ? 1 : 0;
+					// セッション単位の経路判定: ClientMode を更新し、対応パイプラインの起動を保証する
+					// （反対側パイプラインは停止しない — 混合接続の維持。無効値フォールバック時は安全側 WebP=0 に確定）
+					int newClientMode = targetMode == CaptureMode.WebCodecs ? 1 : 0;
+					if (session.ClientMode != newClientMode)
+					{
+						session.ClientMode = newClientMode;
+						// FPS キャッシュは WebP セッション数をキーとするため、モード変更で無効化する
+						// （次回の GetMaxFpsIntervalMs で再計算）
+						_cachedSessionCount = -1;
+					}
 
-					await SetCaptureModeAsync(targetMode);
+					if (session.ClientMode == 1)
+					{
+						// クライアント switchToWcsMode() はデコーダ状態をリセット済み（_videoDecoderDescription=null）
+						// であるため、送信フラグをリセットして次フレームで SPS/PPS を再送信させる
+						session.DescriptionSent = false;
+						session.ResetDescriptionSendState();
+						await EnsureWcsPipelineStarted("mode_switch");
+					}
+					else
+					{
+						EnsureWebpPipelineStarted("mode_switch");
+					}
 
-					// edge case 対策: サーバーが既に WebCodecs モードの場合、
-					// SetCaptureModeAsync は早期リターン（旧=新モード）するため SPS/PPS 再送信されない。
-					// 一方、クライアント switchToWcsMode() はデコーダ状態をリセット済み（_videoDecoderDescription=null）
-					// であるため、DescriptionSent をリセットし、次フレームで SPS/PPS を再送信させる
-					// 生存性チェック: サーバが既に WebCodecs モードの場合、SetCaptureModeAsync は
-					// 早期リターン（旧=新モード）するため、WCS ループが不在（前回 WebP 切替、または
-					// モード切替で停止済み）の場合に再起動する。
-					// ※ WCS ループは接続数0で自終了しない（停止は SetCaptureModeAsync の Cancel 経由のみ）。
-					// 判定基準はクライアント送信の targetMode ではなく、
-					// SetCaptureModeAsync 実行後の実効モード _currentCaptureMode を用いる。
-					// SetCaptureModeAsync 内で初期化失敗 → WebP フォールバックした場合は _currentCaptureMode == WebP となり、
-					// 生存性チェック（StartWebCodecsCaptureLoopAsync 再呼び出し）がスキップされるため、
-					// 二重初期化・多重フォールバック（フォールバック後に再度 force 初期化失敗 → 再度 WebP フォールバック）を回避する。
+					// 非推奨参照（wire compat）: _currentCaptureMode は旧経路（POST /capture-mode /
+					// WCS 初期化失敗フォールバック）でのみ更新される参照値で、実効経路は上記 ClientMode で確定済み。
+					// 旧 API を利用中のクライアントの SPS/PPS 再送・ループ生存性チェックを維持するため本ブロックを残す
+					// （判定基準はクライアント送信の targetMode ではなく _currentCaptureMode）。
 					if (_currentCaptureMode == CaptureMode.WebCodecs)
 					{
 						session.DescriptionSent = false;
