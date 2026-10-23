@@ -20,6 +20,10 @@
 ### レイアウトロック
 - フローティングウィンドウ、スプリッター、オートハイドを含むレイアウトロック
 
+### リモートコントローラー（ヘッドレス運用）
+- 配信元がモニタ-less / RDP 切断 / 描画停止の状態になった検知と通知・自動復旧措置を備えます
+- 運用手順（ダミープラグ・電源設定・display_state banner の意味等）は [HEADLESS-OPERATIONS.md](./HEADLESS-OPERATIONS.md) を参照
+
 偉大なる先駆者達に敬意を込めて  
 開発版様  
 [https://github.com/dais-k/ElectronicObserver]
