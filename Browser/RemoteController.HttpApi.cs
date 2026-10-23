@@ -193,6 +193,17 @@ namespace Browser
 					{
 						_parent.LogoutToBlankPage();
 					}
+					// ダミー映像（検証用映像源）の開始/停止。認証ガード対象（s_authenticatedApiPaths: /control）の
+					// ため、リモート認証セッションなしでは操作できない。
+					// Start/Stop は InvokeRequired で UI スレッドへ自己ディスパッチするため、ここから直接呼び出し可能。
+					else if (action == "dummy_video")
+					{
+						bool enable = req.QueryString["enable"] == "1" || req.QueryString["enable"] == "true";
+						if (enable)
+							_parent.StartDummyVideo();
+						else
+							_parent.StopDummyVideo();
+					}
 					// プライバシーフィルターのカラーモードを設定（0=なし, 1=グレースケール, 4=低コントラスト）
 					// 差分WebP方式に伴い、フィルターはRemoteControllerクライアント側でCSS適用するため
 					//                  サーバー側ではNOP（何もしない）に変更。本家ブラウザ側には影響を与えない。

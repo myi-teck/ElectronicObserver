@@ -95,6 +95,7 @@
 			this.ToolMenu_Other_Alignment_Right = new System.Windows.Forms.ToolStripMenuItem();
 			this.ToolMenu_Other_Alignment_Invisible = new System.Windows.Forms.ToolStripMenuItem();
 			this.ToolMenu_Other_OpenDevTool = new System.Windows.Forms.ToolStripMenuItem();
+			this.ToolMenu_Other_DummyVideo = new System.Windows.Forms.ToolStripMenuItem();
 			this.ContextMenuTool.SuspendLayout();
 			this.ToolMenu.SuspendLayout();
 			this.SuspendLayout();
@@ -281,7 +282,8 @@
 			this.ToolMenu_Other_AppliesStyleSheet,
 			this.toolStripSeparator6,
 			this.ToolMenu_Other_Alignment,
-			this.ToolMenu_Other_OpenDevTool});
+			this.ToolMenu_Other_OpenDevTool,
+			this.ToolMenu_Other_DummyVideo});
 			this.ToolMenu_Other.Name = "ToolMenu_Other";
 			this.ToolMenu_Other.Padding = new System.Windows.Forms.Padding(0, 0, 2, 0);
 			this.ToolMenu_Other.Size = new System.Drawing.Size(15, 22);
@@ -616,6 +618,14 @@
 			this.ToolMenu_Other_OpenDevTool.Text = "開発者ツールを開く";
 			this.ToolMenu_Other_OpenDevTool.Click += new System.EventHandler(this.ToolMenu_Other_OpenDevTool_Click);
 			// 
+			// ToolMenu_Other_DummyVideo
+			// 
+			this.ToolMenu_Other_DummyVideo.Name = "ToolMenu_Other_DummyVideo";
+			this.ToolMenu_Other_DummyVideo.Size = new System.Drawing.Size(291, 22);
+			this.ToolMenu_Other_DummyVideo.CheckOnClick = true;
+			this.ToolMenu_Other_DummyVideo.Text = "ダミー映像（検証用映像源）";
+			this.ToolMenu_Other_DummyVideo.Click += new System.EventHandler(this.ToolMenu_Other_DummyVideo_Click);
+			// 
 			// FormBrowser
 			// 
 			this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.None;
@@ -716,6 +726,7 @@
 		private System.Windows.Forms.ToolStripMenuItem ToolMenu_Other_LastScreenShot_OpenScreenShotFolder;
 		private System.Windows.Forms.ToolStripMenuItem ToolMenu_Other_LastScreenShot_CopyToClipboard;
 		private System.Windows.Forms.ToolStripMenuItem ToolMenu_Other_OpenDevTool;
+		private System.Windows.Forms.ToolStripMenuItem ToolMenu_Other_DummyVideo;
 		private System.Windows.Forms.ToolStripMenuItem ToolMenu_Other_Zoom_Classic;
 		private System.Windows.Forms.ToolStripMenuItem ToolMenu_Other_RefreshIgnoreCache;
 		private System.Windows.Forms.ToolStripMenuItem ToolMenu_Other_ClearCache;

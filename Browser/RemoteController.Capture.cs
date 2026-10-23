@@ -1969,7 +1969,8 @@ namespace Browser
 					string displayReason;
 					var displayState = GetCurrentDisplayState(out displayReason);
 					string displayStateName = displayState == DisplayState.Degraded ? "degraded" : "normal";
-					var json = $"{{\"mode\":\"{_currentCaptureMode.ToString().ToLower()}\",\"bitrate\":{_webCodecsBitrate},\"fps\":{_webCodecsFps},\"displayState\":\"{displayStateName}\",\"displayReason\":\"{displayReason}\"}}";
+					// dummyVideo: ダミー映像（検証用映像源）状態。旧クライアントは無知フィールドを無視する
+					var json = $"{{\"mode\":\"{_currentCaptureMode.ToString().ToLower()}\",\"bitrate\":{_webCodecsBitrate},\"fps\":{_webCodecsFps},\"displayState\":\"{displayStateName}\",\"displayReason\":\"{displayReason}\",\"dummyVideo\":" + WriteJsonBool(_parent.IsDummyVideo) + "}";
 					res.ContentType = "application/json";
 					var bytes = Encoding.UTF8.GetBytes(json);
 					res.ContentLength64 = bytes.Length;

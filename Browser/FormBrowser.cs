@@ -1231,6 +1231,16 @@ namespace Browser
 				ToolMenu_Other_LastScreenShot.DropDownItems.Insert(0, host);
 			}
 
+			// ダミー映像の継続警告タイマ（10 分周期）。開始時のみ Start する。
+			// HeartbeatTimer と同一ライフサイクル（Exit で Stop、form Dispose で解放）。
+			_dummyVideoWarnTimer = new System.Windows.Forms.Timer();
+			_dummyVideoWarnTimer.Interval = 10 * 60 * 1000;
+			_dummyVideoWarnTimer.Tick += (s, e) =>
+			{
+				if (_dummyVideoActive)
+					AddLog(1, "[DummyVideo] ダミー映像が 10 分以上継続しています（停止すべきか確認してください）");
+			};
+
 		}
 
 
@@ -1538,6 +1548,7 @@ namespace Browser
 			{
 				BrowserHost.Close();
 				HeartbeatTimer.Stop();
+				_dummyVideoWarnTimer.Stop();
 				_remoteController?.Dispose();
 				// [task21] 空白ページ配信用 static ストアの全エントリを解放（一次 Major 2 / S-1 対応）。
 				// Cef.Shutdown() は同期停止のため直前呼び出しで安全（設計書 §4.1 注記）。
@@ -2076,6 +2087,24 @@ namespace Browser
 		/// <summary>[task22] 本体ブラウザが現在ログアウト空白ページ状態かどうか（RemoteController が HTTP スレッドから読む。volatile 読み込み）。</summary>
 		public bool IsLogoutBlank => _isLogoutBlank;
 
+		// ダミー映像「現在状態」フラグ（_isLogoutBlank と同一の volatile 単一読み書き方式）。
+		// UI スレッドでのみ書替（Start/Stop は InvokeRequired で自己ディスパッチ）。
+		// HTTP/WS スレッドは IsDummyVideo で読み取るのみ（/login-state・/capture-config 収束）。
+		private volatile bool _dummyVideoActive = false;
+
+		/// <summary>キャプチャ源が現在ダミー映像（検証用映像源）状態かどうか（RemoteController が HTTP スレッドから読む。volatile 読み込み）。</summary>
+		public bool IsDummyVideo => _dummyVideoActive;
+
+		// 停止時の復元先（直前 URL・UI スレッドのみアクセス）。
+		// ダミー開始前に取得するため、冪等ガードによりダミー URL 自身が取得されることはない
+		// （防御チェックは StopDummyVideo 側にもある）。
+		private string _preDummyVideoUrl = null;
+
+		// 10 分周期で「ダミーが ON のままか」を警告するタイマ（WinForms Timer・UI スレッド）。
+		// 非永続トグルの「見落としたまま常時 ON」検知用（_isLogoutBlank と同様、起動毎リセット）。
+		// auto-FPS 状態機械（接続＝活動）には接続しない（レンダリング活動判定と無関係なため）。
+		private readonly System.Windows.Forms.Timer _dummyVideoWarnTimer;
+
 		private void Browser_IsBrowserInitializedChanged(object sender, EventArgs e)
 		{
 			if (IsBrowserInitialized)
@@ -2339,6 +2368,180 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 				&& uri.AbsolutePath.StartsWith("/task20-logout-blank", StringComparison.Ordinal);
 		}
 
+		//------------------------------------------------------------------------------------
+		// ダミー映像（検証用映像源）: 開始/停止/状態同期
+		// game 未ログイン状態からそのまま起動でき、停止時は直前 URL へ復帰する。
+		//------------------------------------------------------------------------------------
+
+		/// <summary>
+		/// ダミー映像を開始する（検証映像源）。game 未ログイン状態からそのまま起動可能。
+		/// </summary>
+		public void StartDummyVideo()
+		{
+			// HTTP（/control）・メニューのいずれから来ても UI スレッドで実行する
+			// （NavigateToLoginPage と同一の InvokeRequired/BeginInvoke パターン）。
+			if (this.InvokeRequired)
+			{
+				this.BeginInvoke((Action)(() => StartDummyVideo()));
+				return;
+			}
+
+			if (_dummyVideoActive)
+				return; // 冪等（重複開始は no-op）
+
+			// 1) 復元先の取得（Navigate 前に読む。冪等ガードによりダミー表示中には本メソッドが
+			//    走らないためダミー URL 自身が取得されることはない。null/空は停止時フォールバックで吸収）。
+			_preDummyVideoUrl = Browser?.Address;
+
+			// 2) ブラウザがまだ生成されていない場合は開始できない（Browser.Load は NRE となる）。
+			//    フラグは立てずエラーログで終了し、状態と画面の乖離を防ぐ。
+			if (Browser == null)
+			{
+				AddLog(2, "[DummyVideo] ブラウザがまだ生成されていないためダミー映像を開始できません");
+				return;
+			}
+
+			// 3) HTML をメモリ配信ストアへ登録。登録は純メモリ操作で Browser 初期化に依存しないため
+			//    ナビゲーション分岐より前に実行する（初期化完了前の起動でも navigateCache 再生時には
+			//    ストア登録済みで配信が成立する）。ファイル不在時はインライン最小 HTML で
+			//    フォールバックする（サイレントスルーしない）。
+			string html = SelfHostedHtml.ReadSelfHostedHtml("dummy_video_test.html");
+			if (html == null)
+			{
+				AddLog(2, "[DummyVideo] dummy_video_test.html が見つからないためインライン最小映像（タイムコード+透かし）を配信します");
+				html = BuildDummyVideoFallbackHtml();
+			}
+			CustomResourceRequestHandler.RegisterDummyVideoHtml(System.Text.Encoding.UTF8.GetBytes(html));
+
+			// 4) ナビゲーション（Navigate 経由: _isLogoutBlank=false の相互取消セマンティクスを踏襲 —
+			//    ダミー開始はログアウト保留を取消し、ダミーが最終状態となる）。
+			//    初期化完了前でよい（Navigate は URL を navigateCache に保留し、初期化完了時に
+			//    再実行されるため、初期化前起動でも初期化完了後にダミー映像が表示される）。
+			_dummyVideoActive = true;
+			Navigate(CustomResourceRequestHandler.DummyVideoUrlBase);
+
+			// 5) HUD パイプライン検証用のダミー HUD を 1 回注入。静的 JSON のみ（更新タイマは新設しない）。
+			//    game なしでは実 HUD が来ないため、この初回注入がそのまま空→非空遷移 broadcast として発火する。
+			_remoteController?.UpdateHudData(DummyHudJson);
+
+			// 6) 高優先度ログ（運用者が「本番でダミーが ON になっている」ことを常に認識できる）。
+			AddLog(1, "[DummyVideo] ダミー映像（検証用映像源）を開始しました: " + CustomResourceRequestHandler.DummyVideoUrlBase);
+
+			// 7) 10 分周期警告タイマ開始。
+			_dummyVideoWarnTimer.Start();
+
+			SyncDummyVideoMenuChecked();
+		}
+
+		/// <summary>ダミー映像を停止し、直前 URL（取得不能/ダミー URL 時はログインページ）へ復帰する。</summary>
+		public void StopDummyVideo()
+		{
+			StopDummyVideo(restore: true);
+		}
+
+		// restore=false は「状態のみ解除（ナビゲーションしない）」。手動ナビゲーションによる
+		// ダミー離脱（自己治癒）では、ユーザーは既に希望のページにいるため再ナビゲーションしない。
+		private void StopDummyVideo(bool restore)
+		{
+			if (this.InvokeRequired)
+			{
+				this.BeginInvoke((Action)(() => StopDummyVideo(restore)));
+				return;
+			}
+
+			if (!_dummyVideoActive)
+				return; // 冪等（自己治癒の競合による二重解除も安全にスキップ）
+
+			_dummyVideoActive = false;
+			CustomResourceRequestHandler.ClearDummyVideoHtml(); // メモリ解放（Exit 経路でも呼ばれるが null 代入のみで冪等）
+			_dummyVideoWarnTimer.Stop();
+			string restoreUrl = _preDummyVideoUrl;
+			_preDummyVideoUrl = null;
+
+			if (restore)
+			{
+				// ログインページへ復帰が既定。直前 URL が取得できた（null/空でない）場合のみそれへ戻す。
+				// ダミー URL 自体（開始直後の異常経路で取得値が汚染された場合）はログインページへ
+				// フォールバックし、「停止後もダミーに残る」経路を構造的に排除する。
+				if (string.IsNullOrEmpty(restoreUrl) || CustomResourceRequestHandler.IsDummyVideoUrl(restoreUrl))
+					restoreUrl = ResolveLogInPageURL();
+				Navigate(restoreUrl);
+				AddLog(1, "[DummyVideo] ダミー映像を停止しました（復帰: " + restoreUrl + "）");
+			}
+			else
+			{
+				AddLog(1, "[DummyVideo] ダミー映像を停止しました（手動ナビゲーションによる自己治癒）");
+			}
+
+			SyncDummyVideoMenuChecked();
+		}
+
+		// メニュー Checked の同期（UI スレッド上のみ）。Designer 生成前でも呼ばれ得るため null ガード。
+		private void SyncDummyVideoMenuChecked()
+		{
+			if (ToolMenu_Other_DummyVideo != null)
+				ToolMenu_Other_DummyVideo.Checked = _dummyVideoActive;
+		}
+
+		// HUD パイプライン検証用の静的ダミー HUD。remote_hud.js の updateHudData は
+		// 全セクションが任意・ガード付きのため、material のみでも安全にレンダリングされる（未知キーは無視）。
+		private const string DummyHudJson =
+			"{\"material\":{\"fuel\":999,\"ammo\":888,\"steel\":777,\"bauxite\":666,\"bucket\":55}}";
+
+		// ダミー映像のインラインフォールバック HTML（dummy_video_test.html 不在時）。
+		// 自己識別の必須要素（移動図形・HH:MM:SS.mmm タイムコード・回転透かし）のみの最小構成で、
+		// rAF ループのみとする（FPS 計測・操作 API は主ファイル側の機能）。
+		private static string BuildDummyVideoFallbackHtml()
+		{
+			return @"<!DOCTYPE html>
+<html>
+<head>
+<meta charset=""utf-8"" />
+<title>DUMMY VIDEO (fallback)</title>
+<style>html,body{margin:0;padding:0;background:#000;overflow:hidden}</style>
+</head>
+<body>
+<canvas id=""c"" width=""1200"" height=""720""></canvas>
+<script>
+(function(){
+var c=document.getElementById('c'),g=c.getContext('2d'),t0=performance.now(),x=0;
+function pad(n,w){var s=''+n;while(s.length<w)s='0'+s;return s;}
+function draw(now){
+var t=now-t0;
+g.fillStyle='#000';g.fillRect(0,0,1200,720);
+x=(x+3)%1200;
+g.fillStyle='#0f0';g.fillRect(x,330,60,60);
+var ms=Math.floor(t%1000),s=Math.floor(t/1000)%60,m=Math.floor(t/60000)%60,h=Math.floor(t/3600000);
+g.fillStyle='#fff';g.font='bold 64px monospace';g.textAlign='left';
+g.fillText(pad(h,2)+':'+pad(m,2)+':'+pad(s,2)+'.'+pad(ms,3),40,90);
+g.save();g.translate(600,360);g.rotate(-Math.PI/9);
+g.fillStyle='rgba(255,0,0,0.35)';g.font='bold 140px sans-serif';g.textAlign='center';
+g.fillText('DUMMY VIDEO',0,0);g.restore();
+requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>";
+		}
+
+		// ON 操作のみ確認ダイアログ（ゲームページをアンロードするため）。
+		// HTTP 経路（StartDummyVideo 直接呼び出し）にはこのガードは存在しない（リモート自動化はサイレント）。
+		private void ToolMenu_Other_DummyVideo_Click(object sender, EventArgs e)
+		{
+			if (ToolMenu_Other_DummyVideo.Checked)
+			{
+				StopDummyVideo();
+				return;
+			}
+			var result = MessageBox.Show(
+				"ダミー映像（検証用映像源）を開始します。\n現在のページ（ゲームを含む）はアンロードされます。\n出撃・遠征中ではないことを確認してください。",
+				"ダミー映像", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+			if (result == DialogResult.Yes)
+				StartDummyVideo();
+		}
+
 		/// <summary>
 		/// ブラウザを再読み込みします。
 		/// </summary>
@@ -2423,7 +2626,20 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 			{
 				SendErrorReport(ex.ToString(), "Browser_FrameLoadEnd: キャプチャエンジンの自動注入に失敗しました。");
 			}
-			
+
+			// 状態自己治癒: ダミー ON のままユーザーが手動でダミー以外のページ（game 等）へ遷移した場合は、
+			// 状態フラグ/ストア/警告タイマを UI スレッドで解除する（ナビゲーションはしない — ユーザーは既に希望先にいる）。
+			// 解除しないと「映像は game なのに DUMMY バッジ/フラグが ON のまま」になる誤認経路が生まれる。
+			// FrameLoadEnd は UI スレッド保証がないため書き込みは BeginInvoke でディスパッチする。
+			// volatile 読み取り後に UI スレッド側で StopDummyVideo が先行しても冪等ガードにより二重解除は無害。
+			if (_dummyVideoActive && e.Frame != null && e.Frame.IsMain && !CustomResourceRequestHandler.IsDummyVideoUrl(e.Frame.Url))
+			{
+				if (this.InvokeRequired)
+					this.BeginInvoke((Action)(() => StopDummyVideo(restore: false)));
+				else
+					StopDummyVideo(restore: false);
+			}
+
 			// [task22] URL 監視セーフティネット: メインフレーム URL からログアウト状態フラグを更新する。
 			// - CefSharp 143.0.90 に AddressChanged イベントが存在しないため、
 			//   既存の FrameLoadEnd 内で IFrame.IsMain + IFrame.Url を確認する方式。

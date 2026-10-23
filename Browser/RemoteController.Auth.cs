@@ -579,8 +579,9 @@ namespace Browser
 		private void SendLoginState(HttpListenerResponse res)
 		{
 			bool loggedOut = _parent.IsLogoutBlank;   // volatile 読み込み（HTTP スレッドから安全）
+			bool dummyVideo = _parent.IsDummyVideo;   // volatile 読み込み（同上・ダミー映像状態）
 			// JSON を文字列連結で組み立てる意図:
-			// 固定キーの JSON 2 つ（loggedOut: bool / ts: long）のみのシンプルなレスポンスであり、
+			// 固定キーの JSON 3 つ（loggedOut: bool / dummyVideo: bool / ts: long）のみのシンプルなレスポンスであり、
 			// System.Text.Json の導入は新規依存を伴うため最小差分原則で文字列連結を維持する。
 			// bool は true/false として、DateTime.Now.Ticks（long）は暗黙の ToString で JSON 数値として
 			// 出力される（JS の JSON.parse で boolean / number として正しく解析可能）。
@@ -590,10 +591,12 @@ namespace Browser
 			// JSON 仕様に従い小文字 true/false に明示する。
 			// boolean 出力は WriteJsonBool() に統一（大文字回帰の構造防止）。
 			// TODO（将来、設計書 §15.3）: 本メソッドの文字列連結による JSON 組立は
-			// 最小差分原則（固定キー 2 つ・エスケープ不要値のみ）での暫定対応。bool/long 以外の値
+			// 最小差分原則（固定キー 3 つ・エスケープ不要値のみ）での暫定対応。bool/long 以外の値
 			// （double・文字列等）が追加される場合、不正 JSON になるリスクがあるため、その際は
 			// 標準シリアライザ（System.Web.Script.Serialization.JavaScriptSerializer 等のラッパ）へ移行する。
-			string json = "{\"loggedOut\":" + WriteJsonBool(loggedOut) + ",\"ts\":" + DateTime.Now.Ticks + "}";
+			string json = "{\"loggedOut\":" + WriteJsonBool(loggedOut)
+				+ ",\"dummyVideo\":" + WriteJsonBool(dummyVideo)
+				+ ",\"ts\":" + DateTime.Now.Ticks + "}";
 			// キャッシュ制御: ブラウザ/プロキシがレスポンスをキャッシュしないよう付与
 			// （5 秒間隔のポーリング対象のため、loggedOut 状態変化の検出遅延がポーリング間隔を超えないことを保証）
 			res.Headers["Cache-Control"] = "no-cache, must-revalidate";

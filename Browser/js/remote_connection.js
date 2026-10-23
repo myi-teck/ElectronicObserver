@@ -305,6 +305,10 @@ const ProtocolManager = {
                     if (cfg && cfg.displayState === 'degraded') {
                         ProtocolManager._showDisplayBanner(cfg.displayReason);
                     }
+                    // ダミー映像バッジの初回表示（checkLoginState の 5s ポーリングを待たずに同期）
+                    if (typeof setDummyBadge === 'function') {
+                        setDummyBadge(!!(cfg && cfg.dummyVideo === true));
+                    }
                 })
                 .catch(err => {
                     // 取得失敗は致命的ではない: 既定値（30fps 相当）で動作を継続する

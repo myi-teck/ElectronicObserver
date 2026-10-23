@@ -858,6 +858,23 @@ let orientationDebounceTimer = null;
 const ORIENTATION_DEBOUNCE_MS = 100; // 画面回転デバウンス時間（ms）
 
 //=============================================================================================
+// ダミー映像バッジ（conn-status と独立の span — updateConnStatus の textContent 上書きで
+// 消去されないため、接続状態遷移とバッジ表示が競合しない）。
+// 表示は 5s ポーリング（checkLoginState）＋ onopen 時 /capture-config fetch で追従し、
+// OFF では非表示に戻る（新要素・新タイマーなし — 既存ポーリングループに載せる）。
+//=============================================================================================
+var _dummyBadgeLast = null; // 直近表示状態（null=未確定）。遷移時のみイベントログへ記録し 5s ポーリングの重複記録を防ぐ
+function setDummyBadge(on) {
+    var el = document.getElementById('hud-mini-dummy');
+    if (!el) return;
+    on = !!on;
+    el.style.display = on ? '' : 'none';
+    if (on === _dummyBadgeLast) return;
+    _dummyBadgeLast = on;
+    if (window.__eventLog) window.__eventLog.consoleLog('warn', '検証用ダミー映像: ' + (on ? 'ON' : 'OFF'), on ? 'DUMMY_ON' : 'DUMMY_OFF');
+}
+
+//=============================================================================================
 // [task22] ログイン状態ポーリング（5 秒間隔）
 // 本体ブラウザがログアウト空白ページ状態の間、/logout-page へフルページリダイレクトする
 // （「ログイン中フラグが false ならログアウト中画面にリダイレクト」要件の実装）。
@@ -876,6 +893,9 @@ function checkLoginState() {
             return res.json();
         })
         .then(function (data) {
+            if (typeof setDummyBadge === 'function') {
+                setDummyBadge(!!(data && data.dummyVideo === true));
+            }
             if (data && data.loggedOut === true) {
                 window.location.href = '/logout-page';
             }
