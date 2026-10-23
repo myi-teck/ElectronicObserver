@@ -96,6 +96,8 @@ namespace Browser
 			public Task CaptureTask { get; set; }
 			public Task SendTask { get; set; }
 			public Task ReceiveTask { get; set; }
+			/// <summary>WCS パイプラインのセッション別ファンアウトタスク（ws_connect で起動、セッション削除で終了）</summary>
+			public Task WcsFanoutTask { get; set; }
 	
 			/// <summary>
 			/// Drop Frame 用最新フレームバッファ（ArrayPool からレンタル）
@@ -132,6 +134,41 @@ namespace Browser
 				FullMode = BoundedChannelFullMode.DropWrite, // キュー超過時は TryWrite が false を返し、ドロップ処理に委譲
 				SingleReader = true,
 			});
+
+			/// <summary>
+			/// WCS 送信用チャネル項目（フレーム or SPS/PPS）。
+			/// Data は共有の不変配列（キャプチャループが所有、ファンアウト側は読み取りのみでコピーしない）
+			/// </summary>
+			public sealed class WcsSendItem
+			{
+				public bool IsDescription;
+				public int Seq;
+				public byte Flags;
+				public byte[] Data;
+			}
+
+			/// <summary>WCS 送信用有界チャネルの容量（フレーム級。100KB 級×8＝MB 級/session）</summary>
+			private const int WcsFanoutChannelCapacity = 8;
+
+			/// <summary>
+			/// WCS パイプラインのセッション別送信用有界チャネル。
+			/// 中央キャプチャループが書き込み、WebCodecsFanoutLoopAsync が読み出す。
+			/// 満杯時は EnqueueWcsSend が最古フレームを破棄し最新を保持する（WebP ファンアウトの最新フレーム意味論と対称）。
+			/// 送信のループ外化により、1 クライアントの TCP 詰まりが他セッションを止めない（HOL blocking 解消）
+			/// </summary>
+			public readonly Channel<WcsSendItem> _wcsChannel;
+
+			/// <summary>
+			/// description キュー投入中フラグ（0/1）。ファンアウト送信完了まで
+			/// キャプチャループからの重複キュー投入を防ぐ。送信完了・ドロップ時に解放
+			/// </summary>
+			private int _descQueued;
+
+			/// <summary>WCS チャネルのドロップ数（EnqueueWcsSend の最新保持ドロップでインクリメント、10 秒ログ用）</summary>
+			private long _wcsDroppedCount;
+
+			/// <summary>WCS チャネルの累計ドロップ数</summary>
+			public long WcsDroppedTotal => Interlocked.Read(ref _wcsDroppedCount);
 	
 			/// <summary>
 			/// WebSocket送信用の7バイトヘッダーバッファ（事前割り当て、再利用）
@@ -210,6 +247,61 @@ namespace Browser
 				_latestFrameLength = 0;
 				_cursorXBits = BitConverter.DoubleToInt64Bits(0.5);
 				_cursorYBits = BitConverter.DoubleToInt64Bits(0.5);
+				_wcsChannel = Channel.CreateBounded<WcsSendItem>(new BoundedChannelOptions(WcsFanoutChannelCapacity)
+				{
+					// Wait モード: 満杯時は TryWrite が false を返す（例外なし）。
+					// 最新保持ドロップは EnqueueWcsSend 側で最古項目の破棄として実装する
+					// （net462 向け System.Threading.Channels には ItemDropped / DropOldest の自動通知がないため）
+					FullMode = BoundedChannelFullMode.Wait,
+					SingleReader = true,
+				});
+			}
+
+			/// <summary>
+			/// description キュー投入を開始する（既にキュー投入済みなら false を返し重複投入を防ぐ）
+			/// </summary>
+			public bool TryBeginDescriptionQueue()
+			{
+				return Interlocked.CompareExchange(ref _descQueued, 1, 0) == 0;
+			}
+
+			/// <summary>
+			/// description キュー投入中フラグを解放する（送信完了・失敗・ドロップ・投入取りやめで呼ぶ。冪等）
+			/// </summary>
+			public void EndDescriptionQueue()
+			{
+				Interlocked.Exchange(ref _descQueued, 0);
+			}
+
+			/// <summary>
+			/// WCS 送信用チャネルへ項目を投入する（最新保持ドロップ）。
+			/// 満杯時は最古項目を破棄して空きを作り最新を保持する。破棄した description の
+			/// キュー投入中フラグは解放し、再投入機会を恒久喪失させない。
+			/// チャネル完了済み（セッション破棄）やファンアウトとの競合で投入できない場合は
+			/// 当該項目を破棄して戻る（数フレーム後の次回投入で正常復帰）
+			/// </summary>
+			public void EnqueueWcsSend(WcsSendItem item)
+			{
+				// 単一書き込み手（中央キャプチャループ）のみが呼ぶ。試行回数の上限は
+				// ファンアウトの同時読み取りによる一時的な失敗（通常は 2 試行目で成功）への保険
+				for (int attempt = 0; attempt < 3; attempt++)
+				{
+					if (_wcsChannel.Writer.TryWrite(item))
+						return;
+
+					if (_wcsChannel.Reader.Completion.IsCompleted)
+						break;
+
+					if (_wcsChannel.Reader.TryRead(out WcsSendItem dropped))
+					{
+						Interlocked.Increment(ref _wcsDroppedCount);
+						if (dropped.IsDescription)
+							Interlocked.Exchange(ref _descQueued, 0);
+					}
+				}
+
+				if (item.IsDescription)
+					Interlocked.Exchange(ref _descQueued, 0);
 			}
 
 			/// <summary>
@@ -407,6 +499,8 @@ namespace Browser
 				CancellationToken.Cancel();
 				// ChannelのWriterを完了状態にして待機中の読み取りタスクを解放
 				try { _frameSignal.Writer.Complete(); } catch { }
+				// WCS 送信用チャネルも同様に完了状態にしてファンアウトタスクを解放
+				try { _wcsChannel.Writer.Complete(); } catch { }
 	
 				// 残っているフレームバッファを返却
 				lock (_bufferLock)
@@ -561,6 +655,9 @@ namespace Browser
 
 				// セッション固有のタスクを開始（ファンアウト / 送信 / 受信）
 				session.CaptureTask = Task.Run(() => WebSocketFanoutLoopAsync(session));
+				// WCS ファンアウトは全セッションで起動（WebP セッションではチャネルが空のまま待機するのみ。
+				// switch_mode で ClientMode=1 になった時点でキャプチャループからの書き込みが始まる）
+				session.WcsFanoutTask = Task.Run(() => WebCodecsFanoutLoopAsync(session));
 				session.SendTask = Task.Run(() => WebSocketSendLoopAsync(session));
 				session.ReceiveTask = Task.Run(() => WebSocketReceiveLoopAsync(session));
 			}
@@ -737,6 +834,127 @@ namespace Browser
 			catch (Exception ex)
 			{
 				Log(3, $"[RemoteController] Fanout loop exception: {ex.Message}");
+			}
+			finally
+			{
+				RemoveWebSocketSession(session.SessionId);
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : WebCodecsFanoutLoopAsync
+		// 概要           : WebCodecs パイプラインのセッション別送信ループ。
+		//                  中央キャプチャループが有界チャネル（最新保持ドロップ）へ書き込んだ
+		//                  フレーム / SPS-PPS を取り出して SendSemaphore で送信する。
+		//                  送信のループ外化により、1 クライアントの TCP 詰まりが
+		//                  他セッションの配信レートを下げない（HOL blocking 解消）
+		//------------------------------------------------------------------------------------
+		private async Task WebCodecsFanoutLoopAsync(WebSocketSession session)
+		{
+			var ws = session.WebSocket;
+			var token = session.CancellationToken.Token;
+
+			// ドロップ集計ログ（10 秒窓）: 前回レポート済みの累計値と最終レポート時刻
+			long lastLoggedDrops = 0;
+			var lastDropLogUtc = DateTime.UtcNow;
+
+			try
+			{
+				while (!token.IsCancellationRequested && IsWebSocketOpen(ws))
+				{
+					WebSocketSession.WcsSendItem item;
+					try
+					{
+						item = await session._wcsChannel.Reader.ReadAsync(token);
+					}
+					catch (OperationCanceledException) { break; }
+					catch (ChannelClosedException) { break; }
+
+					// チャネル満杯ドロップの 10 秒集計ログ（ドロップ増分があるときのみ）
+					long drops = session.WcsDroppedTotal;
+					if (drops > lastLoggedDrops && (DateTime.UtcNow - lastDropLogUtc).TotalSeconds >= 10)
+					{
+						Log(3, $"[RemoteController] WCS ファンアウト: チャネル満杯による最新保持ドロップ {drops - lastLoggedDrops} 件 (session={session.SessionId})");
+						lastLoggedDrops = drops;
+						lastDropLogUtc = DateTime.UtcNow;
+					}
+
+					// 送信先の型振り分け（T8）: WCS パイプラインは WebCodecs セッション（ClientMode=1）のみに送信。
+					// switch_mode で WebP へ切り替わったセッションの残留項目はここで破棄する
+					if (session.ClientMode != 1)
+						continue;
+
+					// クライアントバージョン確認（Version 1 は 7B ヘッダー / SPS-PPS 非対応）。
+					// キュー投入後の切り替えも送信直前に再検証するためここでスキップ
+					var clientVer = GetClientVersion(session.SessionId);
+					if (clientVer == null || clientVer < 2)
+						continue;
+
+					// SendSemaphore 取得によりソケットの同時書き込みを防止（init / heartbeat 送信と排他）
+					await session.SendSemaphore.WaitAsync(token);
+					try
+					{
+						if (IsWebSocketOpen(ws))
+						{
+							byte type = item.IsDescription ? (byte)0x02 : (byte)0x01;
+							byte[] header = BuildWebCodecsHeader(type, item.Flags, (uint)item.Seq);
+
+							var buffer = ArrayPool<byte>.Shared.Rent(header.Length + item.Data.Length);
+							try
+							{
+								Buffer.BlockCopy(header, 0, buffer, 0, header.Length);
+								Buffer.BlockCopy(item.Data, 0, buffer, header.Length, item.Data.Length);
+
+								var segment = new ArraySegment<byte>(buffer, 0, header.Length + item.Data.Length);
+								await ws.SendAsync(
+									segment,
+									System.Net.WebSockets.WebSocketMessageType.Binary,
+									true,
+									token);
+
+								if (item.IsDescription)
+								{
+									// 送信成功を記録（失敗カウントリセット + 再送バックオフ解除）
+									session.DescriptionSent = true;
+									session.MarkDescriptionSentSuccess();
+									Log(2, $"[RemoteController] SPS/PPS (description) 送信完了 ({item.Data.Length} bytes, seq={item.Seq}, Session: {session.SessionId})");
+								}
+							}
+							finally
+							{
+								// ArrayPool バッファの不要領域をゼロクリアし返却
+								var usedLength = header.Length + item.Data.Length;
+								if (usedLength < buffer.Length)
+								{
+									Array.Clear(buffer, usedLength, buffer.Length - usedLength);
+								}
+								ArrayPool<byte>.Shared.Return(buffer);
+							}
+						}
+					}
+					catch (Exception ex)
+					{
+						Log(3, $"[RemoteController] WebCodecs フレーム送信失敗 (session={session.SessionId}): {ex.Message}");
+						if (item.IsDescription)
+						{
+							// 送信失敗を記録（DescriptionSent は false のままで次フレーム再試行）。
+							// 連続失敗時は CanSendDescription() のバックオフで再送を抑制し、ログスパイクを防ぐ
+							session.MarkDescriptionSentFailure();
+						}
+					}
+					finally
+					{
+						// description のキュー投入中フラグを解放（成功・失敗無関係。冪等）
+						if (item.IsDescription)
+							session.EndDescriptionQueue();
+						session.SendSemaphore.Release();
+					}
+				}
+			}
+			catch (OperationCanceledException) { }
+			catch (Exception ex)
+			{
+				Log(3, $"[RemoteController] WCS Fanout loop exception: {ex.Message}");
 			}
 			finally
 			{

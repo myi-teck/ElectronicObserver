@@ -641,72 +641,6 @@ namespace Browser
 		}
 
 		//====================================================================================
-		// 処理ブロック名 : SendDescriptionAsync
-		// 概要           : SPS/PPS (description) を Type=0x02 のフレームとして送信する。
-		//                  フォーマット: [0x02, 0x02, 0x00, Seq(4B BE), SPS/PPSデータ]
-		//                  クライアントJS (remote_connection.js) の Type=0x02 受信処理と整合させる
-		//------------------------------------------------------------------------------------
-		private async Task SendDescriptionAsync(WebSocketSession session, byte[] description, CancellationToken token)
-		{
-			if (description == null || description.Length == 0) return;
-			if (session.WebSocket.State != WebSocketState.Open) return;
-
-			// 新クライアントの追隨送信・reinit_decoder 再送信に共通してシーケンス番号を消費する
-			// SPS/PPS 送信で seq を消費するため、
-			// レートリミット (CanSendDescription) により再送が抑制されるケースでは seq 空間にギャップが生じる。
-			// これは設計書通りであり、受信側は単調増加検証（int 差分による過去フレーム検出）で適切に処理する。
-			int seq = Interlocked.Increment(ref _globalSequenceNumber);
-			byte[] header = BuildWebCodecsHeader(0x02, 0x00, (uint)seq);
-
-			await session.SendSemaphore.WaitAsync(token);
-			try
-			{
-				if (IsWebSocketOpen(session.WebSocket))
-				{
-					var buffer = ArrayPool<byte>.Shared.Rent(header.Length + description.Length);
-					try
-					{
-						Buffer.BlockCopy(header, 0, buffer, 0, header.Length);
-						Buffer.BlockCopy(description, 0, buffer, header.Length, description.Length);
-
-						var segment = new ArraySegment<byte>(buffer, 0, header.Length + description.Length);
-						await session.WebSocket.SendAsync(
-							segment,
-							System.Net.WebSockets.WebSocketMessageType.Binary,
-							true,
-							token);
-
-						// 送信成功を記録（失敗カウントリセット + 再送バックオフ解除）
-						session.DescriptionSent = true;
-						session.MarkDescriptionSentSuccess();
-						Log(2, $"[RemoteController] SPS/PPS (description) 送信完了 ({description.Length} bytes, seq={seq}, Session: {session.SessionId})");
-					}
-					finally
-					{
-						// ArrayPool バッファの不要領域をゼロクリアし返却
-						var usedLength = header.Length + description.Length;
-						if (usedLength < buffer.Length)
-						{
-							Array.Clear(buffer, usedLength, buffer.Length - usedLength);
-						}
-						ArrayPool<byte>.Shared.Return(buffer);
-					}
-				}
-			}
-			catch (Exception ex)
-			{
-				// 送信失敗を記録（DescriptionSent は false のままで次フレーム再試行）。
-				// 連続失敗時は CanSendDescription() のバックオフで再送を抑制し、ログスパイクを防ぐ
-				session.MarkDescriptionSentFailure();
-				Log(3, $"[RemoteController] SPS/PPS (description) 送信失敗 (session={session.SessionId}): {ex.Message}");
-			}
-			finally
-			{
-				session.SendSemaphore.Release();
-			}
-		}
-
-		//====================================================================================
 		// 処理ブロック名 : WebCodecsCaptureLoopAsync
 		// 概要           : WebCodecs モード用の中央キャプチャループ。
 		//                  JS 側の VideoEncoder 経由でエンコード済みフレームを取得し、
@@ -959,7 +893,11 @@ namespace Browser
 					// Flags: キーフレームかどうか（エンコーダが報告したチャンク種別が唯一の正）
 					byte flags = dataIsKeyFrame ? (byte)0x01 : (byte)0x00;
 
-					// 全 WebSocket セッションに配信
+					// SPS/PPS キュー投入パス: description 未送信のセッションにはフレームより先に
+					// SPS/PPS (Type=0x02) をセッション別チャネルへ投入する（設計書 §4.2.2 ステップ3）。
+					// seq をフレーム seq より前のここで採番することで、SPS/PPS seq < フレーム seq が
+					// seq 空間・チャネル順の両方で保証される。実際の送信はセッション別の
+					// WebCodecsFanoutLoopAsync が行う（送信のループ外化）
 					foreach (var session in _webSocketSessions.Values)
 					{
 						if (session.WebSocket.State != WebSocketState.Open)
@@ -968,7 +906,7 @@ namespace Browser
 						// クライアントバージョンを確認（null 時は送信抑止）
 						// SPS/PPS (Type=0x02) は 7B ヘッダーの Version 2 形式のため、
 						// Version 1 クライアント（6B ヘッダー）には送信不可。
-						// バージョンチェックを SPS/PPS 送信ブロックより前に置く
+						// バージョンチェックを SPS/PPS 投入より前に置く
 						var clientVer = GetClientVersion(session.SessionId);
 						if (clientVer == null)
 							continue;
@@ -991,83 +929,70 @@ namespace Browser
 						if (session.ClientMode != 1)
 							continue;
 
-						// SPS/PPS 送信タイミング保証（設計書 §4.2.2 ステップ3: Critical 3 修正）
-						// description が未送信のセッションには、キーフレーム (Type=0x01) より前に
-						// SPS/PPS (Type=0x02) を必ず送信する。これによりクライアント側は
-						// VideoDecoder.configure() 実行時に description が確実に存在する
-						if (!session.DescriptionSent)
+						// キュー投入中フラグ（TryBeginDescriptionQueue）により、ファンアウトが
+						// 未送信のうちに同一セッションへ SPS/PPS を重複投入しない。
+						// 連続失敗時のバックオフ期間中は再投入を抑制する（フレームのみの送信は従来同様）
+						if (!session.DescriptionSent && session.TryBeginDescriptionQueue())
 						{
-							// 連続失敗時はバックオフ期間中のみ再送を抑制する
 							if (session.CanSendDescription())
 							{
 								// volatile 参照はローカル変数へ即スナップショットし、
 								// 送信中に別スレッドで _lastWebCodecsDescription が差し替わっても影響を受けないようにする
 								// （volatile 宣言フィールドのプレーン読み取りはフルフェンス付きで可視性が保証される）
-								// （description 自体は防御コピー済みの不変配列。SendDescriptionAsync 内で BlockCopy して送信）
+								// （description 自体は防御コピー済みの不変配列。ファンアウト側は読み取りのみで共有して安全）
 								byte[] descToSend = pullResult.description ?? _lastWebCodecsDescription;
 								if (descToSend != null && descToSend.Length > 0)
 								{
-									await SendDescriptionAsync(session, descToSend, token);
-								}
-							}
-						}
-
-						// フレーム seq 採番を SPS/PPS 送信の後に移動
-						// SPS/PPS (Type=0x02) 送信後にフレーム seq を採番することで、
-						// SPS/PPS seq < フレーム seq が seq 空間・受信順の両方で保証される。
-						// これにより seq 順序逆転（Minor-1）と受信順での単調増加違反（Minor-2）を解消する。
-						// 同一グローバルカウンタ（_globalSequenceNumber）を維持し、heartbeat は seq を消費しない。
-						// 同一フレームは全セッションで同一 seq を共有する。
-						// seq 採番はセッションループ外で 1 回のみ実行され、同一フレームが全セッションに
-						// 同一 seq で送信される。受信側は seq で順序保証を行う設計であり、
-						// セッション横断の単調増加（シーケンス空間）が維持される。
-						seq = Interlocked.Increment(ref _globalSequenceNumber);
-
-						// BuildWebCodecsHeader の呼び出し（version 引数削除）
-						// BuildWebCodecsHeader は常に 7B の固定ヘッダーを返し、null を返さないため null チェックは不要
-						byte[] header = BuildWebCodecsHeader(0x01, flags, (uint)seq);
-
-						// バイナリ送信（ヘッダー + データ）
-						// SendSemaphore 取得によりソケットの同時書き込みを防止
-						await session.SendSemaphore.WaitAsync(token);
-						try
-						{
-							if (IsWebSocketOpen(session.WebSocket))
-							{
-								var buffer = ArrayPool<byte>.Shared.Rent(header.Length + pullResult.data.Length);
-								try
-								{
-									Buffer.BlockCopy(header, 0, buffer, 0, header.Length);
-									Buffer.BlockCopy(pullResult.data, 0, buffer, header.Length, pullResult.data.Length);
-
-									var segment = new ArraySegment<byte>(buffer, 0, header.Length + pullResult.data.Length);
-									await session.WebSocket.SendAsync(
-										segment,
-										System.Net.WebSockets.WebSocketMessageType.Binary,
-										true,
-										token);
-								}
-								finally
-								{
-									// ArrayPool バッファの不要領域をゼロクリア
-									// Rent() で取得したバッファはゼロクリアされないため、前回の残データを消去
-									var usedLength = header.Length + pullResult.data.Length;
-									if (usedLength < buffer.Length)
+									int descSeq = Interlocked.Increment(ref _globalSequenceNumber);
+									session.EnqueueWcsSend(new WebSocketSession.WcsSendItem
 									{
-										Array.Clear(buffer, usedLength, buffer.Length - usedLength);
-									}
-									ArrayPool<byte>.Shared.Return(buffer);
+										IsDescription = true,
+										Seq = descSeq,
+										Data = descToSend,
+									});
+								}
+								else
+								{
+									// 投入先が無い場合はフラグを解放して次フレームの再投入を可能にする
+									session.EndDescriptionQueue();
 								}
 							}
+							else
+							{
+								session.EndDescriptionQueue();
+							}
 						}
-						catch (Exception ex)
+					}
+
+					// フレーム seq 採番: フレーム単位で 1 回（セッションループ外）で採番し、
+					// 同一フレームが全セッションに同一 seq で共有される。受信側は seq で順序保証を行う設計であり、
+					// セッション横断の単調増加（シーケンス空間）が維持される（§1.3 の不変条件）。
+					// 同一グローバルカウンタ（_globalSequenceNumber）を維持し、heartbeat は seq を消費しない
+					seq = Interlocked.Increment(ref _globalSequenceNumber);
+
+					// フレーム キュー投入パス: セッション別有界チャネル（最新保持ドロップ）へ書き込む。
+					// データ本体（pullResult.data）は不変配列のため全セッションで共有し、コピーしない。
+					// 送信をループ外化することで、1 クライアントの TCP 詰まりが他セッションの
+					// 配信レートを下げない（HOL blocking 解消）
+					foreach (var session in _webSocketSessions.Values)
+					{
+						if (session.WebSocket.State != WebSocketState.Open)
+							continue;
+
+						var clientVer = GetClientVersion(session.SessionId);
+						if (clientVer == null || clientVer < 2)
+							continue;
+
+						if (session.ClientMode != 1)
+							continue;
+
+						session.EnqueueWcsSend(new WebSocketSession.WcsSendItem
 						{
-							Log(3, $"[RemoteController] WebCodecs フレーム送信失敗 (session={session.SessionId}): {ex.Message}");
-						}
-						finally
-						{
-							session.SendSemaphore.Release();
-						}
+							IsDescription = false,
+							Seq = seq,
+							Flags = flags,
+							Data = pullResult.data,
+						});
 					}
 					} // foreach (var pullResult in encPull.frames)
 
