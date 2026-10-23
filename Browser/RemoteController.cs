@@ -777,6 +777,9 @@ namespace Browser
 				Log(2, $"[RemoteController] 遠隔操作サーバーが正常に起動しました: http://{_address}:{_port}/");
 
 				Task.Run(() => ListenLoop());
+
+				// 表示状態監視（ヘッドレス/RDP 切断等の検知）開始
+				StartDisplayStateMonitoring();
 			}
 			catch (Exception ex)
 			{
@@ -796,6 +799,7 @@ namespace Browser
 					Log(2, $"[RemoteController] localhost フォールバック起動に成功しました (http://localhost:{_port}/)");
 
 					Task.Run(() => ListenLoop());
+					StartDisplayStateMonitoring();
 					return;
 				}
 				catch (Exception fallbackEx)
@@ -1305,6 +1309,9 @@ namespace Browser
 
 			// _webSocketSessions は RemoveWebSocketSession で既に空になっていることを確認
 			_webSocketSessions.Clear();
+
+			// 表示状態監視の停止（タイマー破棄 + WTS セッション通知解除）
+			StopDisplayStateMonitoring();
 		}
 
 		//====================================================================================

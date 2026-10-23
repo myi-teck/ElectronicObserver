@@ -1960,7 +1960,11 @@ namespace Browser
 			{
 				lock (_modeLock)
 				{
-					var json = $"{{\"mode\":\"{_currentCaptureMode.ToString().ToLower()}\",\"bitrate\":{_webCodecsBitrate},\"fps\":{_webCodecsFps}}}";
+					// displayState: 接続直後のクライアントへホスト側の表示状態悪化（ヘッドレス/RDP 切断等）を伝える
+					string displayReason;
+					var displayState = GetCurrentDisplayState(out displayReason);
+					string displayStateName = displayState == DisplayState.Degraded ? "degraded" : "normal";
+					var json = $"{{\"mode\":\"{_currentCaptureMode.ToString().ToLower()}\",\"bitrate\":{_webCodecsBitrate},\"fps\":{_webCodecsFps},\"displayState\":\"{displayStateName}\",\"displayReason\":\"{displayReason}\"}}";
 					res.ContentType = "application/json";
 					var bytes = Encoding.UTF8.GetBytes(json);
 					res.ContentLength64 = bytes.Length;

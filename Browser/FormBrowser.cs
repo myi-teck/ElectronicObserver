@@ -1380,6 +1380,9 @@ namespace Browser
 						_remoteController = new RemoteController(this, port, address, password, webCodecsBitrate, webCodecsFps);
 						_remoteController.Start();
 
+						// 表示状態監視へこのウィンドウハンドルを登録（WM_WTSSESSION_CHANGE を WndProc 経由で転送）
+						_remoteController.AttachDisplayStateMonitor(this.Handle);
+
 						if (_bufferedHudJson != null)
 						{
 							_remoteController.UpdateHudData(_bufferedHudJson);
@@ -3196,6 +3199,11 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 				// ignore this message
 				return;
 
+			// セッション接続/切断通知を RemoteController の表示状態監視へ転送
+			// （WTSRegisterSessionNotification の購読はこのウィンドウハンドルで行い、ここで受けて回送する）
+			if (m.Msg == WM_WTSSESSION_CHANGE)
+				_remoteController?.HandleSessionNotification(m.WParam.ToInt32());
+
 			base.WndProc(ref m);
 		}
 
@@ -3213,6 +3221,9 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 		private const uint WS_CHILD = 0x40000000;
 		private const uint WS_VISIBLE = 0x10000000;
 		private const int WM_ERASEBKGND = 0x14;
+
+		/// <summary>セッション接続/切断通知（wtsapi32）。RemoteController の表示状態監視へ転送する</summary>
+		private const int WM_WTSSESSION_CHANGE = 0x02B1;
 
 
 
