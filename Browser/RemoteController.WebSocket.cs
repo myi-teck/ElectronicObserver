@@ -1260,6 +1260,8 @@ namespace Browser
 					if (modeStr == null)
 					{
 						Log(3, $"[RemoteController] switch_mode: \"mode\" フィールド欠損のため WebP にフォールバック (Session: {session.SessionId})");
+						// 安全側フォールバックは全セッションの実効モードに影響するため、他セッションの WCS 描画経路も WebP へ同期させる
+						await BroadcastControlToAllSessionsAsync("{\"type\":\"capture_mode_fallback\",\"to\":\"webp\",\"reason\":\"invalid_mode\"}");
 						targetMode = CaptureMode.WebP;
 					}
 					else
@@ -1270,6 +1272,8 @@ namespace Browser
 							case "webcodecs": targetMode = CaptureMode.WebCodecs; break;
 							default:
 								Log(3, $"[RemoteController] switch_mode: 無効なモード値 \"{modeStr}\"、WebP にフォールバック (Session: {session.SessionId})");
+								// 安全側フォールバックは全セッションの実効モードに影響するため、他セッションの WCS 描画経路も WebP へ同期させる
+								await BroadcastControlToAllSessionsAsync("{\"type\":\"capture_mode_fallback\",\"to\":\"webp\",\"reason\":\"invalid_mode\"}");
 								targetMode = CaptureMode.WebP;
 								break;
 						}
@@ -1477,6 +1481,48 @@ namespace Browser
 			catch (Exception ex)
 			{
 				Log(3, $"[RemoteController] init_hud 送信エラー: {ex.Message}");
+			}
+		}
+	
+		//====================================================================================
+		// 処理ブロック名 : BroadcastControlToAllSessionsAsync
+		// 概要           : 全 open WebSocket セッションへ JSON 制御メッセージを送信する。
+		//                  サーバー側の状態変化（キャプチャモード降格・HUD 非空遷移など）が
+		//                  全クライアントに等しく影響する通知で共用する。
+		//------------------------------------------------------------------------------------
+		// 本プロジェクトには JSON シリアライザ依存がないため、呼び出し側が構築済み JSON 文字列を渡す
+		// （SendInitHudDataAsync の手動構築様式と統一）。
+		// 1 セッションの失敗で他セッションへの配信を止めない（セッション単位で catch しログへ記録）。
+		private async Task BroadcastControlToAllSessionsAsync(string jsonPacket)
+		{
+			byte[] bytes = Encoding.UTF8.GetBytes(jsonPacket);
+			// ConcurrentDictionary の Values 列挙はスナップショット様式であり、
+			// 列挙中にセッションが Dispose されても例外にならない
+			foreach (var session in _webSocketSessions.Values)
+			{
+				try
+				{
+					if (session.WebSocket.State != WebSocketState.Open) continue;
+	
+					await session.SendSemaphore.WaitAsync(session.CancellationToken.Token);
+					try
+					{
+						if (session.WebSocket.State == WebSocketState.Open)
+						{
+							await session.WebSocket.SendAsync(
+								new ArraySegment<byte>(bytes),
+								WebSocketMessageType.Text, true, session.CancellationToken.Token);
+						}
+					}
+					finally
+					{
+						session.SendSemaphore.Release();
+					}
+				}
+				catch (Exception ex)
+				{
+					Log(3, $"[RemoteController] 制御メッセージ broadcast 送信エラー (Session: {session.SessionId}): {ex.Message}");
+				}
 			}
 		}
 	

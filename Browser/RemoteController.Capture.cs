@@ -1083,7 +1083,8 @@ namespace Browser
 				var kancolleFrame = _parent.GetKanColleFrame();
 				if (kancolleFrame == null)
 				{
-					Log(3, "[RemoteController] WebCodecs エンコーダ初期化: Kancolle frame not found");
+					// 失敗種別①: 艦これフレーム自体が未読込（エンジン注入の前提が成立していない）
+					Log(2, "[RemoteController] WebCodecs エンコーダ初期化失敗（種別: キャプチャエンジン未注入・艦これフレーム未読込）");
 					return false;
 				}
 				if (!kancolleFrame.IsValid)
@@ -1168,7 +1169,8 @@ namespace Browser
 					// engine 未初期化（window._kancolleCaptureEngine が null）の場合、IIFE が undefined を解決し Result は null
 					if (result.Result == null)
 					{
-						Log(3, "[RemoteController] WebCodecs エンコーダ初期化: 結果が null（engine 未初期化または未解決）");
+						// 失敗種別①: スクリプトが undefined を解決＝エンジンオブジェクト未注入（艦これフレーム未読込）
+						Log(2, "[RemoteController] WebCodecs エンコーダ初期化失敗（種別: キャプチャエンジン未注入・window._kancolleCaptureEngine なし）");
 						return false;
 					}
 
@@ -1194,7 +1196,19 @@ namespace Browser
 					{
 						var error = dict.TryGetValue("error", out var errorVal) ? errorVal as string : null;
 						var errorMsg = error ?? successVal?.ToString() ?? "unknown";
-						Log(3, $"[RemoteController] WebCodecs エンコーダ初期化失敗: {errorMsg}");
+						// 失敗種別②〜⑤ を JS 返却エラー文言で区別（機構 B の 4 条件切り分け・接続方式診断に供する）
+						string failureKind;
+						if (errorMsg.Contains("VideoEncoder not supported"))
+							failureKind = "videoEncoder 非対応";
+						else if (errorMsg.Contains("Secure Context"))
+							failureKind = "非 Secure Context（http:// 直接入り）";
+						else if (errorMsg.Contains("Config unsupported"))
+							failureKind = "isConfigSupported 失敗";
+						else if (errorMsg.Contains("reinitializing"))
+							failureKind = "再初期化中";
+						else
+							failureKind = "その他";
+						Log(2, $"[RemoteController] WebCodecs エンコーダ初期化失敗（種別: {failureKind}）: {errorMsg}");
 						return false;
 					}
 				}
@@ -1682,7 +1696,10 @@ namespace Browser
 				// ローカル変数 cts は本チェック通過後（下段）に初めて new されるため、init 失敗経路では
 				// 未生成・未使用であり cts.Dispose() が不要。従ってこの経路で CTS リークは発生しない。
 				// B-1 方針（旧 CTS の Dispose は省略し GC に委譲）とも整合（孤立 CTS を一切生成しない）。
-				Log(3, "[RemoteController] WebCodecs 生存性チェック: 再初期化失敗、WebP にフォールバック");
+				// 降格はサーバー全体の状態変化のため、全クライアントへ通知して
+				// WCS 側クライアントも WebP 描画経路へ同期させる（黒画面の放置防止）
+				Log(2, "[RemoteController] WebCodecs 初期化失敗のため WebP にフォールバックします（クライアントへ通知）");
+				await BroadcastControlToAllSessionsAsync("{\"type\":\"capture_mode_fallback\",\"to\":\"webp\",\"reason\":\"webcodecs_init_failed\"}");
 				await SetCaptureModeAsync(CaptureMode.WebP);
 				return;
 			}
