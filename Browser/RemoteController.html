@@ -39,7 +39,7 @@
                 <span id='hud-mini-conn' class='hud-mini-item'>SYNCHRONIZING...</span>
                 <span id='hud-mini-state' class='hud-mini-item'>ACT</span>
                 <span id='hud-mini-bw' class='hud-mini-item'>0.0 MB</span>
-                <span id='hud-mini-fps' class='hud-mini-item'>0.00 FPS</span>
+                <span id='hud-mini-fps' class='hud-mini-item' title='表示FPS = 画面更新レート（新コンテンツ基準）。サーバー側でコンテンツ変化が検出された回数を集計しています'>0.00 FPS</span>
             </div>
         </div>
     </div>
@@ -255,7 +255,7 @@
                     <!-- 右：通信量、FPS、設定トグル -->
                     <div style='display: flex; gap: 8px; align-items: center;'>
                         <span class='sys-label'>BANDWIDTH <br/><span id='data-usage' class='sys-val'>0.0 MB</span></span>
-                        <span class='sys-label'>REFRESH RATE <br/><span id='fps-info' class='sys-val'>0.00 FPS</span></span>
+                        <span class='sys-label' title='表示FPS = 画面更新レート（新コンテンツ基準）。静止画が続く間は低下して表示されます'>REFRESH RATE <br/><span id='fps-info' class='sys-val'>0.00 FPS</span></span>
                         <button id='settings-toggle' class='sys-btn'>SETUP</button>
                     </div>
                 </div>

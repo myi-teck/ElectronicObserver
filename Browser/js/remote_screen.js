@@ -136,6 +136,11 @@ async function updateScreen() {
     await updateScreenDiff();
 }
 
+// 最終受領コンテンツ版数（サーバー応答ヘッダー X-Content-Version = lastWebp 更新回数）。
+// 次回ポーリング URL に cver として付与し、新コンテンツなしなら 204 を受ける（HTTP 204 の無状態化）。
+// 0 = 未受領（初回）。init=1 経路（初回・再同期）で full 受領後に 1 以上の値になる
+let lastContentVersion = 0;
+
 //=============================================================================================
 // 処理ブロック名 : updateScreenDiff
 // 概要           : 差分WebP方式で画面を更新する（HTTPモード用）
@@ -192,6 +197,11 @@ async function updateScreenDiff() {
             url += '&init=1';
             isFirstWebpRequest = false;
         }
+        // 最終受領コンテンツ版数を付与（サーバー側で cver >= 現在値 → 204 判定）。
+        // 初回（0）は付与しない — init=1 経路で必ず full を受領するため不要
+        if (lastContentVersion > 0) {
+            url += `&cver=${lastContentVersion}`;
+        }
         const response = await fetch(url, { signal: controller.signal });
         clearTimeout(timeoutId);
 
@@ -206,6 +216,9 @@ async function updateScreenDiff() {
             if (typeof updateDataUsage === 'function') {
                 updateDataUsage(getResponseHeaderBytes(response));
             }
+            // 204 にも X-Content-Version が付与される（cver 判定結果の確定値）。次回リクエストへ引き継ぐ
+            const cvNone = parseInt(response.headers.get('X-Content-Version'), 10);
+            if (!isNaN(cvNone)) lastContentVersion = cvNone;
             // [v4] isFirstWebpRequest の消費はURL生成時に行うため、ここでの無条件上書きは削除
             // isFirstWebpRequest = false; // ← 削除
             isUpdating = false;
@@ -226,6 +239,10 @@ async function updateScreenDiff() {
         const httpSeq = (rawSeqHeader !== null && !isNaN(parseInt(rawSeqHeader, 10)))
             ? parseInt(rawSeqHeader, 10)
             : -1;
+
+        // 200 応答にも X-Content-Version が付与される。次回リクエストの cver として引き継ぐ
+        const cvFull = parseInt(response.headers.get('X-Content-Version'), 10);
+        if (!isNaN(cvFull)) lastContentVersion = cvFull;
         const blob = await response.blob();
 
         updateDataUsage(blob.size + getResponseHeaderBytes(response));
@@ -272,6 +289,10 @@ async function updateScreenDiff() {
             URL.revokeObjectURL(img.src);
             isUpdating = false;
             // [v4] isFirstWebpRequest は維持。次回の updateScreenDiff() でキーフレーム要求によりリカバリ
+            // デコード失敗時はコンテンツ版数を不明状態に戻す。cver を保持したままだと
+            // サーバーが「既受領」と誤判定して 204 を返し続け、画面が凍結する可能性がある
+            lastContentVersion = 0;
+            isFirstWebpRequest = true;
             // [v5 重要] _pendingImmediate の消費方針:
             // 画像ロードエラー時は「一度更新を試みた」とみなし、getNextDelay() を経由して
             // _pendingImmediate フラグを消費（false にリセット）する。

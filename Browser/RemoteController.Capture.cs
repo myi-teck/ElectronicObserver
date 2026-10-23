@@ -360,8 +360,10 @@ namespace Browser
 		// 概要           : 外部（C#）からの要求に応じて、ブラウザ側の JavaScript エンジを呼び出し、
 		//                  キャッシュされた最新フレームデータの引き抜きを行います。
 		// （WebGLバッファクリア対策としてJS側同期キャッシュから pull で引き抜く設計に変更）
+		// peek=true: ダーティフラグを消費しない読み取り専用引き抜き（HTTP の cver 判定後 full 配信用）。
+		//            pull/peek の第3要素（encodeCount=コンテンツ版数）から _contentVersion を更新する。
 		//------------------------------------------------------------------------------------
-		private async Task<Tuple<string, string>> CaptureCanvasAsync(bool isInit)
+		private async Task<Tuple<string, string>> CaptureCanvasAsync(bool isInit, bool peek = false)
 		{
 			// 艦これの描画フレームがロードされている iframe への参照を取得します
 			var kancolleFrame = _parent.GetKanColleFrame();
@@ -376,7 +378,7 @@ namespace Browser
 			}
 
 			// IPC 最適化: 事前構築されたスクリプト定数を使用し、呼び出し毎の文字列生成によるGC負荷を排除
-			string script = isInit ? CaptureScriptInit : CaptureScriptNormal;
+			string script = peek ? CaptureScriptPeek : (isInit ? CaptureScriptInit : CaptureScriptNormal);
 
 			try
 			{
@@ -388,6 +390,15 @@ namespace Browser
 					{
 						string type = list[0] as string;
 						string data = list[1] as string;
+						// 第3要素: lastWebp 更新回数（コンテンツ版数）。HTTP の cver 判定に使用（単調増加）
+						if (list.Count >= 3 && list[2] != null)
+						{
+							long version;
+							if (long.TryParse(list[2].ToString(), out version) && version > Volatile.Read(ref _contentVersion))
+							{
+								Volatile.Write(ref _contentVersion, version);
+							}
+						}
 						return Tuple.Create(type, data);
 					}
 				}
@@ -461,8 +472,33 @@ namespace Browser
 				// クライアント側からの初期化要求・再接続シグナル（init=1）を検出する
 				bool isInit = req.QueryString["init"] == "1" || req.QueryString["init"] == "true";
 
+				// HTTP 204 の無状態化: クライアント申告のコンテンツ版数（cver）がサーバー現在値以上なら
+				// そのクライアントへは新コンテンツなし → 204。判定基準がクライアント毎の最終受領版のため、
+				// 複数 HTTP クライアント同時でも各クライアントの立場で正しく 204/full が決まる
+				// （WS 経路はエンジン側の stateful none＋init フルフレームで保証されるため cver 不要）。
+				// cver パラメータなし（旧クライアント）＝常に full＝現行挙動（後方互換）
+				long cver = -1;
+				string cverStr = req.QueryString["cver"];
+				if (!string.IsNullOrEmpty(cverStr))
+				{
+					long.TryParse(cverStr, out cver);
+				}
+				if (!isInit && cver >= 0)
+				{
+					long currentVersion = Volatile.Read(ref _contentVersion);
+					if (cver >= currentVersion)
+					{
+						res.StatusCode = 204;
+						res.Headers["X-Diff-Type"] = "none";
+						res.Headers["X-Content-Version"] = currentVersion.ToString();
+						return;
+					}
+				}
+
 				// 1. canvas からのオンデマンドキャプチャおよびJS側差分判定を実行
-				var capture = await CaptureCanvasAsync(isInit);
+				//    init=1 → pull(true)（新鮮性契約: 陳腐化時は toDataURL で新鮮画像を優先）
+				//    それ以外の full 経路 → peek（ダーティフラグを消費せず toDataURL も発火しない読み取り専用）
+				var capture = isInit ? await CaptureCanvasAsync(true) : await CaptureCanvasAsync(false, peek: true);
 				string type = capture.Item1;
 				string dataUrl = capture.Item2;
 
@@ -472,12 +508,11 @@ namespace Browser
 					return;
 				}
 
-				// 2. 差分判定結果に応じたレスポンス制御
+				// 2. 結果に応じたレスポンス制御
 				if (type == "none")
 				{
-					// 差分なしは 204 No Content を応答（通信量とクライアントの描画負荷を完全にゼロ化）
-					res.StatusCode = 204;
-					res.Headers["X-Diff-Type"] = "none";
+					// none は初回フレーム生成前ののみ（cver 判定済みのためここでは「エンジン未準備」を意味する）
+					res.StatusCode = 503;
 				}
 				else if (type == "full" && !string.IsNullOrEmpty(dataUrl))
 				{
@@ -495,6 +530,7 @@ namespace Browser
 					res.ContentType = "image/webp";
 					res.Headers["X-Diff-Type"] = "full";
 					res.Headers["X-Frame-Sequence"] = seq.ToString();
+					res.Headers["X-Content-Version"] = Volatile.Read(ref _contentVersion).ToString();
 					res.ContentLength64 = fullWebpData.Length;
 					await res.OutputStream.WriteAsync(fullWebpData, 0, fullWebpData.Length);
 				}
@@ -1869,5 +1905,11 @@ namespace Browser
 		// 定数として事前定義し、呼び出し毎の文字列生成によるGC負荷および FormatException を排除する。
 		private const string CaptureScriptInit = "(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.pull(true);}})()";
 		private const string CaptureScriptNormal = "(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.pull(false);}})()";
+		// HTTP の cver 判定後 full 配信用（peek）: ダーティフラグを消費せず toDataURL も発火しない読み取り専用引き抜き
+		private const string CaptureScriptPeek = "(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.peek();}})()";
+
+		// コンテンツ版数（エンジンの encodeCount = lastWebp 更新回数）。pull/peek 応答の第3要素から単調増加で更新し、
+		// /screen.webp の X-Content-Version 付与と cver >= 現在値 → 204 判定に使用（Volatile でスレッドセーフ）
+		private long _contentVersion = 0;
 	}
 }

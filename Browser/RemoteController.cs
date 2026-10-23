@@ -1305,11 +1305,18 @@ namespace Browser
 		//                  共有フレームバッファに格納してから全セッションに通知する。
 		//                  CefSharpへのキャプチャ要求は常に1回/フレーム（O(1)負荷）。
 		//------------------------------------------------------------------------------------
+		// none 連続この回数に到達したら次回 pull を force（full 1 回強制）にする防御閾値。
+		// 誤 none（ハッシュ閾値より小さい変化）が続き画面が凍り続けるのを防ぐ（task01 O7「疑わしきは full」）。
+		// 既定 FPS（100ms=10FPS）で約 12 秒、60FPS 運用で約 2 秒に相当
+		private const int ConsecutiveNoneForceFullThreshold = 120;
+
 		//------------------------------------------------------------------------------------
 		private async Task CentralCaptureLoopAsync(CancellationToken token)
 		{
 			Log(2, "[RemoteController] 中央キャプチャループを開始しました");
 			bool isFirstFrameAfterStart = true;
+			// 防御: none 連続回数（誤 none 判定で画面が凍り続けるのを防ぐ。閾値到達で次回 pull を force にする）
+			int consecutiveNoneCount = 0;
 
 			var sw = new System.Diagnostics.Stopwatch();
 			long nextTargetTicks = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -1413,6 +1420,23 @@ namespace Browser
 								}
 							}
 						}
+					}
+
+					// 誤 none 防御（task01 O7「疑わしきは full」）: none 継続で画面が凍り続けるのを防ぐため、
+					// 閾値到達時に次回 pull を force（full 1 回強制）にする。full 受信でカウントリセット
+					if (type == "none")
+					{
+						consecutiveNoneCount++;
+						if (consecutiveNoneCount >= ConsecutiveNoneForceFullThreshold)
+						{
+							consecutiveNoneCount = 0;
+							_forceNextKeyFrame = true;
+							Log(2, "[RemoteController] none 継続による画面凍結防止: 次回キャプチャで full を強制します");
+						}
+					}
+					else if (type == "full")
+					{
+						consecutiveNoneCount = 0;
 					}
 
 					// 二重レート計測ゲート: 10 秒窓で配信/固有/重複を確定する（エンジン stats の IPC は窓あたり 1 回）

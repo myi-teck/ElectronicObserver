@@ -285,6 +285,11 @@ namespace Browser
 				// V8 の String.fromCharCode.apply の引数制限（スタックサイズ）の安全域として 8192 を選択
 				// Chunks サイズを大きくするとスタックオーバーフロー、小さすぎると文字列連結の GC 負荷増大
 				const BASE64_ENCODE_CHUNK_SIZE = 8192;
+
+				// 差分検出（aHash）エンジン定数 — 調整可能（保守的閾値: 疑わしきは変化あり＝full 送信）
+				const HASH_W = 96, HASH_H = 64;             // ハッシュ用ダウンスケールサイズ
+				const HASH_CELLS_X = 12, HASH_CELLS_Y = 8;  // セルグリッド（1セル 8x8px）
+				const HASH_CELL_DIST_THRESHOLD = 2;         // 任意セルの平均輝度距離 >=2 で変化ありと判定
 	
 				// 【task28 ver 3.9 + レビュー修正】 設計書 §5.1.2 対応: Promise ベースの排他ロック
 				// 設計書定義通り _encodedChunksLock 構造体 + キュー方式 + タイムアウト 50ms に修正
@@ -329,6 +334,42 @@ namespace Browser
 						_encodedChunksLock.locked = false; // 待機者がいない場合のみ解放
 					}
 				};
+
+				// 12x8 セルごとの平均輝度（average hash）を計算する。
+				// getImageData 失敗時は null を返し、呼び出し側で「変化あり」（疑わしきは full）として扱う
+				function _computeCellHash(ctx) {
+					try {
+						var img = ctx.getImageData(0, 0, HASH_W, HASH_H).data;
+						var cells = new Uint8Array(HASH_CELLS_X * HASH_CELLS_Y);
+						for (var cy = 0; cy < HASH_CELLS_Y; cy++) {
+							for (var cx = 0; cx < HASH_CELLS_X; cx++) {
+								var sum = 0, n = 0;
+								for (var y = cy * 8; y < (cy + 1) * 8; y++) {
+									var row = y * HASH_W;
+									for (var x = cx * 8; x < (cx + 1) * 8; x++) {
+										var i = (row + x) * 4;
+										sum += (img[i] * 77 + img[i + 1] * 150 + img[i + 2] * 29) >> 8; // 輝度（ITU-R BT.601 の整数近似）
+										n++;
+									}
+								}
+								cells[cy * HASH_CELLS_X + cx] = (sum / n) | 0;
+							}
+						}
+						return cells;
+					} catch (e) {
+						return null;
+					}
+				}
+
+				// 前フレームのハッシュセルと比較し、任意セルの平均輝度距離が閾値以上なら true（保守判定）
+				function _hashCellsChanged(prev, cur) {
+					for (var i = 0; i < prev.length; i++) {
+						var d = prev[i] - cur[i];
+						if (d < 0) d = -d;
+						if (d >= HASH_CELL_DIST_THRESHOLD) return true;
+					}
+					return false;
+				}
 	
 				// [task19_v1 Critical#5 修正] SPS/PPS 抽出・AVCDecoderConfigurationRecord (AVCC) 変換
 				// 根本原因: Chromium 143 の H.264 エンコーダは onoutput の
@@ -433,6 +474,7 @@ namespace Browser
 					encodeCount: 0,        // lastWebp 更新回数（内容更新本数）— サーバー側の二重レート計測用
 					rafCount: 0,           // rAF 発火回数 — 内容新鮮度のボトルネック切り分け（toBlob 律速か canvas 再描画律速か）に使用
 					isEncoding: false,     // 排他フラグ
+					_dirtySincePull: false, // lastWebp が前回の pull 以降に更新されたか（WS 経路の stateful none 判定）
 	
 					// WebCodecs 状態管理（設計書 ver 3.9 §5.1.1 対応）
 					videoEncoder: null,
@@ -459,6 +501,14 @@ namespace Browser
 						const offCtx = offCanvas.getContext('2d');
 						this.offCanvas = offCanvas;
 
+						// 差分検出用ハッシュキャンバス: getImageData を毎ティック実行するため
+						// willReadFrequently を指定し CPU バックエンド化で GPU 読み戻しストールを避ける（§6 R14）
+						const hashCanvas = document.createElement('canvas');
+						hashCanvas.width = HASH_W;
+						hashCanvas.height = HASH_H;
+						const hashCtx = hashCanvas.getContext('2d', { willReadFrequently: true });
+						let prevHashCells = null;
+
 						// WebGL バッファ保存 ＋ バックグラウンド WebP キャッシュ生成
 						const loop = () => {
 							this.rafCount++;
@@ -470,26 +520,40 @@ namespace Browser
 									}
 									offCtx.drawImage(canvas, 0, 0);
 
-									this.isEncoding = true;
-									offCanvas.toBlob((blob) => {
-										if (!blob) {
-											this.isEncoding = false;
-											return;
-										}
-										const reader = new FileReader();
-										reader.onloadend = () => {
-											if (reader.result) {
-												this.lastWebp = reader.result;
-												this.lastWebpTs = Date.now();
-												this.encodeCount++;
+									// 差分検出: 96x64 へダウンスケールし 12x8 セルの aHash 平均輝度距離を
+									// 前フレームと比較。変化なしは toBlob エンコード自体をスキップ（lastWebp 未更新）。
+									// offCanvas への drawImage は毎フレーム継続（WebGL バッファ保存機構を維持）
+									hashCtx.drawImage(offCanvas, 0, 0, HASH_W, HASH_H);
+									const hashCells = _computeCellHash(hashCtx);
+									const contentChanged = hashCells === null || prevHashCells === null || _hashCellsChanged(prevHashCells, hashCells);
+									prevHashCells = hashCells;
+
+									if (contentChanged) {
+										this.isEncoding = true;
+										offCanvas.toBlob((blob) => {
+											if (!blob) {
+												this.isEncoding = false;
+												return;
 											}
-											this.isEncoding = false;
-										};
-										reader.onerror = () => {
-											this.isEncoding = false;
-										};
-										reader.readAsDataURL(blob);
-									}, 'image/webp', this.webpQuality);
+											const reader = new FileReader();
+											reader.onloadend = () => {
+												if (reader.result) {
+													this.lastWebp = reader.result;
+													this.lastWebpTs = Date.now();
+													this.encodeCount++;
+													// ダーティフラグは lastWebp 更新完了後にセット:
+													// 検出時点でセットすると encoding 中に pull がフラグを消費し、
+													// エンコード中のフレームが次回変化まで配信されない
+													this._dirtySincePull = true;
+												}
+												this.isEncoding = false;
+											};
+											reader.onerror = () => {
+												this.isEncoding = false;
+											};
+											reader.readAsDataURL(blob);
+										}, 'image/webp', this.webpQuality);
+									}
 								}
 							} catch (e) {
 								this.isEncoding = false;
@@ -500,13 +564,24 @@ namespace Browser
 					},
 
 					// C# から EvaluateScriptAsync で呼び出され、事前に完成している WebP キャッシュを即座(0.5ms)に渡す
-					// force=true（init 経路）かつ lastWebp が 3 秒以上陳腐化している場合のみ、
-					// toDataURL で新鮮な画像を優先取得する（init ＝ 必ず新鮮キーフレームの契約回復）。
+					// 差分検出（aHash）連動: ダーティ（前回の pull 以降に lastWebp が更新された）場合のみ full を返し
+					// フラグを消費する。非ダーティかつ force=false は ['none',''] を返す（中央ループは配信スキップ、HTTP は 204）。
+					// force=true（init 経路）は常に full を返す新鮮性契約を維持し、
+					// lastWebp が 3 秒以上陳腐化している場合のみ toDataURL で新鮮画像を優先取得する。
 					// toDataURL は同期実行で重い（N100 で 3-7/s）ため、発火は init 経路に限定する
+					// 第3要素 encodeCount: lastWebp 更新回数＝コンテンツ版数（HTTP の cver 判定に使用）
 					pull: function(force) {
+						if (this._dirtySincePull && this.lastWebp) {
+							this._dirtySincePull = false;
+							return ['full', this.lastWebp, this.encodeCount];
+						}
+						if (force !== true) {
+							return ['none', '', this.encodeCount];
+						}
+						// force=true（init 経路）: 新鮮でなければ toDataURL フォールバックで新鮮画像を優先
 						var stale = this.lastWebpTs > 0 && (Date.now() - this.lastWebpTs) >= 3000;
-						if (this.lastWebp && !(force === true && stale)) {
-							return ['full', this.lastWebp];
+						if (this.lastWebp && !stale) {
+							return ['full', this.lastWebp, this.encodeCount];
 						}
 						// [🔍 plan02 1-4] toDataURL フォールバック検証
 						// toBlobでデコード失敗した際にtoDataURLを試行し、プレフィックスを検証
@@ -521,16 +596,26 @@ namespace Browser
 								} else {
 									console.warn('[plan02-1-4] toDataURLフォールバック: 予期しないプレフィックス ' + dataUrl.substring(0, 40) + '...');
 								}
-								return ['full', dataUrl];
+								return ['full', dataUrl, this.encodeCount];
 							} catch (e) {
 								console.error('[plan02-1-4] toDataURLフォールバック失敗:', e.message);
 							}
 						}
 						// 新鮮取得に失敗しても古いキャッシュがあれば返す（init 経路でも 'none' より描画を優先）
 						if (this.lastWebp) {
-							return ['full', this.lastWebp];
+							return ['full', this.lastWebp, this.encodeCount];
 						}
-						return ['none', ''];
+						return ['none', '', this.encodeCount];
+					},
+
+					// HTTP 配信専用の読み取り専用引き抜き: ダーティフラグを消費せず toDataURL も発火しない。
+					// cver < 現在版数のクライアントへ full を返す用途（複数 HTTP クライアントの無状態判定）。
+					// 初回フレーム生成前は ['none','']（C# 側は 503 相当として扱う）
+					peek: function() {
+						if (this.lastWebp) {
+							return ['full', this.lastWebp, this.encodeCount];
+						}
+						return ['none', '', this.encodeCount];
 					},
 
 					//================================================================================
