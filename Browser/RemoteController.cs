@@ -477,9 +477,13 @@ namespace Browser
 		/// </summary>
 		public void UpdateHudData(string hudJson)
 		{
+			bool becameValid;
 			lock (_hudLock)
 			{
+				// 空→有効への遷移判定をキャッシュ更新前に捕捉する
+				bool wasValid = IsHudJsonValid(_cachedHudJson);
 				_cachedHudJson = hudJson;
+				becameValid = !wasValid && IsHudJsonValid(hudJson);
 
 				// 各セクションの抽出と個別バージョン更新チェック
 				UpdateSectionVersion(hudJson, "material", ref _lastMaterialJson, ref _materialVersion);
@@ -489,6 +493,28 @@ namespace Browser
 				UpdateSectionVersion(hudJson, "quests", ref _lastQuestsJson, ref _questsVersion);
 				UpdateSectionVersion(hudJson, "logs", ref _lastLogsJson, ref _logsVersion);
 			}
+
+			// HUD データが空→有効へ遷移した瞬間のみ、全接続セッションへ init_hud を 1 回ブロードキャストする。
+			// データ存在前に接続したセッションは data:null マーカーを受信済みのため、
+			// この遷移通知が無いと再接続するまで HUD パネルが空のままになる（毎秒の再送はしない）
+			if (becameValid)
+			{
+				string packet = "{\"type\":\"init_hud\",\"data\":" + hudJson + "}";
+				// 本メソッドは同期 IPC エントリであり await できないため fire-and-forget。
+				// broadcast はセッション単位で例外を内部 catch するため、このタスクは fault しない
+				_ = BroadcastControlToAllSessionsAsync(packet);
+			}
+		}
+
+		/// <summary>
+		/// HUD キャッシュの有効性を判定します（非空かつ JSON オブジェクト形式 "{...}"）。
+		/// init_hud パケット構築と遷移判定で同一基準を共有します。
+		/// </summary>
+		private static bool IsHudJsonValid(string hudJson)
+		{
+			if (string.IsNullOrEmpty(hudJson)) return false;
+			var trimmed = hudJson.Trim();
+			return trimmed.StartsWith("{") && trimmed.EndsWith("}");
 		}
 
 		/// <summary>

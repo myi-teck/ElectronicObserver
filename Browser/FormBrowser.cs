@@ -429,6 +429,7 @@ namespace Browser
 				window._kancolleCaptureEngine = {
 					webpQuality: 0.6,      // WebP圧縮品質
 					lastWebp: null,        // バックグラウンド生成済みWebPキャッシュ
+					lastWebpTs: 0,         // lastWebp 更新時刻（ms）— init 経路の新鮮性判定に使用
 					isEncoding: false,     // 排他フラグ
 	
 					// WebCodecs 状態管理（設計書 ver 3.9 §5.1.1 対応）
@@ -476,6 +477,7 @@ namespace Browser
 										reader.onloadend = () => {
 											if (reader.result) {
 												this.lastWebp = reader.result;
+												this.lastWebpTs = Date.now();
 											}
 											this.isEncoding = false;
 										};
@@ -494,8 +496,12 @@ namespace Browser
 					},
 
 					// C# から EvaluateScriptAsync で呼び出され、事前に完成している WebP キャッシュを即座(0.5ms)に渡す
+					// force=true（init 経路）かつ lastWebp が 3 秒以上陳腐化している場合のみ、
+					// toDataURL で新鮮な画像を優先取得する（init ＝ 必ず新鮮キーフレームの契約回復）。
+					// toDataURL は同期実行で重い（N100 で 3-7/s）ため、発火は init 経路に限定する
 					pull: function(force) {
-						if (this.lastWebp) {
+						var stale = this.lastWebpTs > 0 && (Date.now() - this.lastWebpTs) >= 3000;
+						if (this.lastWebp && !(force === true && stale)) {
 							return ['full', this.lastWebp];
 						}
 						// [🔍 plan02 1-4] toDataURL フォールバック検証
@@ -515,6 +521,10 @@ namespace Browser
 							} catch (e) {
 								console.error('[plan02-1-4] toDataURLフォールバック失敗:', e.message);
 							}
+						}
+						// 新鮮取得に失敗しても古いキャッシュがあれば返す（init 経路でも 'none' より描画を優先）
+						if (this.lastWebp) {
+							return ['full', this.lastWebp];
 						}
 						return ['none', ''];
 					},

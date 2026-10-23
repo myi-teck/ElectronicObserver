@@ -1439,16 +1439,15 @@ namespace Browser
 				hudJson = _cachedHudJson;
 			}
 	
-			if (string.IsNullOrEmpty(hudJson)) return;
-	
-			// [Fix] _cachedHudJson が有効な JSON オブジェクトであることを検証
-			// Trim() で前後の空白を許容し、"{..." }" 形式であることを確認
-			var trimmed = hudJson.Trim();
-			if (!trimmed.StartsWith("{") || !trimmed.EndsWith("}"))
+			// HUD データが空・無効でも data:null マーカーを送信する。
+			// クライアントは init_hud 受信をもって初期化完了とし（msg.data チェックで updateHudData をスキップ）、
+			// HUD パネルの初期化待ちが 5 秒タイムアウトに固定されなくなる
+			bool hasValidData = IsHudJsonValid(hudJson);
+			if (!hasValidData)
 			{
-				Log(3, $"[RemoteController] init_hud 送信スキップ: _cachedHudJson はJSONオブジェクトではありません (Session: {session.SessionId})");
-				return;
+				Log(3, $"[RemoteController] init_hud: _cachedHudJson は空またはJSONオブジェクトではないため data:null マーカーを送信 (Session: {session.SessionId})");
 			}
+			string dataPayload = hasValidData ? hudJson : "null";
 		
 			try
 			{
@@ -1457,8 +1456,7 @@ namespace Browser
 				// [Fix] "data" キーを追加して有効なJSON構造とする
 				//   変更前: {"type":"init_hud",{"material":...}} → 無効なJSON
 				//   変更後: {"type":"init_hud","data":{"material":...}} → 有効なJSON
-				//   注: hudJson が null/空の場合は string.IsNullOrEmpty(hudJson) で既に return している
-				var packet = "{\"type\":\"init_hud\",\"data\":" + hudJson + "}";
+				var packet = "{\"type\":\"init_hud\",\"data\":" + dataPayload + "}";
 				byte[] bytes = Encoding.UTF8.GetBytes(packet);
 		
 				await session.SendSemaphore.WaitAsync(session.CancellationToken.Token);
@@ -1476,7 +1474,7 @@ namespace Browser
 					session.SendSemaphore.Release();
 				}
 	
-				Log(2, $"[RemoteController] init_hud パケット送信成功 (Session: {session.SessionId})");
+				Log(2, $"[RemoteController] init_hud パケット送信成功 (Session: {session.SessionId}, data={(hasValidData ? "実データ" : "nullマーカー")})");
 			}
 			catch (Exception ex)
 			{
