@@ -740,6 +740,19 @@ namespace Browser
 			long wcsUniques = 0;
 			var wcsWindowStart = DateTime.UtcNow;
 
+			// 連続失敗（エンコード失敗・チャンク未回収・例外）時のリトライ待機を指数バックオフ化する。
+			// 従来は 100ms 固定で、回復直後も毎回 100ms 刻みの待機が乗って復帰が遅れていた。
+			// 初回 10ms から失敗のたびに倍化し 100ms を上限とする（10,20,40,80,100,…）。
+			// フレーム処理が成功した時点で回数をリセットする
+			int consecutiveFails = 0;
+			int NextRetryDelayMs()
+			{
+				consecutiveFails++;
+				// シフト量を 4 で頭打ち（10 << 4 = 160 → 上限 100ms でクリップ）。過剰シフトによるオーバーフローも防止
+				int shift = Math.Min(consecutiveFails - 1, 4);
+				return Math.Min(10 << shift, 100);
+			}
+
 			// pacing: 絶対アンカー方式（中央キャプチャループと同じ）。
 			// 1 周ごとの相対待機（経過時間差分）では、エンコード〜送信の処理時間がフレーム間隔へ
 			// 加算されて実効 FPS が目標を下回るため、次フレームの目標時刻を積上げるアンカーで待機を算出する。
@@ -789,8 +802,8 @@ namespace Browser
 					var kancolleFrame = _parent.GetKanColleFrame();
 					if (kancolleFrame == null || !kancolleFrame.IsValid)
 					{
-						// マジックナンバー定数化（リトライ待機間隔 100ms）
-						await Task.Delay(WebCodecsFrameRetryDelayMs, token);
+						// 連続失敗時は指数バックオフ（10ms 起点・100ms 上限）で再試行
+						await Task.Delay(NextRetryDelayMs(), token);
 						continue;
 					}
 
@@ -843,8 +856,8 @@ namespace Browser
 					{
 						// AGENTS.md: 空 catch 禁止 — 警告ログを出力し、そのフレームをスキップしてループ継続
 						Log(3, $"[RemoteController] WebCodecs encodeAndPull() 例外（このフレームをスキップ）: {ex.Message}");
-						// マジックナンバー定数化（リトライ待機間隔 100ms）
-						await Task.Delay(WebCodecsFrameRetryDelayMs, token);
+						// 連続失敗時は指数バックオフ（10ms 起点・100ms 上限）で再試行
+						await Task.Delay(NextRetryDelayMs(), token);
 						continue;
 					}
 
@@ -852,7 +865,7 @@ namespace Browser
 					{
 						// 500ms タイムアウト（連続回数が閾値到達時は EncodeAndPullAsync 側で再初期化をトリガー済み）。
 						// このフレームは破棄して次フレームへ進む
-						await Task.Delay(WebCodecsFrameRetryDelayMs, token);
+						await Task.Delay(NextRetryDelayMs(), token);
 						continue;
 					}
 
@@ -865,8 +878,8 @@ namespace Browser
 						// iframe 破棄で JS エンジンが消滅しても _isWebCodecsInitialized が true のまま再初期化されない
 						// 問題（W2）を解消する。成功時は次フレームをキーフレームとして強制（SPS/PPS 再生成が必要）。
 						if (await TryReinitWebCodecsEncoderAsync(token, "engine not ready")) isWebCodecsFirstFrame = true;
-						// マジックナンバー定数化（リトライ待機間隔 100ms）
-						await Task.Delay(WebCodecsFrameRetryDelayMs, token);
+						// 連続失敗時は指数バックオフ（10ms 起点・100ms 上限）で再試行
+						await Task.Delay(NextRetryDelayMs(), token);
 						continue;
 					}
 
@@ -879,8 +892,8 @@ namespace Browser
 						if (!reinitOk)
 						{
 							Log(3, "[RemoteController] WebCodecs 再初期化失敗、このフレームをスキップします");
-							// マジックナンバー定数化（リトライ待機間隔 100ms）
-							await Task.Delay(WebCodecsFrameRetryDelayMs, token);
+							// 連続失敗時は指数バックオフ（10ms 起点・100ms 上限）で再試行
+							await Task.Delay(NextRetryDelayMs(), token);
 							continue;
 						}
 						// 再初期化後は次フレームをキーフレームとして強制（SPS/PPS 再生成が必要）
@@ -896,20 +909,22 @@ namespace Browser
 						// この success:false 経路でも再初期化を行うことで自己回復する。
 						// 成功時は次フレームをキーフレームとして強制（SPS/PPS 再生成が必要）。
 						if (await TryReinitWebCodecsEncoderAsync(token, $"encode failed: {encPull.encodeError}")) isWebCodecsFirstFrame = true;
-						// マジックナンバー定数化（リトライ待機間隔 100ms）
-						await Task.Delay(WebCodecsFrameRetryDelayMs, token);
+						// 連続失敗時は指数バックオフ（10ms 起点・100ms 上限）で再試行
+						await Task.Delay(NextRetryDelayMs(), token);
 						continue;
 					}
 
 					// エンコード投入は成功 → 初回フレームフラグをクリア（初回フレームが実際にエンコードされたことを示す）
 					isWebCodecsFirstFrame = false;
+					// 正常稼働に戻ったためバックオフを解除（次回が失敗しても 10ms から再試行する）
+					consecutiveFails = 0;
 
 					if (encPull.frames == null)
 					{
 						// エンコーダ出力は非同期（output コールバック）のため、まだ回収可能なチャンクが無い。
 						// 短待機して次評価へ進む（旧実装の pull 空返却時と同じ扱い）
-						// マジックナンバー定数化（リトライ待機間隔 100ms）
-						await Task.Delay(WebCodecsFrameRetryDelayMs, token);
+						// 連続失敗時は指数バックオフ（10ms 起点・100ms 上限）で再試行
+						await Task.Delay(NextRetryDelayMs(), token);
 						continue;
 					}
 
@@ -2027,10 +2042,6 @@ namespace Browser
 		private const int WebCodecsReinitBackoffMs = 2000; // 再初期化試行間隔（2秒）
 		// バックオフ状態の lock 保護（_lastWebCodecsReinitUtc の読み書き・比較更新を原子化する）
 		private readonly object _webCodecsReinitLock = new object();
-
-		// WebCodecs キャプチャループのリトライ待機間隔（ms）:
-		// frame 不在・engine 未初期化・encode 失敗・例外時等の短待機。Task.Delay(100) のマジックナンバー定数化
-		private const int WebCodecsFrameRetryDelayMs = 100;
 
 		// WebCodecs キャプチャループのキーフレーム間隔（2秒）
 		private const int WebCodecsKeyFrameIntervalMs = 2000;
