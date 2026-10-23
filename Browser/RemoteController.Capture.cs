@@ -365,9 +365,9 @@ namespace Browser
 		//------------------------------------------------------------------------------------
 		private async Task<Tuple<string, string>> CaptureCanvasAsync(bool isInit, bool peek = false)
 		{
-			// 艦これの描画フレームがロードされている iframe への参照を取得します
-			var kancolleFrame = _parent.GetKanColleFrame();
-			if (kancolleFrame == null)
+			// キャプチャ源（艦これの描画フレーム or ダミー映像テストページ）の iframe への参照を取得します
+			var captureSourceFrame = _parent.GetCaptureSourceFrame();
+			if (captureSourceFrame == null)
 			{
 				return Tuple.Create("error", "Kancolle frame not found");
 			}
@@ -382,7 +382,7 @@ namespace Browser
 
 			try
 			{
-				var response = await kancolleFrame.EvaluateScriptAsync(script);
+				var response = await captureSourceFrame.EvaluateScriptAsync(script);
 				if (response.Success && response.Result != null)
 				{
 					var list = response.Result as System.Collections.Generic.IList<object>;
@@ -410,7 +410,7 @@ namespace Browser
 
 				// まだ常駐エンジンが存在しない場合は、動的に注入して起動する（セーフティネット）
 				string injectScript = _parent.CaptureEngineScript;
-				kancolleFrame.ExecuteJavaScriptAsync(injectScript);
+				captureSourceFrame.ExecuteJavaScriptAsync(injectScript);
 			}
 			catch (Exception ex)
 			{
@@ -430,13 +430,13 @@ namespace Browser
 		//------------------------------------------------------------------------------------
 		private async Task<Tuple<long, long>> GetCaptureEngineStatsAsync()
 		{
-			var kancolleFrame = _parent.GetKanColleFrame();
-			if (kancolleFrame == null || !kancolleFrame.IsValid) return null;
+			var captureSourceFrame = _parent.GetCaptureSourceFrame();
+			if (captureSourceFrame == null || !captureSourceFrame.IsValid) return null;
 
 			try
 			{
 				const string script = "(function(){var e=window._kancolleCaptureEngine;if(!e)return null;return [e.encodeCount||0,e.rafCount||0];})()";
-				var response = await kancolleFrame.EvaluateScriptAsync(script);
+				var response = await captureSourceFrame.EvaluateScriptAsync(script);
 				if (!response.Success || response.Result == null) return null;
 
 				var list = response.Result as System.Collections.Generic.IList<object>;
@@ -734,12 +734,12 @@ namespace Browser
 						}
 					}
 
-					// Kancolle frame チェック
+					// キャプチャ源フレーム チェック
 					// IFrame.IsValid ガード（CefSharp Issue #1354/#1509）:
 					// 破棄フレーム（IsValid == false）への EvaluateScriptAsync は exit code 1073741855
 					// （アクセス違反）でプロセスクラッシュし得るため、null チェックと併せて IsValid を確認する
-					var kancolleFrame = _parent.GetKanColleFrame();
-					if (kancolleFrame == null || !kancolleFrame.IsValid)
+					var captureSourceFrame = _parent.GetCaptureSourceFrame();
+					if (captureSourceFrame == null || !captureSourceFrame.IsValid)
 					{
 						// 連続失敗時は指数バックオフ（10ms 起点・100ms 上限）で再試行
 						await Task.Delay(NextRetryDelayMs(), token);
@@ -1183,14 +1183,14 @@ namespace Browser
 				// IFrame.IsValid ガード（CefSharp Issue #1354/#1509）:
 				// 破棄フレーム（IsValid == false）への EvaluateScriptAsync は exit code 1073741855
 				// （アクセス違反）でプロセスクラッシュを引き起こし得るため、null チェックと併せて IsValid を確認する
-				var kancolleFrame = _parent.GetKanColleFrame();
-				if (kancolleFrame == null)
+				var captureSourceFrame = _parent.GetCaptureSourceFrame();
+				if (captureSourceFrame == null)
 				{
-					// 失敗種別①: 艦これフレーム自体が未読込（エンジン注入の前提が成立していない）
+					// 失敗種別①: キャプチャ源フレーム自体が未読込（エンジン注入の前提が成立していない）
 					Log(2, "[RemoteController] WebCodecs エンコーダ初期化失敗（種別: キャプチャエンジン未注入・艦これフレーム未読込）");
 					return false;
 				}
-				if (!kancolleFrame.IsValid)
+				if (!captureSourceFrame.IsValid)
 				{
 					Log(3, "[RemoteController] WebCodecs エンコーダ初期化: frame invalid（破棄フレーム）");
 					return false;
@@ -1246,7 +1246,7 @@ namespace Browser
 					// initEncoder() は async function で Promise を返却するが、非 Promise 版 EvaluateScriptAsync は
 					// Promise オブジェクト自体（配列ではない）を返却するため、C# 側の IList<object> 解析が失敗していた。
 					// Promise 対応 API はスクリプトを async function でラップし、Promise.resolve(...).then() で解決値を回収する。
-					var evalTask = kancolleFrame.EvaluateScriptAsPromiseAsync(script);
+					var evalTask = captureSourceFrame.EvaluateScriptAsPromiseAsync(script);
 					var delayTask = Task.Delay(Timeout.InfiniteTimeSpan, linkedCts.Token);
 	
 					var completedTask = await Task.WhenAny(evalTask, delayTask);
@@ -1352,10 +1352,10 @@ namespace Browser
 			try
 			{
 				// JS 側の stopEncoder() を呼び出す
-				var kancolleFrame = _parent.GetKanColleFrame();
-				if (kancolleFrame != null)
+				var captureSourceFrame = _parent.GetCaptureSourceFrame();
+				if (captureSourceFrame != null)
 				{
-					var result = await kancolleFrame.EvaluateScriptAsync(WebCodecsStopScript);
+					var result = await captureSourceFrame.EvaluateScriptAsync(WebCodecsStopScript);
 					if (!result.Success)
 					{
 						Log(3, "[RemoteController] stopEncoder() 呼び出し失敗");
@@ -1568,8 +1568,8 @@ namespace Browser
 		{
 			var result = new EncodeAndPullResult { frames = null };
 
-			var kancolleFrame = _parent.GetKanColleFrame();
-			if (kancolleFrame == null)
+			var captureSourceFrame = _parent.GetCaptureSourceFrame();
+			if (captureSourceFrame == null)
 			{
 				result.scriptFailed = true;
 				result.encodeError = "Kancolle frame not found";
@@ -1584,7 +1584,7 @@ namespace Browser
 			{
 				try
 				{
-					var evalTask = kancolleFrame.EvaluateScriptAsync(script);
+					var evalTask = captureSourceFrame.EvaluateScriptAsync(script);
 					var delayTask = Task.Delay(500, timeoutCts.Token);
 
 					var completed = await Task.WhenAny(evalTask, delayTask);
@@ -1931,8 +1931,8 @@ namespace Browser
 		// 待機不要の片方向操作のため、呼び出し側は fire-and-forget 可（失敗は本メソッド内でログ化）。
 		private async Task SetEnginePacingAsync(string reason)
 		{
-			var kancolleFrame = _parent.GetKanColleFrame();
-			if (kancolleFrame == null || !kancolleFrame.IsValid) return;
+			var captureSourceFrame = _parent.GetCaptureSourceFrame();
+			if (captureSourceFrame == null || !captureSourceFrame.IsValid) return;
 
 			bool hasWebp = HasWebpConsumers();
 			bool hasWcs = HasWcsClientSessions();
@@ -1947,7 +1947,7 @@ namespace Browser
 
 			try
 			{
-				await kancolleFrame.EvaluateScriptAsync(script).ConfigureAwait(false);
+				await captureSourceFrame.EvaluateScriptAsync(script).ConfigureAwait(false);
 			}
 			catch (Exception ex)
 			{

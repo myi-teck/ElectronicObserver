@@ -184,6 +184,9 @@
     <None Include="logout.html">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="dummy_video_test.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="css\remote_base.css">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

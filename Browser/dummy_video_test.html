@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>DUMMY VIDEO — TEST SOURCE</title>
+<style>
+    html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+    canvas { display: block; }
+</style>
+</head>
+<body>
+<!-- キャプチャエンジンが document.querySelector('canvas') で先頭取得するため、canvas は本ページに 1 個のみ -->
+<canvas id="dummy-canvas" width="1200" height="720"></canvas>
+<script>
+(function () {
+    'use strict';
+
+    // クエリパラメータは JS 値としてのみ解釈し DOM に書き込まない（自己 XSS 防御）。
+    //   ?mode=static : 初回フレーム描画後に全内容を凍結（rAF は発火し続けるが無変化の同一フレームを描画）
+    //   ?noise=1     : 毎フレーム低オパシティのランダムノイズ矩形を追加描画（既定 OFF）
+    var params = new URLSearchParams(location.search);
+    var mode = params.get('mode') === 'static' ? 'static' : 'motion';
+    var noiseOn = params.get('noise') === '1';
+
+    var W = 1200, H = 720; // WCS エンコーダ config（1200x720 固定）と一致させること
+    var canvas = document.getElementById('dummy-canvas');
+    var ctx = canvas.getContext('2d');
+
+    var startWallTs = Date.now();
+    var startPerf = performance.now();
+    var frameCount = 0;      // ページロードからの rAF 累積計数
+    var rafTimes = [];       // 直近 1 秒窓の rAF 発火時刻（実測 FPS 用）
+    var lastMove = null;     // 最終 mousemove 座標
+    var clickCount = 0;      // click 累計
+
+    // static モードの凍結スナップショット（null = 凍結なし）。
+    // 全描画を rAF 内の時間関数として計算し setInterval で内容更新しないことで、
+    // キャプチャエンジン rAF との vsync ゲーティング同一性（検証の代表的事）を保つ。
+    var frozen = null;
+
+    var SQUARE_COLORS = ['#ffffff', '#ff0000', '#00ff00', '#0000ff', '#ffff00', '#ff00ff']; // 500ms 毎 6 色循環
+    var BARS = ['#ffffff', '#a0a0a0', '#ffff00', '#00ffff', '#ff00ff', '#ff0000', '#0000ff', '#3f3f3f']; // SMPTE 風 8 本
+
+    document.addEventListener('mousemove', function (e) { lastMove = { x: e.clientX, y: e.clientY }; });
+    document.addEventListener('click', function () { clickCount++; });
+
+    function pad(n, w) { var s = String(n); while (s.length < w) s = '0' + s; return s; }
+
+    function timecode(wallMs) {
+        var d = new Date(wallMs);
+        return pad(d.getHours(), 2) + ':' + pad(d.getMinutes(), 2) + ':' + pad(d.getSeconds(), 2) + '.' + pad(d.getMilliseconds(), 3);
+    }
+
+    // 描画に使う全動的値を 1 回のスナップショットとして取る（static 時はこれを凍結して再利用する）
+    function snapshot() {
+        return {
+            t: (performance.now() - startPerf) / 1000,
+            wall: Date.now(),
+            frameCount: frameCount,
+            fps: rafTimes.length,
+            moveX: lastMove ? lastMove.x : null,
+            moveY: lastMove ? lastMove.y : null,
+            clicks: clickCount
+        };
+    }
+
+    function draw(s) {
+        // 背景（game ダーク主題に準拠・WebP 圧縮率維持）
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, W, H);
+
+        // カラーバー帯（下部 60px・コーデック/クロマ健全性・エンコーダへの画素多様性）
+        var bw = W / BARS.length;
+        for (var i = 0; i < BARS.length; i++) {
+            ctx.fillStyle = BARS[i];
+            ctx.fillRect(i * bw, H - 60, bw + 1, 60);
+        }
+
+        // 移動ボール（半径 24px 白丸・速度 240px/s 一定・水平往復）
+        var ballX = ((s.t * 240) % 1440) - 120;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(ballX, 360, 24, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 走査バー（幅 4px 緑縦バー・1200px を 5 秒で走査）
+        var scanX = (s.t * 240) % 1200;
+        ctx.fillStyle = '#00ff00';
+        ctx.fillRect(scanX, 0, 4, H - 60);
+
+        // 色変わり正方形（100×100・500ms 毎に 6 色循環・高コントラスト変化）
+        ctx.fillStyle = SQUARE_COLORS[Math.floor(s.t * 2) % SQUARE_COLORS.length];
+        ctx.fillRect(550, 180, 100, 100);
+
+        // DUMMY VIDEO 透かし（半透明赤・斜め 30°・画面中央・常時 — 本物誤認防止の自己識別）
+        ctx.save();
+        ctx.translate(W / 2, H / 2);
+        ctx.rotate(-30 * Math.PI / 180);
+        ctx.fillStyle = 'rgba(255, 64, 64, 0.35)';
+        ctx.font = '90px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('DUMMY VIDEO \u2014 TEST SOURCE', 0, 0);
+        ctx.restore();
+
+        // タイムコード（実時計・ミリ秒分解能 — 配信レート/新鮮度/キーフレーム検証の地上真値）
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '48px monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText(timecode(s.wall), 20, 16);
+
+        // フレームカウンタ（rAF 累積計数 — rAF 停止の直接証拠）
+        ctx.textAlign = 'right';
+        ctx.fillText('F:' + pad(s.frameCount, 9), W - 20, 16);
+
+        // 実測 FPS（直近 1 秒窓の rAF 発火数 — 映像内の vsync レート自己報告）
+        ctx.textAlign = 'center';
+        ctx.fillText('FPS:' + pad(s.fps, 2), W / 2, 16);
+
+        // ページ自己状態表示（実読取値 — 配信映像から診断値を直接読める）
+        ctx.font = '24px monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillText('isSecureContext=' + window.isSecureContext + ' visibilityState=' + document.visibilityState + ' 1200x720', 20, 620);
+
+        // 入力表示（最終 move 座標・click 累計 — 入力注入経路の E2E 検証）
+        var moveText = (s.moveX === null || s.moveY === null) ? '-' : (s.moveX + ',' + s.moveY);
+        ctx.fillText('last input: move(' + moveText + ') / click: ' + s.clicks, 20, 648);
+
+        // ノイズ（低オパシティ矩形・高エントロピーで toBlob コスト近似）。
+        // static モードでは描画しない（凍結 = 画素変化ゼロを厳守するため）。
+        if (noiseOn && mode !== 'static') {
+            for (var n = 0; n < 40; n++) {
+                ctx.fillStyle = 'rgba(255,255,255,' + (0.03 + Math.random() * 0.08).toFixed(3) + ')';
+                ctx.fillRect(Math.random() * W, Math.random() * (H - 60), 24, 12);
+            }
+        }
+    }
+
+    function frame() {
+        frameCount++;
+        var now = performance.now();
+        rafTimes.push(now);
+        while (rafTimes.length && now - rafTimes[0] > 1000) rafTimes.shift();
+
+        var s;
+        if (mode === 'static') {
+            // 凍結: 初回（または setMode('static') 直後）のスナップショットを描画し続ける。
+            // rAF ループ自体は止めない（エンジン rAF とのゲーティング同一性を維持するため）。
+            if (!frozen) frozen = snapshot();
+            s = frozen;
+        } else {
+            frozen = null;
+            s = snapshot();
+        }
+        draw(s);
+        requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    // JS stats API（画面焼き込み値の同一ソースをプログラムから読む機械アサート経路）。
+    // frameCount / fps は凍結前の実測値を返す（static モードでも rAF が発火し続けていることの確認に使える）。
+    window.__dummyVideo = {
+        get frameCount() { return frameCount; },
+        get fps() { return rafTimes.length; },
+        get startTs() { return startWallTs; },
+        setMode: function (m) {
+            if (m === 'static' || m === 'motion') {
+                mode = m;
+                frozen = (m === 'static') ? snapshot() : null;
+            }
+        }
+    };
+})();
+</script>
+</body>
+</html>

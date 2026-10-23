@@ -207,10 +207,10 @@ namespace Browser
 					{
 						// 品質を0.05〜1.0の範囲にスケール変換
 						double qualityScale = Math.Max(0.05, Math.Min(1.0, qVal / 100.0));
-						var kancolleFrame = _parent.GetKanColleFrame();
+						var captureSourceFrame = _parent.GetCaptureSourceFrame();
 						// IPC 最適化: 文字列補間ではなく事前構築された定数 + 連結を使用し、GC負荷を削減
 						var script = QualityScriptPrefix + qualityScale.ToString(System.Globalization.CultureInfo.InvariantCulture) + QualityScriptSuffix;
-						kancolleFrame?.ExecuteJavaScriptAsync(script);
+						captureSourceFrame?.ExecuteJavaScriptAsync(script);
 					}
 						#endregion
 						// （ドラッグ操作対応）

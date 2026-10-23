@@ -106,6 +106,52 @@ namespace Browser.CefOp
 			LogoutHtmlStore.Clear();
 		}
 
+		// ダミー映像（検証用映像源）配用の URL 基底。ログアウト空白ページと同一方式:
+		// 実在しないポート 65535 + メモリ配信のため実ネットワーク接続は発生しない。
+		// 127.0.0.1 は Chromium の secure context（potentially trustworthy）かつプロキシ暗黙バイパス対象であり、
+		// WCS（VideoEncoder）が game と同じく利用可能。
+		internal const string DummyVideoUrlBase = "http://127.0.0.1:65535/task29-dummy-video";
+
+		// ダミー映像ページの厳密判定（IsLogoutBlankUrl と同一の Uri パース方式:
+		// host 完全一致 + port 完全一致 + path 先頭一致。サブストリング/ワイルドカード一致は
+		// 外部ページがキャプチャ源に偽装する誤検知を防げないため使用しない）。
+		// クエリ（?mode=... 等）は AbsolutePath に含まれないため、バリアント URL も同判定で吸収される。
+		internal static bool IsDummyVideoUrl(string url)
+		{
+			Uri uri;
+			if (!Uri.TryCreate(url, UriKind.Absolute, out uri))
+				return false;
+			return uri.Host == "127.0.0.1"
+				&& uri.Port == 65535
+				&& uri.AbsolutePath.StartsWith("/task29-dummy-video", StringComparison.Ordinal);
+		}
+
+		// ダミー映像 HTML（単一エントリ）。登録後 byte[] は不変として扱う（参照のスワップのみ volatile）。
+		// スレッド安全の根拠: C# の参照の読み書きはアトミック（C# 言語仕様「変数参照のアトミック性」）のため、
+		// CEF IO スレッド（GetResourceHandler）からは null（未登録/停止済み）または最新の byte[]（登録済み）の
+		// いずれかが読まれ、中途半端な状態は発生しない。書き込みは UI スレッド
+		//（RegisterDummyVideoHtml / ClearDummyVideoHtml）に限定される。
+		private static volatile byte[] _dummyVideoHtml;
+
+		// ダミー映像 HTML を登録する（FormBrowser.StartDummyVideo が呼ぶ。UI スレッド呼び出し）。
+		// null は登録不能のため、サイレントスルーせず Trace に記録してスキップする。
+		internal static void RegisterDummyVideoHtml(byte[] htmlBytes)
+		{
+			if (htmlBytes == null)
+			{
+				System.Diagnostics.Trace.WriteLine("[DummyVideo] RegisterDummyVideoHtml: htmlBytes が null のため登録をスキップ");
+				return;
+			}
+			_dummyVideoHtml = htmlBytes;
+		}
+
+		// ダミー映像 HTML を解放する（FormBrowser.StopDummyVideo と FormBrowser.Exit の 2 経路が呼ぶ。
+		// UI スレッド呼び出し）。冪等（null 代入のため複数回の呼び出しでも例外なし）。
+		internal static void ClearDummyVideoHtml()
+		{
+			_dummyVideoHtml = null;
+		}
+
 		bool pixiSettingEnabled;
 
 		public CustomResourceRequestHandler(bool pixiSettingEnabled) : base()
@@ -185,6 +231,19 @@ namespace Browser.CefOp
 				{
 					System.Diagnostics.Trace.WriteLine(string.Format(
 						"[task21] 空白ページ HTML 配信ミスマッチ: URL が未登録のため base（既定読み込み）へ。Url={0}", request.Url));
+				}
+				// ダミー映像 HTML の配信（パス厳密判定・クエリバリアント対応）。
+				// volatile 読み込みをローカル変数へ退避してから判定・配信する
+				//（判定と配信の間に UI スレッドの Clear が走っても、取得済み byte[] で整合配信できる）。
+				byte[] dummyBytes = _dummyVideoHtml;
+				if (IsDummyVideoUrl(request.Url))
+				{
+					if (dummyBytes != null)
+						return ResourceHandler.FromByteArray(dummyBytes, ResourceHandler.DefaultMimeType, "utf-8");
+					// 未登録（停止済み）のダミー URL へのアクセスは配信ミス検知のため警告する
+					//（本メソッドは全リクエストで呼ばれるため、配信パターン一致 URL のみに限定しログ洪水を防ぐ）。
+					System.Diagnostics.Trace.WriteLine(string.Format(
+						"[DummyVideo] ダミー映像 HTML 配信ミスマッチ: URL が未登録のため base（既定読み込み）へ。Url={0}", request.Url));
 				}
 			}
 			return base.GetResourceHandler(chromiumWebBrowser, browser, frame, request);

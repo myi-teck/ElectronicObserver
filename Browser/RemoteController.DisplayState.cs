@@ -351,11 +351,11 @@ namespace Browser
 		{
 			try
 			{
-				var kancolleFrame = _parent?.GetKanColleFrame();
-				if (kancolleFrame == null || !kancolleFrame.IsValid) return null;
+				var captureSourceFrame = _parent?.GetCaptureSourceFrame();
+				if (captureSourceFrame == null || !captureSourceFrame.IsValid) return null;
 
 				const string script = "(function(){var e=window._kancolleCaptureEngine;if(!e)return null;return e.rafStale===true;})()";
-				var response = await kancolleFrame.EvaluateScriptAsync(script).ConfigureAwait(false);
+				var response = await captureSourceFrame.EvaluateScriptAsync(script).ConfigureAwait(false);
 				if (!response.Success || response.Result == null) return null;
 				return Convert.ToBoolean(response.Result);
 			}

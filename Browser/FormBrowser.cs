@@ -1542,6 +1542,9 @@ namespace Browser
 				// [task21] 空白ページ配信用 static ストアの全エントリを解放（一次 Major 2 / S-1 対応）。
 				// Cef.Shutdown() は同期停止のため直前呼び出しで安全（設計書 §4.1 注記）。
 				CustomResourceRequestHandler.ClearLogoutHtmlStore();
+				// ダミー映像のメモリ配信ストアも対で解放（Exit 以外の経路では StopDummyVideo 側で解放済み、
+				// 二重解放とならないよう Clear は null 代入のみで冪等）
+				CustomResourceRequestHandler.ClearDummyVideoHtml();
 				// multimedia timer の分解能引き上げはプロセス終了まで有効なため、解除は対で行う
 				if (_timerResolutionRaised)
 				{
@@ -1837,7 +1840,34 @@ namespace Browser
 			}
 		}
 
+		// キャプチャ経路（中央ループ/WCS 系/統計読み取り/watchdog/セットアップ操作）が使うフレーム解決。
+		// game iframe（/kcs2/index.php）とダミー映像ページの 2 値排他を返す。
+		// GetKanColleFrame() はゲーム固有用途（プライバシーフィルタ・スクリーンショット）のため
+		// 改名・意味変更しない（ダミー映像をそれらの対象にしない隔離方針）。
+		internal IFrame GetCaptureSourceFrame()
+		{
+			if (!IsBrowserInitialized)
+				return null;
 
+			var browser = Browser.GetBrowser();
+			foreach (var id in browser.GetFrameIdentifiers())
+			{
+				var frame = browser.GetFrameByIdentifier(id);
+				if (IsCaptureSourceFrame(frame))
+					return frame;
+			}
+			return null;
+		}
+
+		// キャプチャエンジン注入・全キャプチャ経路のフレーム判定。
+		// game iframe とダミー映像ページのみ一致の 2 値排他であり、それ以外のページ
+		//（DMM 本体・ログアウト空白・about:blank 等）では false として
+		// 既存の「映像源なし=503」挙動を維持する（外部ページのキャプチャ源偽装の防止は
+		// IsDummyVideoUrl の厳密判定に委ねる）。
+		private bool IsCaptureSourceFrame(IFrame frame)
+		{
+			return IsKanColleFrame(frame) || (frame != null && CustomResourceRequestHandler.IsDummyVideoUrl(frame.Url));
+		}
 
 		/// <summary>
 		/// スタイルシートを適用します。
@@ -2381,11 +2411,10 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 
 		private void Browser_FrameLoadEnd(object sender, FrameLoadEndEventArgs e)
 		{
-			// 艦これゲームフレームのロード完了時に、常駐キャプチャエンジンを自動注入して起動
-			// 2026/06/01 myi 新規作成
+			// キャプチャ源フレーム（艦これゲーム or ダミー映像テストページ）のロード完了時に、常駐キャプチャエンジンを自動注入して起動
 			try
 			{
-				if (IsKanColleFrame(e.Frame))
+				if (IsCaptureSourceFrame(e.Frame))
 				{
 					e.Frame.ExecuteJavaScriptAsync(CaptureEngineScript);
 				}
