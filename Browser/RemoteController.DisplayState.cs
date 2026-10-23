@@ -257,17 +257,102 @@ namespace Browser
 			if (!_isRunning) return;
 			// 前回の評価が長い場合（WTS クエリ詰まり）は次ティックをスキップして山積み防止
 			if (Interlocked.CompareExchange(ref _displayStatePollBusy, 1, 0) != 0) return;
+			Task.Run(async () =>
+			{
+				try
+				{
+					// エンジン rAF ストール確認: 中央キャプチャループが不在の
+					// WCS オンリー / HTTP オンリー運用でも検知できるようポーリングでも読み取る
+					if (HasAnyDisplayConsumer())
+					{
+						bool? stale = await QueryEngineRafStaleAsync().ConfigureAwait(false);
+						if (stale.HasValue) ObserveEngineRafStale(stale.Value);
+					}
+					EvaluateAndApplyDisplayState("poll");
+				}
+				catch (Exception ex)
+				{
+					Log(3, $"[RemoteController] 表示状態のポーリング評価で例外: {ex.Message}");
+				}
+				finally
+				{
+					Interlocked.Exchange(ref _displayStatePollBusy, 0);
+				}
+			});
+		}
+
+		//================================================================================
+		// エンジン rAF ストール観測（キャプチャ経路の第4要素 + ポーリング読み取りの二本立て）
+		//================================================================================
+
+		private bool HasAnyDisplayConsumer()
+		{
+			return HasWebpConsumers() || HasWcsClientSessions() || IsHttpPollingActive();
+		}
+
+		/// <summary>
+		/// キャプチャエンジンの rAF ストール観測値を処理する。
+		/// ストール検知は「コンシューマ 1 以上」を条件に display_state degraded(render_stall) を即配信する
+		/// （ポーリング待ちではなく観測即座に配信）。復帰時は悪化配信の遷移時配信として normal を返す。
+		/// </summary>
+		private void ObserveEngineRafStale(bool stale)
+		{
+			_engineRafStale = stale; // volatile フィールドのため直接代入で可視性確保
+
+			if (stale)
+			{
+				if (!HasAnyDisplayConsumer()) return;
+				if (Interlocked.CompareExchange(ref _renderStallActive, 1, 0) == 0)
+				{
+					Log(2, "[RemoteController] エンジン rAF ストール検知 → display_state degraded(render_stall) を配信します");
+					_ = Task.Run(async () =>
+					{
+						try { await BroadcastDisplayStateAsync(DisplayState.Degraded, "render_stall").ConfigureAwait(false); }
+						catch (Exception ex) { Log(3, $"[RemoteController] render_stall 配信エラー: {ex.Message}"); }
+					});
+				}
+			}
+			else
+			{
+				// 復帰は遷移時のみ true→false 遷移が 1 を返す。表示状態自体が悪化中の場合は
+				// banner を消さない（表示状態側の復帰遷移で normal が配信される）
+				if (Interlocked.Exchange(ref _renderStallActive, 0) == 1)
+				{
+					Log(2, "[RemoteController] エンジン rAF ストール解除を検知しました");
+					string reason;
+					if (GetCurrentDisplayState(out reason) == DisplayState.Normal)
+					{
+						_ = Task.Run(async () =>
+						{
+							try { await BroadcastDisplayStateAsync(DisplayState.Normal, "ok").ConfigureAwait(false); }
+							catch (Exception ex) { Log(3, $"[RemoteController] ストール解除の display_state 配信エラー: {ex.Message}"); }
+						});
+					}
+				}
+			}
+		}
+
+		/// <summary>
+		/// キャプチャエンジンの rafStale フラグを直接読み取る（エンジン未読込・ページ離脱時は null）。
+		/// 高頻度呼び出し禁止（呼び出し毎に CefSharp IPC が発生する）。
+		/// </summary>
+		private async Task<bool?> QueryEngineRafStaleAsync()
+		{
 			try
 			{
-				EvaluateAndApplyDisplayState("poll");
+				var kancolleFrame = _parent?.GetKanColleFrame();
+				if (kancolleFrame == null || !kancolleFrame.IsValid) return null;
+
+				const string script = "(function(){var e=window._kancolleCaptureEngine;if(!e)return null;return e.rafStale===true;})()";
+				var response = await kancolleFrame.EvaluateScriptAsync(script).ConfigureAwait(false);
+				if (!response.Success || response.Result == null) return null;
+				return Convert.ToBoolean(response.Result);
 			}
 			catch (Exception ex)
 			{
-				Log(3, $"[RemoteController] 表示状態のポーリング評価で例外: {ex.Message}");
-			}
-			finally
-			{
-				Interlocked.Exchange(ref _displayStatePollBusy, 0);
+				// 読み取り失敗は検知機会 1 回のスキップのみ。握りつぶさず記録する
+				Log(3, $"[RemoteController] rAF ストールフラグの読み取り失敗: {ex.Message}");
+				return null;
 			}
 		}
 

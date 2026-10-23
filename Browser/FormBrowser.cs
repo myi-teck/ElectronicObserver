@@ -487,6 +487,8 @@ namespace Browser
 					lastWebpTs: 0,         // lastWebp 更新時刻（ms）— init 経路の新鮮性判定に使用
 					encodeCount: 0,        // lastWebp 更新回数（内容更新本数）— サーバー側の二重レート計測用
 					rafCount: 0,           // rAF 発火回数 — 内容新鮮度のボトルネック切り分け（toBlob 律速か canvas 再描画律速か）に使用
+					rafStale: false,       // rAF ストール検知フラグ — 5 秒以上発火が無い時にウォッチドッグがセット（pull/peek 第4要素で C# へ伝達）
+					lastRafTs: 0,          // 直近の rAF 発火時刻（performance.now）
 					isEncoding: false,     // 排他フラグ
 					_dirtySincePull: false, // lastWebp が前回の pull 以降に更新されたか（WS 経路の stateful none 判定）
 
@@ -537,6 +539,11 @@ namespace Browser
 						let lastWorkTs = 0;
 						const loop = () => {
 							this.rafCount++;
+							this.lastRafTs = performance.now();
+							if (this.rafStale) {
+								this.rafStale = false;
+								console.log('[CaptureEngine] rAF 発火が再開しました');
+							}
 							try {
 								if (this.active && canvas.width > 0 && !this.isEncoding) {
 									if (offCanvas.width !== canvas.width || offCanvas.height !== canvas.height) {
@@ -597,6 +604,21 @@ namespace Browser
 							requestAnimationFrame(loop);
 						};
 						requestAnimationFrame(loop);
+
+						// rAF ストール検知（ヘッドレス/RDP 切断時の描画凍結対策）:
+						// setInterval は rAF とは別系統のタイマーで発火するため、rAF が止まっても動作する。
+						// auto-FPS 降格はループ本体の間引きのみで rAF 発火は維持されるため誤検知しない。
+						// 閾値 5 秒は通常運用（60FPS 相当）に対する十分大きな余裕
+						if (!this._rafWatchdogTimer) {
+							this._rafWatchdogTimer = setInterval(() => {
+								if (!this.lastRafTs) return;
+								const gap = performance.now() - this.lastRafTs;
+								if (gap >= 5000 && !this.rafStale) {
+									this.rafStale = true;
+									console.warn('[CaptureEngine] rAF 停止検知: 最後の発火から ' + Math.round(gap / 1000) + '秒');
+								}
+							}, 1000);
+						}
 					},
 
 					// C# 側（ExecuteJavaScriptAsync）からの稼働制御。rAF の発火は止めずに本体処理だけを間引く
@@ -615,18 +637,19 @@ namespace Browser
 					// lastWebp が 3 秒以上陳腐化している場合のみ toDataURL で新鮮画像を優先取得する。
 					// toDataURL は同期実行で重い（N100 で 3-7/s）ため、発火は init 経路に限定する
 					// 第3要素 encodeCount: lastWebp 更新回数＝コンテンツ版数（HTTP の cver 判定に使用）
+					// 第4要素 rafStale: rAF ストール検知フラグ（C# 側で display_state render_stall 判定に使用）
 					pull: function(force) {
 						if (this._dirtySincePull && this.lastWebp) {
 							this._dirtySincePull = false;
-							return ['full', this.lastWebp, this.encodeCount];
+							return ['full', this.lastWebp, this.encodeCount, this.rafStale];
 						}
 						if (force !== true) {
-							return ['none', '', this.encodeCount];
+							return ['none', '', this.encodeCount, this.rafStale];
 						}
 						// force=true（init 経路）: 新鮮でなければ toDataURL フォールバックで新鮮画像を優先
 						var stale = this.lastWebpTs > 0 && (Date.now() - this.lastWebpTs) >= 3000;
 						if (this.lastWebp && !stale) {
-							return ['full', this.lastWebp, this.encodeCount];
+							return ['full', this.lastWebp, this.encodeCount, this.rafStale];
 						}
 						// [🔍 plan02 1-4] toDataURL フォールバック検証
 						// toBlobでデコード失敗した際にtoDataURLを試行し、プレフィックスを検証
@@ -641,16 +664,16 @@ namespace Browser
 								} else {
 									console.warn('[plan02-1-4] toDataURLフォールバック: 予期しないプレフィックス ' + dataUrl.substring(0, 40) + '...');
 								}
-								return ['full', dataUrl, this.encodeCount];
+								return ['full', dataUrl, this.encodeCount, this.rafStale];
 							} catch (e) {
 								console.error('[plan02-1-4] toDataURLフォールバック失敗:', e.message);
 							}
 						}
 						// 新鮮取得に失敗しても古いキャッシュがあれば返す（init 経路でも 'none' より描画を優先）
 						if (this.lastWebp) {
-							return ['full', this.lastWebp, this.encodeCount];
+							return ['full', this.lastWebp, this.encodeCount, this.rafStale];
 						}
-						return ['none', '', this.encodeCount];
+						return ['none', '', this.encodeCount, this.rafStale];
 					},
 
 					// HTTP 配信専用の読み取り専用引き抜き: ダーティフラグを消費せず toDataURL も発火しない。
@@ -658,9 +681,9 @@ namespace Browser
 					// 初回フレーム生成前は ['none','']（C# 側は 503 相当として扱う）
 					peek: function() {
 						if (this.lastWebp) {
-							return ['full', this.lastWebp, this.encodeCount];
+							return ['full', this.lastWebp, this.encodeCount, this.rafStale];
 						}
-						return ['none', '', this.encodeCount];
+						return ['none', '', this.encodeCount, this.rafStale];
 					},
 
 					//================================================================================

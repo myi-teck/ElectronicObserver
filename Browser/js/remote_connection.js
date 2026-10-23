@@ -108,6 +108,13 @@ const ProtocolManager = {
     _pongTimeoutId: null,
     _pongTimeoutMs: 30000,
 
+    // ホスト側描画凍結検知用: 直近のバイナリフレーム/ハートビート受信時刻と FROZEN バッジ状態
+    _lastBinaryFrameAt: 0,
+    _lastHeartbeatAt: 0,
+    _frozenSuspected: false,
+    _idleHinted: false,
+    _frozenWatchdogTimer: null,
+
     // [HUD同期] init_hud 受信フラグ
     _hudInitialized: false,
     _hudInitTimeout: null,
@@ -245,6 +252,12 @@ const ProtocolManager = {
             // 新セッションでは初フレームで描画ゲートを必ず開き直す
             this._frameGateOpen = false;
             this._wcsWaitingFirstFrame = false;
+            // フリーズ検知ウォッチドッグ: 新セッションでは計測を振り出しに戻して起動
+            this._lastBinaryFrameAt = 0;
+            this._lastHeartbeatAt = Date.now();
+            this._idleHinted = false;
+            this._clearFrozenBadge();
+            this.ensureFrozenWatchdog();
             if (this._hudInitTimeout) {
                 clearTimeout(this._hudInitTimeout);
                 this._hudInitTimeout = null;
@@ -288,6 +301,10 @@ const ProtocolManager = {
                         console.log(`[ProtocolManager] サーバー配信 FPS を同期しました: ${srvFps}fps`);
                         if (window.__eventLog) window.__eventLog.consoleLog('log', `[ProtocolManager] サーバー配信 FPS を同期しました: ${srvFps}fps`, 'WCS_FPS_SYNC');
                     }
+                    // 接続前に既にホスト側表示状態が悪化している場合（ヘッドレス/RDP 切断等）は即 banner を出す
+                    if (cfg && cfg.displayState === 'degraded') {
+                        ProtocolManager._showDisplayBanner(cfg.displayReason);
+                    }
                 })
                 .catch(err => {
                     // 取得失敗は致命的ではない: 既定値（30fps 相当）で動作を継続する
@@ -324,6 +341,7 @@ const ProtocolManager = {
                     updateDataUsage(event.data.length + WS_FRAME_OVERHEAD);
                 }
                 if (event.data === 'heartbeat') {
+                    ProtocolManager._lastHeartbeatAt = Date.now();
                     if (ProtocolManager._pongTimeoutId) {
                         clearTimeout(ProtocolManager._pongTimeoutId);
                         ProtocolManager._pongTimeoutId = null;
@@ -342,6 +360,8 @@ const ProtocolManager = {
                 // [単一メッセージ受信] ブラウザのRFC 6455準拠実装により、
                 // endOfMessage: trueのメッセージは単一のonmessageイベントとして完結して受信される
                 // フラグメンテーション再構築ロジックは一切不要
+                this._lastBinaryFrameAt = Date.now();
+                this._idleHinted = false;
                 this.handleScreenUpdateBinary(event.data);
             }
         };
@@ -623,6 +643,17 @@ const ProtocolManager = {
                 if (this.currentMode === this.MODES.WEBCODECS) {
                     showTempToast('WebCodecs 利用不可 → WebSocket(WebP) に降格しました');
                     this.setMode(this.MODES.WEBSOCKET);
+                }
+            } else if (msg.type === 'display_state') {
+                // ホスト側の表示状態変化（ヘッドレス/RDP 切断/rAF ストール）。degraded は画面上部に banner で常時提示
+                if (msg.state === 'degraded') {
+                    console.warn('[ProtocolManager] display_state degraded:', msg.reason);
+                    if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] ホスト側表示状態が悪化しました (reason=' + msg.reason + ')', 'DISPLAY_STATE_DEGRADED');
+                    this._showDisplayBanner(msg.reason);
+                } else {
+                    console.log('[ProtocolManager] display_state normal');
+                    if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] ホスト側表示状態が正常に戻りました', 'DISPLAY_STATE_NORMAL');
+                    this._hideDisplayBanner();
                 }
             }
         } catch (e) {
@@ -970,6 +1001,90 @@ const ProtocolManager = {
             // [🚨 Critical 修正] キュー長カウントをデコード完了時にデクリメント
             ProtocolManager._pendingDecodeCount--;
         }
+    },
+
+    //================================================================================
+    // ホスト側描画凍結のクライアント側検知（FROZEN バッジ / display_state banner）
+    //================================================================================
+
+    // FROZEN 判定ウォッチドッグ（2 秒間隔）。WS 接続中かつ 10 秒以上バイナリフレーム無しで
+    // ハートビートも止まっている場合に「ホスト側描画凍結」の疑いとしてバッジを出す。
+    // ハートビートは 15 秒周期のため、判定窓は 2 周期 + マージン（35 秒）より小さくしないこと
+    // （周期未満の窓だと常時誤検知になる）。
+    ensureFrozenWatchdog() {
+        if (this._frozenWatchdogTimer) return;
+        this._frozenWatchdogTimer = setInterval(() => this._frozenWatchdogTick(), 2000);
+    },
+
+    _frozenWatchdogTick() {
+        const ws = this.wsConnection;
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            // 切断中は接続状態表示が別系統（onWsClose）で更新されるためフラグのみ戻す
+            this._frozenSuspected = false;
+            return;
+        }
+        // 初フレーム受信前は判定しない（init 待ちは既存の初期化中ゲートが扱う）
+        if (!this._lastBinaryFrameAt) return;
+
+        const now = Date.now();
+        if (now - this._lastBinaryFrameAt < 10000) {
+            this._clearFrozenBadge();
+            return;
+        }
+
+        // 10 秒以上フレーム無し: ハートビート生存で切り分け
+        //   生存 → ホストは生きている（画面静止時はフレームを送らない仕様）→ 情報ヒントのみ
+        //   停止 → ハートビートを送るループ自体が止まった = ホスト側描画/プロセス停止の疑い
+        const noHeartbeat = !this._lastHeartbeatAt || (now - this._lastHeartbeatAt >= 35000);
+        if (noHeartbeat) {
+            this._showFrozenBadge();
+        } else {
+            this._clearFrozenBadge();
+            if (!this._idleHinted) {
+                this._idleHinted = true;
+                showTempToast('ホスト側が待機中です（画面が静止しているため配信がありません）', 4000);
+            }
+        }
+    },
+
+    _showFrozenBadge() {
+        if (this._frozenSuspected) return;
+        this._frozenSuspected = true;
+        this.updateConnStatus('FROZEN', false);
+        if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] 10秒以上フレーム無しかつハートビート停止 → ホスト側描画凍結の疑い', 'FROZEN_SUSPECTED');
+    },
+
+    _clearFrozenBadge() {
+        if (!this._frozenSuspected) return;
+        this._frozenSuspected = false;
+        this._idleHinted = false;
+        this.updateConnStatus('WS', true);
+    },
+
+    // display_state 制御メッセージの banner。reason ごとの対策文言を添えて常時表示する
+    _showDisplayBanner(reason) {
+        const reasonText = {
+            rdp_disconnected: 'RDP セッションが切断されています。再接続するか、コンソール側でダミープラグ/仮想ディスプレイを有効にしてください',
+            no_monitor: 'モニタが検出されません。ダミープラグ（EDID エミュレータ）の挿入か仮想ディスプレイドライバを有効にしてください',
+            session0: 'サービス（セッション 0）での実行は未対応です。デスクトップセッションで実行してください',
+            render_stall: 'ホスト側の描画が停止しています。ワークステーションロックの無効化と電源プランのディスプレイオフ設定を確認してください',
+            ok: ''
+        };
+        let el = document.getElementById('display-state-banner');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'display-state-banner';
+            el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;padding:6px 12px;background:rgba(185,28,28,0.92);color:#fff;font:12px/1.5 monospace;text-align:center;pointer-events:none;display:none;';
+            document.body.appendChild(el);
+        }
+        const detail = reasonText[reason] || reason || '';
+        el.textContent = '⚠ ホスト側の表示が停止しています（画面が凍結する可能性があります）' + (detail ? '：' + detail : '');
+        el.style.display = 'block';
+    },
+
+    _hideDisplayBanner() {
+        const el = document.getElementById('display-state-banner');
+        if (el) el.style.display = 'none';
     },
 
     updateConnStatus(text, isConnected) {

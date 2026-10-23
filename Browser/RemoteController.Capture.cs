@@ -399,6 +399,11 @@ namespace Browser
 								Volatile.Write(ref _contentVersion, version);
 							}
 						}
+						// 第4要素: エンジンの rAF ストール検知フラグ（旧エンジン互換のため存在時のみ観測）
+						if (list.Count >= 4 && list[3] != null)
+						{
+							ObserveEngineRafStale(Convert.ToBoolean(list[3]));
+						}
 						return Tuple.Create(type, data);
 					}
 				}
