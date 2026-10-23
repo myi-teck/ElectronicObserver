@@ -1297,9 +1297,12 @@ namespace Browser
 				// verbatim テンプレートには {0} プレースホルダを含ませないため、ブレースのエスケープが不要で検証しやすい。
 				// 置換順序: __BITRATE__ / __FPS__（整数値）を先に置き、__CODEC__ は最後に置換して、
 				// コーデック値にトークン文字列が含まれる場合の二重置換を防止する。
+				// framerate は configure() 時点で焼き込まれる値のため、スクリプト構築時の値をスナップショットし、
+				// 初期化成功時にそのまま _encoderConfiguredFps へ記録する（初期化待ちの間の FPS 変更と混同しないため）
+				int fpsForEncoder = _webCodecsFps;
 				var script = WebCodecsInitEncoderTemplate
 					.Replace("__BITRATE__", _webCodecsBitrate.ToString())
-					.Replace("__FPS__", _webCodecsFps.ToString())
+					.Replace("__FPS__", fpsForEncoder.ToString())
 					.Replace("__CODEC__", escapedCodec);
 	
 				// タイムアウト制御（5秒）
@@ -1361,8 +1364,10 @@ namespace Browser
 					if (success)
 					{
 						_isWebCodecsInitialized = true;
+						// configure() に渡した framerate を記録（SetWebCodecsFps の 2 倍乖離判定の基準値）
+						_encoderConfiguredFps = fpsForEncoder;
 						var codec = dict.TryGetValue("codec", out var codecVal) ? codecVal as string : null;
-						Log(2, $"[RemoteController] WebCodecs エンコーダ初期化成功 (codec: {codec})");
+						Log(2, $"[RemoteController] WebCodecs エンコーダ初期化成功 (codec: {codec}, framerate: {fpsForEncoder})");
 						return true;
 					}
 					else
@@ -1494,9 +1499,12 @@ namespace Browser
 
 		//------------------------------------------------------------------------------------
 		// 処理ブロック名 : SetWebCodecsFps
-		// 概要           : WebCodecs エンコーダのFPS値を変更する（再初期化不要）。
-		//                  volatile 宣言によりキャプチャループに即座に反映される。
+		// 概要           : WebCodecs エンコーダの実効 FPS を変更する。
+		//                  volatile 宣言によりキャプチャループの pacing へ即座に反映される。
 		//------------------------------------------------------------------------------------
+		// エンコーダの framerate は configure() 時に焼き込まれるため、実効 FPS が設定値から
+		// 2 倍以上乖離した場合のみ再初期化を行う。2 倍未満の再初期化はデコーダ再構成（再生断）と
+		// SPS/PPS 再送を伴う割に体感改善が小さく、帯域・CPU の浪費が勝るため行わない。
 		public void SetWebCodecsFps(int fps)
 		{
 			if (fps <= 0 || fps > 60)
@@ -1512,6 +1520,49 @@ namespace Browser
 
 			Log(2, $"[RemoteController] WebCodecs FPS変更: {_webCodecsFps} -> {fps}");
 			_webCodecsFps = fps; // volatile によりキャプチャループに即座に可視
+
+			// 未初期化（基準値不明）の場合は再初期化しない。次の初期化で新しい FPS が使われる
+			int configuredFps = _encoderConfiguredFps;
+			if (!_isWebCodecsInitialized || configuredFps <= 0) return;
+
+			// 2 倍以上の乖離判定（大きい値 / 小さい値 >= 2）。整数比較で丸め誤差を避けるため除算ではなく乗算で比較
+			int larger = Math.Max(configuredFps, fps);
+			int smaller = Math.Min(configuredFps, fps);
+			if (larger < smaller * 2) return;
+
+			Log(2, $"[RemoteController] エンコーダ設定 FPS({configuredFps}) と実効 FPS({fps}) が 2 倍以上乖離、エンコーダを再初期化します");
+
+			// 再初期化で SPS/PPS が再生成されるため、全 WCS セッションの送信済みフラグを戻して
+			// 次キーフレームでの再送を強制する（ループ側の anyDescriptionPending 判定でキーフレーム化される）
+			foreach (var s in _webSocketSessions.Values)
+			{
+				if (s.ClientMode != 1) continue;
+				s.DescriptionSent = false;
+				s.ResetDescriptionSendState();
+			}
+
+			// 多重要求の抑止: 連続した set_fps 受信で再初期化が積み上がると、
+			// セマフォ待機が長引いてキャプチャループの停止時間を延ばすため 1 本のみ実行する
+			if (Interlocked.CompareExchange(ref _fpsReinitInFlight, 1, 0) != 0) return;
+
+			// 呼び出し元（WebSocket ハンドラ／FPS 再計算）をブロックしないよう fire-and-forget。
+			// InitializeWebCodecsEncoderAsync はセマフォで直列化済みで失敗時は false を返すため、
+			// 例外はここで捕捉してログ化する（サイレントな握りつぶしはしない）
+			_ = Task.Run(async () =>
+			{
+				try
+				{
+					await InitializeWebCodecsEncoderAsync(CancellationToken.None, force: true).ConfigureAwait(false);
+				}
+				catch (Exception ex)
+				{
+					Log(3, $"[RemoteController] FPS 乖離によるエンコーダ再初期化で例外: {ex.Message}");
+				}
+				finally
+				{
+					Interlocked.Exchange(ref _fpsReinitInFlight, 0);
+				}
+			});
 		}
 
 		//====================================================================================

@@ -254,6 +254,14 @@ namespace Browser
 		private volatile int _webCodecsBitrate = 800000; // 800 kbps 標準
 		private volatile int _webCodecsFps = 30;
 
+		// エンコーダ configure() に実際に渡した framerate（JS 側へ焼き込まれる値）。
+		// 実効 FPS (_webCodecsFps) と 2 倍以上乖離した場合のみ再初期化の判定に使用する。
+		// 0 = 未初期化（判定不能のため再初期化しない）
+		private volatile int _encoderConfiguredFps = 0;
+
+		// FPS 乖離による再初期化の多重要求を抑制するフラグ（0=アイドル, 1=実行中）
+		private int _fpsReinitInFlight = 0;
+
 		// WebCodecs 中央キャプチャループのタスク参照
 		private volatile Task _webCodecsCaptureTask;
 

@@ -56,6 +56,12 @@ const ProtocolManager = {
     wsHeartbeatIntervalMs: 15000,
     httpPollingActive: false,
 
+    // サーバー配信 FPS（エンコーダ設定値）。接続時に /capture-config で取得して上書きする。
+    // 0 = 未取得（デコーダ側は 30fps 既定値へフォールバック）。
+    // デコーダのタイムスタンプ増分はエンコーダ FPS と一致させる必要があり、
+    // 実値より狭い間隔だと復元順のクランプ（TS_CLAMP）が頻発する
+    webCodecsFps: 0,
+
     // [A1修正] 意図的 close 抑制フラグ
     // モード切替（setMode → startConnection）など意図的な closeWebSocket() 実行時に true を設定し、
     // 旧 WS の非同期発火する onclose（onWsClose）が reconnectWebSocket() / fallbackToHttp() を
@@ -269,6 +275,25 @@ const ProtocolManager = {
             this.sendWsControl({ action: 'PROTOCOL_VERSION', version: 2 });
             console.log('[ProtocolManager] PROTOCOL_VERSION=2 を送信しました');
             if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] PROTOCOL_VERSION=2 を送信しました', 'PROTO_VERSION');
+
+            // サーバーのエンコーダ FPS を取得し、デコーダのタイムスタンプ増分を一致させる。
+            // 既定 30fps のままサーバーが低 FPS で配信すると、タイムスタンプ間隔が実時間より
+            // 狭くなり復元順のクランプ（TS_CLAMP）が頻発して再生が乱れる
+            fetch('/capture-config')
+                .then(res => res.ok ? res.json() : Promise.reject(new Error('HTTP ' + res.status)))
+                .then(cfg => {
+                    const srvFps = parseInt(cfg && cfg.fps, 10);
+                    if (!isNaN(srvFps) && srvFps > 0) {
+                        ProtocolManager.webCodecsFps = srvFps;
+                        console.log(`[ProtocolManager] サーバー配信 FPS を同期しました: ${srvFps}fps`);
+                        if (window.__eventLog) window.__eventLog.consoleLog('log', `[ProtocolManager] サーバー配信 FPS を同期しました: ${srvFps}fps`, 'WCS_FPS_SYNC');
+                    }
+                })
+                .catch(err => {
+                    // 取得失敗は致命的ではない: 既定値（30fps 相当）で動作を継続する
+                    console.warn('[ProtocolManager] /capture-config 取得失敗、FPS は既定値を使用: ' + err.message);
+                    if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] /capture-config 取得失敗、FPS は既定値を使用: ' + err.message, 'WCS_FPS_SYNC_FAIL');
+                });
 
             setTimeout(() => {
                 console.log('[ProtocolManager] init キーフレーム要求を送信します');
