@@ -1207,10 +1207,12 @@ namespace Browser
 							SetWebCodecsFps(targetFps);
 						}
 	
-						// 「window._kancolleCaptureEngine.intervalMs」JS 注入は削除済み:
-						// CaptureEngineScript（FormBrowser.cs）に intervalMs プロパティが存在せず no-op だったため
-						// （空 catch { } も同時に解消・AGENTS.md NEVER「サイレントな例外の握りつぶし禁止」）
-						// FPS 制御は C# WCS キャプチャループ（Task.Delay によるアダプティブ FPS）が唯一の正（source of truth）
+						// 「window._kancolleCaptureEngine.intervalMs」の直接代入は行わない:
+						// エンジン側の intervalMs は setActive/setCaptureInterval 経由でのみ更新される
+						// （setActive との整合を単一の同期点に集約するため、下記 SetEnginePacingAsync を使用）。
+						// WCS のエンコード間隔は C# WCS キャプチャループの pacing が管理し、
+						// エンジン intervalMs は WebP の toBlob 間隔だけを制御する
+						await SetEnginePacingAsync("set_fps");
 					}
 				}
 				// クライアント中継イベントログの受信（§3.5a: move 分岐より前に配置）
@@ -1354,6 +1356,10 @@ namespace Browser
 					{
 						EnsureWebpPipelineStarted("mode_switch");
 					}
+
+					// ClientMode 変更で WebP/WCS のコンシューマ構成が変わったためエンジンの稼働を同期する
+					// （WCS 専用となれば WebP の toBlob を停止、WebP 参加となれば再開する）
+					await SetEnginePacingAsync("mode_switch");
 
 					// 非推奨参照（wire compat）: _currentCaptureMode は旧経路（POST /capture-mode /
 					// WCS 初期化失敗フォールバック）でのみ更新される参照値で、実効経路は上記 ClientMode で確定済み。

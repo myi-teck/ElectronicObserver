@@ -475,6 +475,16 @@ namespace Browser
 					rafCount: 0,           // rAF 発火回数 — 内容新鮮度のボトルネック切り分け（toBlob 律速か canvas 再描画律速か）に使用
 					isEncoding: false,     // 排他フラグ
 					_dirtySincePull: false, // lastWebp が前回の pull 以降に更新されたか（WS 経路の stateful none 判定）
+
+					// rAF ループの稼働ゲート（C# 側から setCaptureInterval / setActive で制御）。
+					// rAF 自体は停止しない: Chromium では rAF を止めると復帰時に初回フレームの
+					// 発火待ち遅延が生じるため、発火は維持し本体処理だけを間引く。
+					//   active=false   … ループ本体を全面停止（コンシューマ不在時の省電力）
+					//   intervalMs = 0 … 毎ティック処理（無制限）
+					//   intervalMs > 0 … ハッシュ検出〜toBlob の最小間隔（ms）
+					//   intervalMs < 0 … WebP エンコード無効（offCanvas の複製のみ維持＝WCS 専用運用）
+					intervalMs: 0,
+					active: true,
 	
 					// WebCodecs 状態管理（設計書 ver 3.9 §5.1.1 対応）
 					videoEncoder: null,
@@ -510,15 +520,27 @@ namespace Browser
 						let prevHashCells = null;
 
 						// WebGL バッファ保存 ＋ バックグラウンド WebP キャッシュ生成
+						let lastWorkTs = 0;
 						const loop = () => {
 							this.rafCount++;
 							try {
-								if (canvas.width > 0 && !this.isEncoding) {
+								if (this.active && canvas.width > 0 && !this.isEncoding) {
 									if (offCanvas.width !== canvas.width || offCanvas.height !== canvas.height) {
 										offCanvas.width = canvas.width;
 										offCanvas.height = canvas.height;
 									}
 									offCtx.drawImage(canvas, 0, 0);
+
+									// 間隔スロットリング: offCanvas への複製は毎ティック実行し（WebGL バッファ保存機構と
+									// WCS の VideoFrame 元画像を新鮮に保つため）、ハッシュ取得〜toBlob の重処理だけを
+									// 間引く。intervalMs < 0 は WebP 側を完全停止（WCS 専用運用）
+									const nowTs = performance.now();
+									if (this.intervalMs < 0 ||
+										(this.intervalMs > 0 && nowTs - lastWorkTs < this.intervalMs)) {
+										requestAnimationFrame(loop);
+										return;
+									}
+									lastWorkTs = nowTs;
 
 									// 差分検出: 96x64 へダウンスケールし 12x8 セルの aHash 平均輝度距離を
 									// 前フレームと比較。変化なしは toBlob エンコード自体をスキップ（lastWebp 未更新）。
@@ -561,6 +583,15 @@ namespace Browser
 							requestAnimationFrame(loop);
 						};
 						requestAnimationFrame(loop);
+					},
+
+					// C# 側（ExecuteJavaScriptAsync）からの稼働制御。rAF の発火は止めずに本体処理だけを間引く
+					setCaptureInterval: function(ms) {
+						const v = Number(ms);
+						this.intervalMs = isFinite(v) ? Math.floor(v) : 0;
+					},
+					setActive: function(active) {
+						this.active = !!active;
 					},
 
 					// C# から EvaluateScriptAsync で呼び出され、事前に完成している WebP キャッシュを即座(0.5ms)に渡す

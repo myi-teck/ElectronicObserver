@@ -1314,6 +1314,8 @@ namespace Browser
 		private async Task CentralCaptureLoopAsync(CancellationToken token)
 		{
 			Log(2, "[RemoteController] 中央キャプチャループを開始しました");
+			// エンジン稼働をセッション構成へ同期（WebP 要求 FPS に合わせて toBlob 間隔を設定）
+			await SetEnginePacingAsync("webp_loop_start");
 			bool isFirstFrameAfterStart = true;
 			// 防御: none 連続回数（誤 none 判定で画面が凍り続けるのを防ぐ。閾値到達で次回 pull を force にする）
 			int consecutiveNoneCount = 0;
@@ -1336,6 +1338,7 @@ namespace Browser
 					//   EnsureWebpPipelineStarted の起動判定との TOCTOU 競合を完全防止
 					if (!HasWebpConsumers())
 					{
+						bool exiting = false;
 						lock (_captureStartLock)
 						{
 							if (!HasWebpConsumers())
@@ -1349,8 +1352,14 @@ namespace Browser
 								Log(2, "[RemoteController] WebP コンシューマが不在になったため、中央キャプチャループを停止します (CTS Cancel)");
 								_centralCaptureTask = null;
 								_centralCaptureCts?.Cancel();
-								break;
+								exiting = true;
 							}
+						}
+						if (exiting)
+						{
+							// ロック外で同期（EvaluateScriptAsync の await が必要なため lock 内では行わない）
+							await SetEnginePacingAsync("webp_loop_stop");
+							break;
 						}
 					}
 
@@ -1455,6 +1464,8 @@ namespace Browser
 					{
 						nextTargetTicks = System.Diagnostics.Stopwatch.GetTimestamp();
 						lastTargetInterval = targetInterval;
+						// エンジンの toBlob 間隔も新しい要求 FPS へ同期（片方向操作のため待機しない）
+						_ = SetEnginePacingAsync("webp_fps_change");
 					}
 
 					// ドリフト補正タイマー

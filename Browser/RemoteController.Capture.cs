@@ -717,6 +717,9 @@ namespace Browser
 		{
 			Log(3, "[RemoteController] WebCodecs キャプチャループを開始しました (Debug)");
 
+			// エンジン稼働をセッション構成へ同期（WCS のみなら WebP の toBlob を停止）
+			await SetEnginePacingAsync("wcs_loop_start");
+
 			var sw = System.Diagnostics.Stopwatch.StartNew();
 			// 2秒毎キーフレーム間隔用の独立ストップウォッチ
 			// sw はアダプティブ FPS 計測（loopStart / loopElapsed）に使用するため、
@@ -752,6 +755,7 @@ namespace Browser
 					// エンコーダ停止は既存の finally 動作どおりとする）
 					if (!HasWcsClientSessions())
 					{
+						bool exiting = false;
 						lock (_modeLock)
 						{
 							if (!HasWcsClientSessions())
@@ -762,8 +766,14 @@ namespace Browser
 								Log(2, "[RemoteController] WebCodecs セッションが不在になったため、WebCodecs キャプチャループを停止します (CTS Cancel)");
 								_webCodecsCaptureTask = null;
 								_webCodecsCaptureCts?.Cancel();
-								break;
+								exiting = true;
 							}
+						}
+						if (exiting)
+						{
+							// ロック外で同期（EvaluateScriptAsync はアwait が必要なため lock 内では行わない）
+							await SetEnginePacingAsync("wcs_loop_stop");
+							break;
 						}
 					}
 
@@ -1818,6 +1828,41 @@ namespace Browser
 				return;
 			}
 			await StartWebCodecsCaptureLoopAsync();
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : SetEnginePacingAsync
+		// 概要           : キャプチャエンジンの稼働パラメータを現在のセッション構成へ同期する。
+		//                  WebP セッション不在時は toBlob を停止（intervalMs<0）、全セッション不在時は
+		//                  ループ本体処理を停止（active=false）する。rAF の発火は維持するため、
+		//                  再接続時に復帰待ち遅延が生じない。
+		//------------------------------------------------------------------------------------
+		// 呼び出し時期: 各パイプラインの起動／自己終了、set_fps 受信、ClientMode 変更時。
+		// 待機不要の片方向操作のため、呼び出し側は fire-and-forget 可（失敗は本メソッド内でログ化）。
+		private async Task SetEnginePacingAsync(string reason)
+		{
+			var kancolleFrame = _parent.GetKanColleFrame();
+			if (kancolleFrame == null || !kancolleFrame.IsValid) return;
+
+			bool hasWebp = HasWebpConsumers();
+			bool hasWcs = HasWcsClientSessions();
+
+			// intervalMs: WebP あり = 最高 FPS の最小間隔、WebP なし = -1（toBlob 停止・offCanvas は維持）
+			int intervalMs = hasWebp ? GetMaxFpsIntervalMs() : -1;
+			string activeExpr = (hasWebp || hasWcs) ? "true" : "false";
+
+			string script = "(function(){if(window._kancolleCaptureEngine){" +
+				"window._kancolleCaptureEngine.setActive(" + activeExpr + ");" +
+				"window._kancolleCaptureEngine.setCaptureInterval(" + intervalMs + ");}})()";
+
+			try
+			{
+				await kancolleFrame.EvaluateScriptAsync(script).ConfigureAwait(false);
+			}
+			catch (Exception ex)
+			{
+				Log(3, $"[RemoteController] エンジン稼働設定に失敗 ({reason}): {ex.Message}");
+			}
 		}
 
 		//====================================================================================
