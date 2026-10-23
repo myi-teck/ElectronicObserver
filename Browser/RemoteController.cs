@@ -1323,21 +1323,23 @@ namespace Browser
 			{
 				while (!token.IsCancellationRequested)
 				{
-					// 省電力化: 接続数が0台になったら即座にループを抜ける
-					// ※ 接続数チェックと _centralCaptureTask のクリアを lock 内でアトミックに実行し TOCTOU 競合を完全防止
-					if (Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0) <= 0)
+					// 省電力化: WebP コンシューマ（ClientMode=0 セッション or 活性中の HTTP ポーリング）が
+					// 0 になった時点でループを抜ける（WCS セッションのみの接続では中央ループは不要）
+					// ※ コンシューマ判定と _centralCaptureTask のクリアを lock 内でアトミックに実行し、
+					//   EnsureWebpPipelineStarted の起動判定との TOCTOU 競合を完全防止
+					if (!HasWebpConsumers())
 					{
 						lock (_captureStartLock)
 						{
-							if (Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0) <= 0)
+							if (!HasWebpConsumers())
 							{
 								// CTS も Cancel して「ループ不在」状態を
 								// (cts==null || cts.Cancelled || task==null || task.Completed) に統一する。
-								// これにより起動判定（B-2 のヘルパー）が確実に再起動をトリガーする。
+								// これにより起動判定（EnsureWebpPipelineStarted）が確実に再起動をトリガーする。
 								// 旧 CTS の Dispose は省略し GC に委譲
 								// （dotnet/runtime#105811: Dispose 後 .Token アクセスが ObjectDisposedException を
 								// 投げ得るため、finally 側は try-catch で保護済み）
-								Log(2, "[RemoteController] 接続クライアントが0台になったため、中央キャプチャループを停止します (CTS Cancel)");
+								Log(2, "[RemoteController] WebP コンシューマが不在になったため、中央キャプチャループを停止します (CTS Cancel)");
 								_centralCaptureTask = null;
 								_centralCaptureCts?.Cancel();
 								break;

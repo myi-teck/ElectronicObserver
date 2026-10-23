@@ -707,6 +707,30 @@ namespace Browser
 			{
 				while (!token.IsCancellationRequested)
 				{
+					// 省電力化: WebCodecs セッション（ClientMode=1）が不在になった時点でループを抜ける
+					// （WebP セッションのみの接続では WCS パイプラインは不要。コンシューマ判定と
+					// _webCodecsCaptureTask のクリアを _modeLock 内でアトミックに実行し、
+					// StartWebCodecsCaptureLoopAsync の二重起動ガードとの TOCTOU 競合を防止する。
+					// 自終了後に switch_mode で WCS セッションが出れば EnsureWcsPipelineStarted が再起動する。
+					// JS エンジン側の稼働ゲート（setActive）は本終了の対象外:
+					// エンコーダ停止は既存の finally 動作どおりとする）
+					if (!HasWcsClientSessions())
+					{
+						lock (_modeLock)
+						{
+							if (!HasWcsClientSessions())
+							{
+								// 「ループ不在」状態を (task==null || task.Completed) に統一し、
+								// 起動判定が確実に再起動をトリガーできるようにする。
+								// 旧 CTS の Dispose は省略し GC に委譲（中央ループと同じ方針）
+								Log(2, "[RemoteController] WebCodecs セッションが不在になったため、WebCodecs キャプチャループを停止します (CTS Cancel)");
+								_webCodecsCaptureTask = null;
+								_webCodecsCaptureCts?.Cancel();
+								break;
+							}
+						}
+					}
+
 					var loopStart = sw.ElapsedMilliseconds;
 
 					// Kancolle frame チェック
