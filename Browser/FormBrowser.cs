@@ -430,6 +430,8 @@ namespace Browser
 					webpQuality: 0.6,      // WebP圧縮品質
 					lastWebp: null,        // バックグラウンド生成済みWebPキャッシュ
 					lastWebpTs: 0,         // lastWebp 更新時刻（ms）— init 経路の新鮮性判定に使用
+					encodeCount: 0,        // lastWebp 更新回数（内容更新本数）— サーバー側の二重レート計測用
+					rafCount: 0,           // rAF 発火回数 — 内容新鮮度のボトルネック切り分け（toBlob 律速か canvas 再描画律速か）に使用
 					isEncoding: false,     // 排他フラグ
 	
 					// WebCodecs 状態管理（設計書 ver 3.9 §5.1.1 対応）
@@ -459,6 +461,7 @@ namespace Browser
 
 						// WebGL バッファ保存 ＋ バックグラウンド WebP キャッシュ生成
 						const loop = () => {
+							this.rafCount++;
 							try {
 								if (canvas.width > 0 && !this.isEncoding) {
 									if (offCanvas.width !== canvas.width || offCanvas.height !== canvas.height) {
@@ -478,6 +481,7 @@ namespace Browser
 											if (reader.result) {
 												this.lastWebp = reader.result;
 												this.lastWebpTs = Date.now();
+												this.encodeCount++;
 											}
 											this.isEncoding = false;
 										};

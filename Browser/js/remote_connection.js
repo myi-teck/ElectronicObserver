@@ -78,6 +78,11 @@ const ProtocolManager = {
     _frameReceiveStartTime: Date.now(),
     _decodeErrorCount: 0,
     _initRequestCount: 0,
+
+    // 内容変化 FPS 計測: 直前 WS-WebP ペイロードのシグネチャ（byteLength＋先頭4B＋末尾4B）と重複数。
+    // 中央ループは内容非変化でも目標 FPS で配信するため、受信数と内容実変化数の乖離（二重レート）を可視化する
+    _lastFrameSig: null,
+    _dupFrameCount: 0,
     
     // [🔍 plan02 1-5] デコード成功FPS計測用
     _decodeSuccessCount: 0,
@@ -597,6 +602,21 @@ const ProtocolManager = {
         }
     },
 
+    // 内容変化 FPS 計測: WS-WebP ペイロードをシグネチャ（byteLength＋先頭4B＋末尾4B）で直前フレームと比較する。
+    // 同一シグネチャ＝内容非変化の重複配信と集計する（完全ハッシュではなく軽量近似。比較は受信フレーム単位）
+    _trackWebpContentChange(frameData) {
+        if (!frameData || frameData.byteLength < 4) return;
+        const v = new DataView(frameData);
+        const head = v.getUint32(0, false);
+        const tail = v.byteLength >= 8 ? v.getUint32(v.byteLength - 4, false) : head;
+        const sig = frameData.byteLength + ':' + head + ':' + tail;
+        if (sig === this._lastFrameSig) {
+            this._dupFrameCount++;
+        } else {
+            this._lastFrameSig = sig;
+        }
+    },
+
     // [二次レビュー修正] シーケンス番号判定のタイミング修正
     // _frameReceiveCount と latestSequenceNumber の更新を受信直後に実行し、
     // Promiseチェーン内での判定が常に最新のシーケンス番号に基づいていることを保証する。
@@ -637,11 +657,15 @@ const ProtocolManager = {
             // [🔍 plan02 1-5] デコード成功FPS / 成功率の出力
             const decodeSuccessFps = ProtocolManager._decodeSuccessCount / elapsed;
             const decodeSuccessRate = ProtocolManager._frameReceiveCount > 0 ? (ProtocolManager._decodeSuccessCount / ProtocolManager._frameReceiveCount * 100) : 0;
-            console.log(`[ProtocolManager] 受信FPS: ${fps.toFixed(1)} | デコード成功FPS: ${decodeSuccessFps.toFixed(1)} | デコード成功率: ${decodeSuccessRate.toFixed(1)}% (フレーム数: ${ProtocolManager._frameReceiveCount}, デコード成功: ${ProtocolManager._decodeSuccessCount}, デコードエラー: ${ProtocolManager._decodeErrorCount}, init要求: ${ProtocolManager._initRequestCount}, キュー長: ${ProtocolManager._pendingDecodeCount})`);
+            // 内容変化 FPS = (受信数 - 重複数)/窓。受信 FPS との差が「内容を変えない重複配信」量（二重レート）
+            const dupCount = ProtocolManager._dupFrameCount;
+            const contentFps = (ProtocolManager._frameReceiveCount - dupCount) / elapsed;
+            console.log(`[ProtocolManager] 受信FPS: ${fps.toFixed(1)} | 内容変化FPS: ${contentFps.toFixed(1)} (重複: ${dupCount}) | デコード成功FPS: ${decodeSuccessFps.toFixed(1)} | デコード成功率: ${decodeSuccessRate.toFixed(1)}% (フレーム数: ${ProtocolManager._frameReceiveCount}, デコード成功: ${ProtocolManager._decodeSuccessCount}, デコードエラー: ${ProtocolManager._decodeErrorCount}, init要求: ${ProtocolManager._initRequestCount}, キュー長: ${ProtocolManager._pendingDecodeCount})`);
             ProtocolManager._frameReceiveCount = 0;
             ProtocolManager._decodeSuccessCount = 0;
             ProtocolManager._frameReceiveStartTime = now;
             ProtocolManager._decodeErrorCount = 0;
+            ProtocolManager._dupFrameCount = 0;
         }
 
         // [task28] プロトコルヘッダー拡張対応（6B → 7B）
@@ -705,6 +729,8 @@ const ProtocolManager = {
         			return;
         		}
         		latestSequenceNumber = seq;
+        		// 内容変化 FPS 計測: 直前フレームとのシグネチャ比較（重複＝内容非変化の配信）
+        		ProtocolManager._trackWebpContentChange(frameData);
        
         		// WebP 描画処理
         		if (typeof handleWebpFrame === 'function') {
@@ -747,6 +773,8 @@ const ProtocolManager = {
         }
         // 受信直後に latestSequenceNumber を更新（古いフレーム破棄の保証）
         latestSequenceNumber = seqV1;
+        // 内容変化 FPS 計測: 直前フレームとのシグネチャ比較（重複＝内容非変化の配信）
+        ProtocolManager._trackWebpContentChange(frameDataV1);
 
         // [🔍 plan02 diag] WebPデータ整合性検証（サンプリング: 10フレームに1回）
         if (ProtocolManager._validationEnabled) {

@@ -406,6 +406,36 @@ namespace Browser
 		}
 
 		//====================================================================================
+		// 処理ブロック名 : GetCaptureEngineStatsAsync
+		// 概要           : キャプチャエンジンの統計（encodeCount / rafCount）を読み取る。
+		//                  二重レート計測（配信本数 vs 固有本数）の集計窓ごとに 1 回のみ呼ぶ前提
+		//                  （呼び出し毎に CefSharp IPC が発生するため高頻度呼び出し禁止）。
+		// 戻り値         : 成功時 (encodeCount, rafCount)、エンジン未読込・解析失敗時は null
+		//------------------------------------------------------------------------------------
+		private async Task<Tuple<long, long>> GetCaptureEngineStatsAsync()
+		{
+			var kancolleFrame = _parent.GetKanColleFrame();
+			if (kancolleFrame == null || !kancolleFrame.IsValid) return null;
+
+			try
+			{
+				const string script = "(function(){var e=window._kancolleCaptureEngine;if(!e)return null;return [e.encodeCount||0,e.rafCount||0];})()";
+				var response = await kancolleFrame.EvaluateScriptAsync(script);
+				if (!response.Success || response.Result == null) return null;
+
+				var list = response.Result as System.Collections.Generic.IList<object>;
+				if (list == null || list.Count < 2) return null;
+				return Tuple.Create(Convert.ToInt64(list[0]), Convert.ToInt64(list[1]));
+			}
+			catch (Exception ex)
+			{
+				// 統計読み取り失敗は計測窓のスキップのみで配信機能には無影響。握りつぶさず記録する
+				Log(3, $"[RemoteController] キャプチャエンジン統計の読み取り失敗: {ex.Message}");
+				return null;
+			}
+		}
+
+		//====================================================================================
 		// 処理ブロック名 : SendScreenDiffWebPAsync
 		// 概要           : クライアントからのリクエスト受信時に、JS側のキャプチャおよび軽量差分判定を呼び出し、
 		//                  差分がない場合は 204 No Content を、ある場合は WebP 画像を応答します（GET /screen.webp）。
@@ -663,6 +693,12 @@ namespace Browser
 			// 符号付き整数の差分でラップアラウンド後も正しく機能するため、int 型が正当。
 			int seq = 0;
 
+			// 二重レート計測（WebP 中央ループとの比較用）: 10 秒窓の配信本数/固有本数。
+			// WCS は各 pull_result が新鮮なエンコードのため重複本数は本質的に 0 だが、比較のために記録する
+			long wcsDeliveries = 0;
+			long wcsUniques = 0;
+			var wcsWindowStart = DateTime.UtcNow;
+
 			try
 			{
 				while (!token.IsCancellationRequested)
@@ -800,6 +836,11 @@ namespace Browser
 						continue;
 					}
 
+					// 固有本数: pull_result は毎回新鮮なエンコード（WCS 経路は重複キャッシュを配信しない）
+					// 配信本数: 中央ループと同じ「ファンアウトされたフレーム本数」基準で計上する（重複本数は本質的に 0）
+					wcsUniques++;
+					wcsDeliveries++;
+
 					// キーフレームフラグの統合（JS 側と C# 側を統合）
 					bool dataIsKeyFrame = pullResult.isKeyFrame;
 
@@ -923,6 +964,18 @@ namespace Browser
 						{
 							session.SendSemaphore.Release();
 						}
+					}
+
+					// 二重レート計測ゲート: 10 秒窓のまとめログ（WebP 中央ループの [Profile] ログと比較用）
+					var wcsWindowSec = (DateTime.UtcNow - wcsWindowStart).TotalSeconds;
+					if (wcsWindowSec >= 10)
+					{
+						long wcsDup = wcsDeliveries - wcsUniques;
+						if (wcsDup < 0) wcsDup = 0;
+						Log(3, $"[Profile] WCSループ: 配信={wcsDeliveries} 固有={wcsUniques} 重複={wcsDup} (窓={wcsWindowSec:F1}s)");
+						wcsDeliveries = 0;
+						wcsUniques = 0;
+						wcsWindowStart = DateTime.UtcNow;
 					}
 
 					// アダプティブ FPS 制御: 実際のループ時間を計測し、目標フレーム間隔に達するまで待機

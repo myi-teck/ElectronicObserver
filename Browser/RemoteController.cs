@@ -185,6 +185,19 @@ namespace Browser
 		/// </summary>
 		private int _sendFrameCounter;
 
+		// （二重レート計測ゲート: 配信本数/固有本数/重複本数の 10 秒窓集計）
+		// 読み書きは中央キャプチャループのスレッドのみ（RecordCaptureLatency も同ループから呼ばれる）ため追加のロックは不要
+		/// <summary>エンジン stats encodeCount の前回サンプル値（-1=未サンプリング）</summary>
+		private long _t6bLastEncodeCount = -1;
+		/// <summary>エンジン stats rafCount の前回サンプル値（-1=未サンプリング）</summary>
+		private long _t6bLastRafCount = -1;
+		/// <summary>窓内でセッションへ配信（ファンアウト）したフレーム本数</summary>
+		private long _t6bDeliveries;
+		/// <summary>集計窓の開始時刻（10 秒ごとに確定しサマリ文字列へ反映）</summary>
+		private DateTime _t6bWindowStart = DateTime.UtcNow;
+		/// <summary>直近確定窓のサマリ（[Profile] まとめログへ併記。窓未確定時は空）</summary>
+		private string _t6bSummary = "";
+
 		// （フェーズ5：中央キャプチャループのキャンセルトークン）
 		// volatile 宣言により、スレッド間の変数可視性を保証
 		// ダブルチェックロックパターンが正しく機能するために必須
@@ -1292,6 +1305,8 @@ namespace Browser
 						var (webpData, actualDataLength) = ConvertToBytesOptimized(dataUrl, "data:image/webp");
 						if (webpData != null && actualDataLength > 0)
 						{
+							// 配信本数: セッションへファンアウトしたフレーム本数（内容非変化の重複配信を含む）
+							_t6bDeliveries++;
 							// グローバルシーケンス番号インクリメント（int型、Interlocked.Increment対応）
 							int seq = Interlocked.Increment(ref _globalSequenceNumber);
 	
@@ -1327,6 +1342,12 @@ namespace Browser
 								}
 							}
 						}
+					}
+
+					// 二重レート計測ゲート: 10 秒窓で配信/固有/重複を確定する（エンジン stats の IPC は窓あたり 1 回）
+					if ((DateTime.UtcNow - _t6bWindowStart).TotalSeconds >= 10)
+					{
+						await UpdateDualRateWindowAsync();
 					}
 
 					sw.Stop();
@@ -1442,10 +1463,43 @@ namespace Browser
 					// 正常系ログを100フレームに1回に抑制（ログI/O負荷軽減）
 					if (Interlocked.Increment(ref _sendFrameCounter) % 100 == 0)
 					{
-						Log(3, $"[Profile] CaptureCanvasAsync: {elapsedMs}ms, avg={avg:F0}ms, min={min}ms, max={max}ms, theoreticalMaxFPS={theoreticalMaxFps:F1}, samples={_captureLatencyHistory.Count}");
+						// 直近確定窓の二重レート集計（配信/固有/重複）を併記して実測裏取りを可能にする
+						Log(3, $"[Profile] CaptureCanvasAsync: {elapsedMs}ms, avg={avg:F0}ms, min={min}ms, max={max}ms, theoreticalMaxFPS={theoreticalMaxFps:F1}, samples={_captureLatencyHistory.Count}{_t6bSummary}");
 					}
 				}
 			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : UpdateDualRateWindowAsync
+		// 概要           : 二重レート計測ゲート。10 秒窓ごとにエンジン stats の encodeCount 差分（固有本数＝
+		//                  内容更新された lastWebp 生成回数）と窓内の配信本数から重複本数を算出し、
+		//                  [Profile] まとめログへ併記するサマリ文字列を確定する。
+		//                  中央キャプチャループからのみ呼ばれる（単一スレッド前提・ロック不要）。
+		//------------------------------------------------------------------------------------
+		private async Task UpdateDualRateWindowAsync()
+		{
+			var now = DateTime.UtcNow;
+			double windowSec = (now - _t6bWindowStart).TotalSeconds;
+			var stats = await GetCaptureEngineStatsAsync();
+			if (stats != null && windowSec > 0.5)
+			{
+				long encodeCount = stats.Item1;
+				long rafCount = stats.Item2;
+				if (_t6bLastEncodeCount >= 0 && encodeCount >= _t6bLastEncodeCount)
+				{
+					long unique = encodeCount - _t6bLastEncodeCount;
+					long rafDelta = _t6bLastRafCount >= 0 && rafCount >= _t6bLastRafCount ? rafCount - _t6bLastRafCount : -1;
+					long duplicate = _t6bDeliveries - unique;
+					if (duplicate < 0) duplicate = 0;
+					// raf 差分を併記し、内容新鮮度低下の内訳（toBlob 律速: raf 正常・encode 低 / canvas 再描画律速: raf 自体が低）を切り分け可能にする
+					_t6bSummary = $", 配信={_t6bDeliveries} 固有={unique} 重複={duplicate} (raf={rafDelta}, 窓={windowSec:F1}s)";
+				}
+				_t6bLastEncodeCount = encodeCount;
+				_t6bLastRafCount = rafCount;
+			}
+			_t6bDeliveries = 0;
+			_t6bWindowStart = now;
 		}
 	
 	}
