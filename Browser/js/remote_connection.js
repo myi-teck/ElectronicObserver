@@ -18,6 +18,30 @@ function drawBitmap(bitmap) {
 }
 
 //============================================================================================
+// グローバル描画関数: handleWebpFrame - v2 type=0x00 WebP フレームの正規描画経路
+// WCS セッションの init フレーム（Type 0x00）は ClientMode 非依存で送付されるため、
+// WCS 接続でもこの経路が機能する必要がある（旧サーバー/バージョン混在の防御経路も兼ねる）
+//============================================================================================
+function handleWebpFrame(frameData, seq) {
+    const blob = new Blob([frameData]);
+    ProtocolManager.safeCreateImageBitmap(blob).then((bitmap) => {
+        if (bitmap) { drawBitmap(bitmap); bitmap.close(); }
+    });
+}
+
+//============================================================================================
+// グローバル通知関数: showTempToast - 数秒表示して自動消える一時トースト
+// HTML 静的要素を増やさず、異常時のみ使う通知のため動的生成＋インラインスタイルで最小実装
+//============================================================================================
+function showTempToast(message, durationMs) {
+    const toast = document.createElement('div');
+    toast.textContent = message;
+    toast.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999;background:rgba(40,40,40,0.92);color:#fff;padding:8px 16px;border-radius:4px;font-size:13px;pointer-events:none;';
+    document.body.appendChild(toast);
+    setTimeout(() => { toast.remove(); }, durationMs || 5000);
+}
+
+//============================================================================================
 // ProtocolManager: WebSocket / HTTP の自動切替・フォールバック・再接続を管理
 //============================================================================================
 const ProtocolManager = {
@@ -80,6 +104,10 @@ const ProtocolManager = {
     // 描画ゲート: HUD 初期化と独立（初回バイナリフレームで開く）。
     // HUD 未到達でも初フレーム＝最新画面の描画をブロックしないための分離ゲート
     _frameGateOpen: false,
+
+    // WCS 接続確立から初 H.264 関連フレーム（0x01/0x02）受信まで true。
+    // 黒画面が「初期化中」か「故障」かをユーザーに区別させるバッジの状態
+    _wcsWaitingFirstFrame: false,
     
     // [task19 v3] HTTP モード用 HUD 初期化リトライカウンタ
     _hudInitRetryCount: 0,
@@ -205,6 +233,7 @@ const ProtocolManager = {
             this._hudInitialized = false;
             // 新セッションでは初フレームで描画ゲートを必ず開き直す
             this._frameGateOpen = false;
+            this._wcsWaitingFirstFrame = false;
             if (this._hudInitTimeout) {
                 clearTimeout(this._hudInitTimeout);
                 this._hudInitTimeout = null;
@@ -249,6 +278,9 @@ const ProtocolManager = {
                 this.sendWsControl({ action: 'switch_mode', mode: 'webcodecs' });
                 console.log('[ProtocolManager] WCS mode: sent switch_mode webcodecs');
                 if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] WCS mode: sent switch_mode webcodecs', 'SWITCH_MODE');
+                // WCS 接続確立〜初 H.264 受信までの黒画面を「故障」ではなく「初期化中」として可視化
+                this._wcsWaitingFirstFrame = true;
+                this.updateConnStatus('初期化中', true);
             }
         };
 
@@ -545,6 +577,15 @@ const ProtocolManager = {
                 if (msg.data && typeof updateHudData === 'function') {
                     updateHudData(msg.data);
                 }
+            } else if (msg.type === 'capture_mode_fallback') {
+                // サーバー側で WebCodecs が利用不可になり配信が WebP へ降格した通知。
+                // WCS 描画経路（H.264 デコーダ）で待ち続けるのを防ぎ、WebP 描画経路へ降格する
+                console.warn('[ProtocolManager] capture_mode_fallback:', msg.reason);
+                if (window.__eventLog) window.__eventLog.consoleLog('warn', 'WebCodecs 利用不可（' + msg.reason + '）→ WebSocket(WebP) に降格', 'MODE_FALLBACK');
+                if (this.currentMode === this.MODES.WEBCODECS) {
+                    showTempToast('WebCodecs 利用不可 → WebSocket(WebP) に降格しました');
+                    this.setMode(this.MODES.WEBSOCKET);
+                }
             }
         } catch (e) {
             console.warn('[ProtocolManager] Invalid control message:', e.message);
@@ -625,11 +666,16 @@ const ProtocolManager = {
         			// [task23 F-1] 保持中の SPS/PPS（description）を渡与（引数なしだと 919 行で undefined 上書き破棄される）
         			ProtocolManager.initVideoDecoder(ProtocolManager._videoDecoderDescription);
         		}
+        		// SPS/PPS 受信はサーバー側エンコーダ稼働の証左 — 「初期化中」バッジを解除する
+        		ProtocolManager.clearWcsInitBadge();
         		return;
         	} else if (type === 0x01) {
         		// WebCodecs モード（H.264 エンコード済み）
         		const isKeyFrame = (flags & 0x01) !== 0;
         		const frameData = arrayBuffer.slice(7);
+
+        		// 初 H.264 フレーム受信 — デコーダ準備可否に関わらず配信は稼働しているためバッジを解除する
+        		ProtocolManager.clearWcsInitBadge();
 
         		// キーフレーム受信時、デコーダ未初期化であれば即時初期化
         		if (isKeyFrame && !ProtocolManager._videoDecoderInitialized) {
@@ -884,6 +930,14 @@ const ProtocolManager = {
             } else {
                 hudMiniConn.classList.remove('ok');
             }
+        }
+    },
+
+    // 「初期化中」バッジの解除: 初 H.264 関連フレーム（0x01/0x02）受信で通常表示へ戻す
+    clearWcsInitBadge() {
+        if (this._wcsWaitingFirstFrame) {
+            this._wcsWaitingFirstFrame = false;
+            this.updateConnStatus('WS', true);
         }
     },
 
