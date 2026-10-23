@@ -1329,6 +1329,15 @@ namespace Browser
 				AddLog(2, "[FormBrowser] CefSharp が既に初期化済みです (Cef.IsInitialized == true)。proxy-server が適用されていないため、ゲーム API トラフィックが APIObserver プロキシ（ポート40620）に到達しない可能性があります。EOBrowser を再起動してください。");
 			}
 
+			// キャプチャ pacing（Task.Delay）の分解能を 1ms 級へ引き上げる。
+			// 既定のタイマー粒度（約 15.6ms）では 16ms 級のフレーム間隔制御が粗くなり、
+			// 絶対アンカー pacing でも待機の過不足が残る。解除は Exit() で対して行う。
+			if (!_timerResolutionRaised)
+			{
+				_timerResolutionRaised = true;
+				TimeBeginPeriod(1);
+			}
+
 
 			var requestHandler = new CustomRequestHandler(pixiSettingEnabled: Configuration.PreserveDrawingBuffer);
 			requestHandler.RenderProcessTerminated += (mes) => AddLog(3, mes);
@@ -1484,6 +1493,19 @@ namespace Browser
 		}
 
 
+		// ---- Windows multimedia timer（winmm）----
+		// Task.Delay / Thread.Sleep の分解能は既定では 15.6ms であり、WCS キャプチャループの
+		// 絶対アンカー pacing（目標間隔 16ms 級）では待機が過不足なく効かず実効 FPS が不安定になる。
+		// timeBeginPeriod(1) で 1ms 級へ引き上げる。対応する timeEndPeriod は Exit() で必ず対にして呼び出す。
+		[DllImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
+		private static extern uint TimeBeginPeriod(uint milliseconds);
+
+		[DllImport("winmm.dll", EntryPoint = "timeEndPeriod")]
+		private static extern uint TimeEndPeriod(uint milliseconds);
+
+		// timeBeginPeriod の多重要求防止（Cef.IsInitialized 済み経路でも 1 回だけ引き上げる）
+		private static bool _timerResolutionRaised = false;
+
 		void Exit()
 		{
 			if (!BrowserHost.Closed)
@@ -1494,6 +1516,12 @@ namespace Browser
 				// [task21] 空白ページ配信用 static ストアの全エントリを解放（一次 Major 2 / S-1 対応）。
 				// Cef.Shutdown() は同期停止のため直前呼び出しで安全（設計書 §4.1 注記）。
 				CustomResourceRequestHandler.ClearLogoutHtmlStore();
+				// multimedia timer の分解能引き上げはプロセス終了まで有効なため、解除は対で行う
+				if (_timerResolutionRaised)
+				{
+					_timerResolutionRaised = false;
+					TimeEndPeriod(1);
+				}
 				Cef.Shutdown();
 				Application.Exit();
 			}

@@ -720,10 +720,8 @@ namespace Browser
 			// エンジン稼働をセッション構成へ同期（WCS のみなら WebP の toBlob を停止）
 			await SetEnginePacingAsync("wcs_loop_start");
 
-			var sw = System.Diagnostics.Stopwatch.StartNew();
-			// 2秒毎キーフレーム間隔用の独立ストップウォッチ
-			// sw はアダプティブ FPS 計測（loopStart / loopElapsed）に使用するため、
-			// キーフレーム間隔の sw.Restart() が FPS 計測を破壊する既存問題を回避するため分離する
+			// 2秒毎キーフレーム間隔用のストップウォッチ
+			// （pacing は絶対アンカー方式へ移行したため、ループ経過計測用のストップウォッチは不要になった）
 			var keyFrameSw = System.Diagnostics.Stopwatch.StartNew();
 			// 初回フレームフラグ（初回はキーフレームを強制）
 			bool isWebCodecsFirstFrame = true;
@@ -741,6 +739,13 @@ namespace Browser
 			long wcsDeliveries = 0;
 			long wcsUniques = 0;
 			var wcsWindowStart = DateTime.UtcNow;
+
+			// pacing: 絶対アンカー方式（中央キャプチャループと同じ）。
+			// 1 周ごとの相対待機（経過時間差分）では、エンコード〜送信の処理時間がフレーム間隔へ
+			// 加算されて実効 FPS が目標を下回るため、次フレームの目標時刻を積上げるアンカーで待機を算出する。
+			// ミリ秒→ティック変換は double で行い、整数除算の切り捨て誤差を排除する
+			double ticksPerMs = (double)System.Diagnostics.Stopwatch.Frequency / 1000.0;
+			long nextTargetTicks = System.Diagnostics.Stopwatch.GetTimestamp();
 
 			try
 			{
@@ -776,8 +781,6 @@ namespace Browser
 							break;
 						}
 					}
-
-					var loopStart = sw.ElapsedMilliseconds;
 
 					// Kancolle frame チェック
 					// IFrame.IsValid ガード（CefSharp Issue #1354/#1509）:
@@ -1065,15 +1068,30 @@ namespace Browser
 						wcsWindowStart = DateTime.UtcNow;
 					}
 
-					// アダプティブ FPS 制御: 実際のループ時間を計測し、目標フレーム間隔に達するまで待機
-					var loopElapsed = sw.ElapsedMilliseconds - loopStart;
-					int intervalMs = 1000 / _webCodecsFps;
-					int waitMs = intervalMs - (int)loopElapsed;
-					if (waitMs > 0)
+					// pacing: 絶対アンカー方式で次フレームの目標時刻まで待機する。
+					// 待機は 2ms 下限を設け、Windows タイマー粒度での過剰な短待機を避ける。
+					// 2 フレーム分以上遅れた場合のみアンカーを現在時刻へ戻す。
+					// （過去スロットを順に追うと待機なしの連続実行＝スピン状態になるため）
 					{
-						await Task.Delay(waitMs, token);
+						// _webCodecsFps は RecalculateWebCodecsFps / SetWebCodecsFps で 1 以上へ制限されるが、
+						// 初期化前・異常値での 0 除算を避けるため安全側に 10FPS 相当をフォールバックさせる
+						int frameIntervalMs = _webCodecsFps > 0 ? 1000 / _webCodecsFps : 100;
+
+						nextTargetTicks += (long)(frameIntervalMs * ticksPerMs);
+						long waitTicks = nextTargetTicks - System.Diagnostics.Stopwatch.GetTimestamp();
+						if (waitTicks > 0)
+						{
+							int remainingMs = (int)(waitTicks / ticksPerMs);
+							if (remainingMs > 2)
+							{
+								await Task.Delay(remainingMs, token);
+							}
+						}
+						else if (-waitTicks > (long)(frameIntervalMs * ticksPerMs * 2))
+						{
+							nextTargetTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+						}
 					}
-					// waitMs <= 0 の場合は目標 FPS を達成できず、次フレームへ即時移行
 				}
 			}
 			catch (OperationCanceledException)
