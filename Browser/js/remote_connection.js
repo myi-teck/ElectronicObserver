@@ -76,6 +76,10 @@ const ProtocolManager = {
     // [HUD同期] init_hud 受信フラグ
     _hudInitialized: false,
     _hudInitTimeout: null,
+
+    // 描画ゲート: HUD 初期化と独立（初回バイナリフレームで開く）。
+    // HUD 未到達でも初フレーム＝最新画面の描画をブロックしないための分離ゲート
+    _frameGateOpen: false,
     
     // [task19 v3] HTTP モード用 HUD 初期化リトライカウンタ
     _hudInitRetryCount: 0,
@@ -199,6 +203,8 @@ const ProtocolManager = {
 
             // [HUD同期] 接続成功時にHUD未初期化フラグをリセット
             this._hudInitialized = false;
+            // 新セッションでは初フレームで描画ゲートを必ず開き直す
+            this._frameGateOpen = false;
             if (this._hudInitTimeout) {
                 clearTimeout(this._hudInitTimeout);
                 this._hudInitTimeout = null;
@@ -212,7 +218,8 @@ const ProtocolManager = {
             this._hudInitTimeout = setTimeout(() => {
                 if (!this._hudInitialized) {
                     console.error(`[ProtocolManager] init_hud timeout (5s): proceeding without HUD`);
-                    if (window.__eventLog) window.__eventLog.consoleLog('error', '[ProtocolManager] init_hud timeout (5s): proceeding without HUD', 'HUD_INIT_TIMEOUT');
+                    // 強制初期化発火をイベントログへ残す（コンソール不可視環境でも追跡可能に）
+                    if (window.__eventLog) window.__eventLog.consoleLog('error', '[ProtocolManager] init_hud timeout (5s): proceeding without HUD', 'HUD_GATE_TIMEOUT');
                     this._hudInitialized = true; // フォース初期化
                 }
             }, 5000);
@@ -551,9 +558,11 @@ const ProtocolManager = {
     async handleScreenUpdateBinary(arrayBuffer) {
         if (!arrayBuffer || arrayBuffer.byteLength <= 6) return;
 
-        // [HUD同期] init_hud 未受信時は描画をスキップ（タイムアウト後には強制初期化されるため描画継続）
-        if (!this._hudInitialized) {
-            return;
+        // 初回バイナリフレーム（init フルフレーム含む）で描画を開始する（HUD 初期化は非ブロッキング）
+        // _hudInitialized は HUD パネルの表示状態のみ管理（5秒タイムアウトのセーフティネットは維持）
+        if (!this._frameGateOpen) {
+            this._frameGateOpen = true;
+            if (window.__eventLog) window.__eventLog.consoleLog('log', 'frame gate opened by first frame', 'FRAME_GATE_OPEN');
         }
 
         // [FPS Fix] 可観測性: フレーム受信カウントを**受信直後**に更新
