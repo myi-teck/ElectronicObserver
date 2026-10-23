@@ -5,6 +5,9 @@ RDP 運用で安定させるための運用手順をまとめます。
 
 対象: `Browser`（EOBrowser.exe）の RemoteController 機能（WebSocket / HTTP 配信）。
 
+検証（4 状態マトリクス・FPS 計測等）はログイン不要のダミー映像で実施できます。
+ダミー映像の使い方・役割分担は `DUMMY-VIDEO-OPERATIONS.md` を参照してください。
+
 ---
 
 ## 0. まず最初に: 接続方法の診断（第一原因チェック）
