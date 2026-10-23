@@ -54,6 +54,13 @@ namespace Browser
 			public volatile int TargetIntervalMs = 100;
 
 			/// <summary>
+			/// このセッションの配信経路（0=WebP, 1=WebCodecs）。パイプライン種別の判定はセッション単位で行う
+			/// （サーバー全体の _currentCaptureMode は後方互換用の参照値であり、混合接続時に経路を判定できない）。
+			/// switch_mode で更新するため他スレッドから参照される。既定 0 は ws_connect 直後の未交渉状態を WebP とみなす。
+			/// </summary>
+			public volatile int ClientMode = 0;
+
+			/// <summary>
 			/// バッファ操作の排他制御用ロック（SetLatestFrame / GetLatestFrame / ReturnFrame）
 			/// </summary>
 			private readonly object _bufferLock = new object();
@@ -1279,6 +1286,11 @@ namespace Browser
 						}
 					}
 					Log(2, $"[RemoteController] WebSocket switch_mode 受信: {targetMode} (Session: {session.SessionId})");
+
+					// 配信経路の判定はセッション単位で行う（サーバー全体モードでは WebP/WCS の混合接続を区別できないため）。
+					// 無効値フォールバック時は安全側（WebP=0）に確定する
+					session.ClientMode = targetMode == CaptureMode.WebCodecs ? 1 : 0;
+
 					await SetCaptureModeAsync(targetMode);
 
 					// edge case 対策: サーバーが既に WebCodecs モードの場合、
