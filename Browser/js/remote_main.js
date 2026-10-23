@@ -437,6 +437,8 @@ initSettingsButtons('sensitivity-group', targetSensitivity, value => {
         }
 
         btn.addEventListener('click', () => {
+            // プロトコル再選択はユーザー操作（auto-FPS 降格を解除し「再選択してもフリーズが粘着する」状態を防ぐ）
+            lastOperationTime = Date.now();
             buttons.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             ProtocolManager.setMode(mode);
@@ -450,6 +452,34 @@ initSettingsButtons('sensitivity-group', targetSensitivity, value => {
             }
         });
     });
+})();
+
+//============================================================================================
+// auto-FPS 降格の可視化: IDLE/SLEEP 降格中、既存の fps 表示部に有効レートを追記する（新要素なし）。
+// 「意図的な省電力降格」と「故障によるフリーズ」をユーザーが区別できるようにする。
+// updateFpsDisplay は毎秒テキストを再書き込みするため、ラップして再書き込み後に追記し、
+// ラベルと表示がテキストを取り合わないよう idempotent に付与・除去を同一経路で行う
+//============================================================================================
+(function wrapFpsDisplayWithAutoLabel() {
+    if (typeof window.updateFpsDisplay !== 'function' || typeof getDynamicDelay !== 'function') return;
+    const original = window.updateFpsDisplay;
+    window.updateFpsDisplay = function() {
+        original.apply(this, arguments);
+        // getDynamicDelay() が 2000ms / 60000ms を返している間が IDLE / SLEEP 降格状態
+        const delay = getDynamicDelay();
+        let label = null;
+        if (delay === 2000) label = '0.5 (auto)';
+        else if (delay === 60000) label = '1/60 (auto)';
+        const targets = [
+            document.getElementById('fps-info'),
+            document.getElementById('hud-mini-fps')
+        ];
+        targets.forEach(el => {
+            if (!el) return;
+            const base = el.textContent.replace(/ \[[^\]]*\]$/, '');
+            el.textContent = label ? base + ' [' + label + ']' : base;
+        });
+    };
 })();
 
 // ページロード時に ProtocolManager を初期化

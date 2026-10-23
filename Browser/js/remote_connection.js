@@ -239,6 +239,10 @@ const ProtocolManager = {
                 this._hudInitTimeout = null;
             }
 
+            // 接続をユーザー操作（活動）と扱う — onopen でも lastOperationTime を更新し、
+            // getDynamicDelay() に ACT（ユーザー選択値）を返させて新セッションを user 値で開始する。
+            // auto-FPS 降格（15/45秒）は接続後 15 秒で既存状態機械が再適用するため省電力動作は維持される
+            lastOperationTime = Date.now();
             if (typeof getDynamicDelay === 'function') {
                 this.syncFps(getDynamicDelay(), true);
             }
