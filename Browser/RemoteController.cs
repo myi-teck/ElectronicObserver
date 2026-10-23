@@ -167,6 +167,7 @@ namespace Browser
 
 		// （フェーズ5：動的FPS制御用キャッシュ）
 		private int _cachedMaxFpsInterval = 100;
+		// キャッシュキー: WebP 経路（ClientMode=0）セッション数。現在値と不一致なら再計算
 		private volatile int _cachedSessionCount = 0;
 
 		// （IPCプロファイリング）
@@ -376,33 +377,34 @@ namespace Browser
 		// フェーズ5: 中央キャプチャ・ファンアウト方式
 		//------------------------------------------------------------------------------------
 		/// <summary>
-		/// 接続中のセッションの最高FPS（最小TargetIntervalMs）を取得する
-		/// 結果をキャッシュし、接続数変更時のみ再計算する
+		/// WebP 経路（ClientMode=0）セッションの最高FPS（最小TargetIntervalMs）を取得する。
+		/// WCS セッションは WebCodecs パイプライン経路で配信されるため中央ループの FPS 判定に関与しない。
+		/// 結果をキャッシュし、WebP セッション数変更時のみ再計算する
 		/// 0 = 無制限（60FPS制限を適用）
 		/// </summary>
 		private int GetMaxFpsIntervalMs()
 		{
-			// キャッシュヒット: 接続数が変更されていない場合はキャッシュ値を使用
-			int currentCount = Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0);
+			// キャッシュヒット: WebP セッション数が変更されていない場合はキャッシュ値を使用
+			int currentCount = CountWebpClientSessions();
 			if (currentCount == _cachedSessionCount)
 				return _cachedMaxFpsInterval;
 
-			// 接続数が変更された: 再計算
-			int minInterval = int.MaxValue;
+			// WebP セッション数が変更された: 再計算
 
-			// .ToArray() による不要なアロケーションを排除
 			// ConcurrentDictionary.Values の列挙はスナップショットではないが、
-			// 列挙中にセッションが Dispose されても TargetIntervalMs の読み取りは安全（volatile）
+			// 列挙中にセッションが Dispose されても ClientMode / TargetIntervalMs の読み取りは安全（volatile）
 			// セッションが破棄された場合はループの次の反復で自然に除外される
+			int minInterval = int.MaxValue;
 			foreach (var session in _webSocketSessions.Values)
 			{
+				if (session.ClientMode != 0) continue;
 				int interval = session.TargetIntervalMs;
 				if (interval <= 0) interval = 16; // 60FPS制限
 				if (interval < minInterval)
 					minInterval = interval;
 			}
 
-			// セッションなしの場合はデフォルト100ms (10FPS)
+			// WebP セッションなしの場合はデフォルト100ms (10FPS)
 			int result = minInterval == int.MaxValue ? 100 : minInterval;
 
 			// キャッシュを更新

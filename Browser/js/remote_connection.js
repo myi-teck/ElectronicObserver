@@ -536,7 +536,7 @@ const ProtocolManager = {
         }
     },
 
-    syncFps(intervalMs, force = false) {
+    syncFps(intervalMs, force = false, auto = false) {
         if (!force && typeof ProtocolManager !== 'undefined') {
             const now = Date.now();
             if (ProtocolManager._lastSyncFpsSendTime > 0 && (now - ProtocolManager._lastSyncFpsSendTime < ProtocolManager._minSyncFpsInterval)) {
@@ -547,9 +547,13 @@ const ProtocolManager = {
             ProtocolManager._lastSyncFpsSendTime = Date.now();
         }
         if (this.effectiveMode === 'ws') {
-            this.sendWsControl({ action: 'set_fps', intervalMs: intervalMs });
-            console.log('[ProtocolManager] syncFps送信: intervalMs=' + intervalMs + ', force=' + force);
-            if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] syncFps送信: intervalMs=' + intervalMs + ', force=' + force, 'SYNC_FPS');
+            const payload = { action: 'set_fps', intervalMs: intervalMs };
+            // auto=true: 自動間隔調整（getDynamicDelay）由来の送信。サーバー側で手動 FPS 設定を
+            // 上書きしないためのフラグ（未指定 = 手動設定として扱う）
+            if (auto) payload.auto = true;
+            this.sendWsControl(payload);
+            console.log('[ProtocolManager] syncFps送信: intervalMs=' + intervalMs + ', force=' + force + (auto ? ', auto' : ''));
+            if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] syncFps送信: intervalMs=' + intervalMs + ', force=' + force + (auto ? ', auto' : ''), 'SYNC_FPS');
         }
     },
 
@@ -1381,7 +1385,8 @@ function getDynamicDelay() {
 
     if (delay !== lastSyncedDelay && typeof ProtocolManager !== 'undefined' && ProtocolManager.syncFps) {
         lastSyncedDelay = delay;
-        ProtocolManager.syncFps(delay, false);
+        // auto=true で送信: 自動省電力調整がサーバー側のエンコーダ FPS（手動設定優先）を上書きしないため
+        ProtocolManager.syncFps(delay, false, true);
     }
 
     return delay;

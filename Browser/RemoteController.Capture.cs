@@ -1403,6 +1403,49 @@ namespace Browser
 			_webCodecsFps = fps; // volatile によりキャプチャループに即座に可視
 		}
 
+		//====================================================================================
+		// 処理ブロック名 : RecalculateWebCodecsFps
+		// 概要           : WebCodecs セッション（ClientMode=1）の状態から WCS パイプラインの FPS を再計算する。
+		//                  優先順位: 手動指定 FPS の最大値 → 目標間隔から導出た FPS の最大値 → 既定 30（セッション不在）。
+		//                  SetWebCodecsFps は冪等（同一値なら no-op）のため頻繁な呼び出しは安全。
+		//------------------------------------------------------------------------------------
+		// 手動指定が 1 つでも存在する間は auto 調整（getDynamicDelay）の間隔を反映しない。
+		// これにより自動省電力調整がユーザーの FPS スライダー設定を上書きしない。
+		private void RecalculateWebCodecsFps()
+		{
+			int maxFps = 0;
+			bool hasManual = false;
+
+			// (1) 手動指定優先: WCS セッションの LastManualFps の最大値
+			foreach (var session in _webSocketSessions.Values)
+			{
+				if (session.ClientMode != 1) continue;
+				int? manual = session.LastManualFps;
+				if (manual.HasValue)
+				{
+					hasManual = true;
+					if (manual.Value > maxFps) maxFps = manual.Value;
+				}
+			}
+
+			// (2) 手動指定なし: 目標間隔から導出した FPS の最大値（0 = 無制限 → 60、1..60 にクランプ）
+			if (!hasManual)
+			{
+				foreach (var session in _webSocketSessions.Values)
+				{
+					if (session.ClientMode != 1) continue;
+					int interval = session.TargetIntervalMs;
+					int derived = (interval <= 0) ? 60 : Math.Max(1, Math.Min(60, (int)Math.Round(1000.0 / interval)));
+					if (derived > maxFps) maxFps = derived;
+				}
+			}
+
+			// (3) WCS セッション不在時は既定 30
+			if (maxFps <= 0) maxFps = 30;
+
+			SetWebCodecsFps(maxFps);
+		}
+
 		// 連続タイムアウトカウント（PullEncodedBinaryAsync）
 		// JS 側 _acquireLock() タイムアウト（50ms）と C# 側タイムアウト（500ms）の10倍の開きにより、
 		// 連続タイムアウト時に過剰な再試行/ CPU リソース消費を防ぐための保護。
@@ -1659,6 +1702,9 @@ namespace Browser
 				_webCodecsCaptureCts = cts;
 				_webCodecsCaptureTask = Task.Run(() => WebCodecsCaptureLoopAsync(cts.Token));
 			}
+			// ループ起動時点のセッション状態（手動指定 / 目標間隔）からエンコーダ FPS を確定する
+			// （起動前の set_fps が無い新規 WCS セッションでも目標間隔相応の FPS で開始するため）
+			RecalculateWebCodecsFps();
 			// 生存性チェックによる起動
 			Log(2, "[RemoteController] WebCodecs キャプチャループを生存性チェックにより起動しました");
 		}

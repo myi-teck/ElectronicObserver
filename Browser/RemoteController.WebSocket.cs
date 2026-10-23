@@ -60,6 +60,20 @@ namespace Browser
 			/// </summary>
 			public volatile int ClientMode = 0;
 
+			// set_fps で手動指定された直近の FPS（0 = 未設定のセンチネル）。
+			// 受信ループスレッドが更新し、WCS ループ／FPS 再計算が参照するため volatile
+			private volatile int _lastManualFps = 0;
+
+			/// <summary>
+			/// 手動指定の直近 FPS（null = 未設定 / auto 調整のみ）。
+			/// WCS パイプラインの FPS 再計算で手動設定を優先するために使用する
+			/// </summary>
+			public int? LastManualFps
+			{
+				get => _lastManualFps == 0 ? null : (int?)_lastManualFps;
+				set => _lastManualFps = value ?? 0;
+			}
+
 			/// <summary>
 			/// バッファ操作の排他制御用ロック（SetLatestFrame / GetLatestFrame / ReturnFrame）
 			/// </summary>
@@ -444,6 +458,9 @@ namespace Browser
 				session.Dispose();
 
 				Log(2, $"[RemoteController] WebSocket セッション削除完了: SessionID={sessionId}, 接続数={Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0)}/{MaxConcurrentClients}");
+
+				// 離脱したセッション（WCS だった場合）の FPS 寄与を除去するため WCS FPS を再計算
+				RecalculateWebCodecsFps();
 			}
 		}
 
@@ -523,6 +540,10 @@ namespace Browser
 				}
 
 				_webSocketSessions.TryAdd(sessionId, session);
+
+				// セッション集合の変化に伴い WCS FPS を再計算（新セッションは ClientMode=0 のため通常は変化なし。
+				// 接続・切断のライフサイクルで再計算を取りこぼさないための対称性）
+				RecalculateWebCodecsFps();
 
 				// クライアントバージョンの初期化（null = 未決状態）
 				// 設計書 §5.3.3 定義: 接続確立時に _clientVersions に null エントリを追加
@@ -1171,8 +1192,20 @@ namespace Browser
 						// WebCodecs キャプチャループの目標 FPS も即座に更新
 						// intervalMs <= 0 は「無制限 (MAX)」= 60fps 上限と解釈し、
 						// JS 側 jsInterval = 16ms（60fps 相当）と一致させる（修正前は 30 で不一致）
-						int targetFps = (session.TargetIntervalMs <= 0) ? 60 : Math.Max(1, Math.Min(60, (int)Math.Round(1000.0 / session.TargetIntervalMs)));
-						SetWebCodecsFps(targetFps);
+						// auto=true（クライアント getDynamicDelay による自動間隔調整）はエンコーダ FPS を
+						// 上書きしない: 自動調整値が手動設定より優先されるとスライダー操作が意味を失うため、
+						// 手動設定優先の再計算（RecalculateWebCodecsFps）に委ねる
+						string autoStr = ExtractJsonString(message, "auto");
+						if (autoStr == "true")
+						{
+							RecalculateWebCodecsFps();
+						}
+						else
+						{
+							int targetFps = (session.TargetIntervalMs <= 0) ? 60 : Math.Max(1, Math.Min(60, (int)Math.Round(1000.0 / session.TargetIntervalMs)));
+							session.LastManualFps = targetFps;
+							SetWebCodecsFps(targetFps);
+						}
 	
 						// 「window._kancolleCaptureEngine.intervalMs」JS 注入は削除済み:
 						// CaptureEngineScript（FormBrowser.cs）に intervalMs プロパティが存在せず no-op だったため
@@ -1305,6 +1338,8 @@ namespace Browser
 						// FPS キャッシュは WebP セッション数をキーとするため、モード変更で無効化する
 						// （次回の GetMaxFpsIntervalMs で再計算）
 						_cachedSessionCount = -1;
+						// WCS セッション集合の変化（参加/離脱）に伴いエンコーダ FPS を再計算
+						RecalculateWebCodecsFps();
 					}
 
 					if (session.ClientMode == 1)
