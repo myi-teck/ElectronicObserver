@@ -34,8 +34,8 @@
     var clickCount = 0;      // click 累計
 
     // static モードの凍結スナップショット（null = 凍結なし）。
-    // 全描画を rAF 内の時間関数として計算し setInterval で内容更新しないことで、
-    // キャプチャエンジン rAF との vsync ゲーティング同一性（検証の代表的事）を保つ。
+    // 全描画を rAF 内の時間関数として計算するのは、キャプチャエンジン rAF との
+    // vsync ゲーティング同一性を保つため（検証の代表的事）。
     var frozen = null;
 
     var SQUARE_COLORS = ['#ffffff', '#ff0000', '#00ff00', '#0000ff', '#ffff00', '#ff00ff']; // 500ms 毎 6 色循環

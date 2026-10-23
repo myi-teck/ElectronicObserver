@@ -694,6 +694,8 @@ namespace Browser
 				if (!WTSQuerySessionInformationW(IntPtr.Zero, sessionId, infoClass, out buffer, out bytesReturned))
 					return false;
 				if (buffer == IntPtr.Zero || bytesReturned < 2) return false;
+				// 唯一の読み取り対象 WTSClientProtocolType は USHORT（0=コンソール / 1=レガシー RDP / 2=RDP）。
+				// Int16 として符号付きで読み取っても 0〜2 の範囲では実質値は変わらない
 				value = Marshal.ReadInt16(buffer);
 				return true;
 			}

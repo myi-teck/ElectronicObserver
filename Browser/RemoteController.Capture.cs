@@ -1928,7 +1928,9 @@ namespace Browser
 		//                  再接続時に復帰待ち遅延が生じない。
 		//------------------------------------------------------------------------------------
 		// 呼び出し時期: 各パイプラインの起動／自己終了、set_fps 受信、ClientMode 変更時。
-		// 待機不要の片方向操作のため、呼び出し側は fire-and-forget 可（失敗は本メソッド内でログ化）。
+		// 片方向操作（失敗は本メソッド内でログ化）だが await 有無は応答要件で分かれる:
+		// set_fps / mode_switch は設定の即時反映を待ってから応答するため await、
+		// WebP ループの FPS 変更同期など応答に反映を待たない低頻度注入は fire-and-forget でよい。
 		private async Task SetEnginePacingAsync(string reason)
 		{
 			var captureSourceFrame = _parent.GetCaptureSourceFrame();

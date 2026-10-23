@@ -16,6 +16,7 @@
 
 using System;
 using System.Buffers;
+using System.Linq;
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
@@ -282,8 +283,10 @@ namespace Browser
 			/// </summary>
 			public void EnqueueWcsSend(WcsSendItem item)
 			{
-				// 単一書き込み手（中央キャプチャループ）のみが呼ぶ。試行回数の上限は
-				// ファンアウトの同時読み取りによる一時的な失敗（通常は 2 試行目で成功）への保険
+				// 単一書き込み手（中央キャプチャループ）のみが呼ぶ。_descQueued の Interlocked は
+				// 書き込み手間の排他ではなくファンアウト読み取り側への可視性確保が目的で、
+				// ドロップ時のフラグ解放と自項目の投入は同一スレッドで直列のため TOCTOU は発生しない。
+				// 試行回数の上限はファンアウトの同時読み取りによる一時的な失敗（通常は 2 試行目で成功）への保険
 				for (int attempt = 0; attempt < 3; attempt++)
 				{
 					if (_wcsChannel.Writer.TryWrite(item))
@@ -1783,9 +1786,10 @@ namespace Browser
 		private async Task BroadcastControlToAllSessionsAsync(string jsonPacket)
 		{
 			byte[] bytes = Encoding.UTF8.GetBytes(jsonPacket);
-			// ConcurrentDictionary の Values 列挙はスナップショット様式であり、
-			// 列挙中にセッションが Dispose されても例外にならない
-			foreach (var session in _webSocketSessions.Values)
+			// ConcurrentDictionary の Values 列挙は例外をスローしないが時点スナップショットではないため、
+			// 列挙中にセッションが追加/除去されても一貫した走査を担保する目的で先にスナップショットを取る
+			var snapshot = _webSocketSessions.Values.ToList();
+			foreach (var session in snapshot)
 			{
 				try
 				{

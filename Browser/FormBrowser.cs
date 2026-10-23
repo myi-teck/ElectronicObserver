@@ -1233,6 +1233,7 @@ namespace Browser
 
 			// ダミー映像の継続警告タイマ（10 分周期）。開始時のみ Start する。
 			// HeartbeatTimer と同一ライフサイクル（Exit で Stop、form Dispose で解放）。
+			// 本番安全: 見落としたまま常時 ON の状態を検知するため 10 分周期で警告するだけで、状態は変えない。
 			_dummyVideoWarnTimer = new System.Windows.Forms.Timer();
 			_dummyVideoWarnTimer.Interval = 10 * 60 * 1000;
 			_dummyVideoWarnTimer.Tick += (s, e) =>
