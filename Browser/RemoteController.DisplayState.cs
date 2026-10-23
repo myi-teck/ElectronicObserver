@@ -119,6 +119,15 @@ namespace Browser
 		/// <summary>render_stall の display_state 配信中フラグ（0=通常, 1=悪化配信中）。遷移時のみ配信</summary>
 		private int _renderStallActive;
 
+		/// <summary>復旧手順の多重実行防止（0=アイドル, 1=実行中）</summary>
+		private int _recoveryInProgress;
+
+		/// <summary>前回復旧手順の開始時刻（連続発動防止用クールダウン判定）</summary>
+		private long _lastRecoveryStartTicks;
+
+		/// <summary>復旧手順のクールダウン。恒久ヘッドレス環境で検知ポーリング毎の復旧発動を防止する</summary>
+		private const long RecoveryCooldownTicks = TimeSpan.TicksPerSecond * 30;
+
 		/// <summary>表示状態ポーリング間隔。WTS イベントを補うフォールバックとして十分短い 5 秒</summary>
 		private const int DisplayStatePollIntervalMs = 5000;
 
@@ -310,6 +319,8 @@ namespace Browser
 						try { await BroadcastDisplayStateAsync(DisplayState.Degraded, "render_stall").ConfigureAwait(false); }
 						catch (Exception ex) { Log(3, $"[RemoteController] render_stall 配信エラー: {ex.Message}"); }
 					});
+					// ストール検知も復旧手順のトリガー（display_state 配信と同時、ポーリング待ちなし）
+					_ = TryRecoverRenderingAsync();
 				}
 			}
 			else
@@ -356,6 +367,166 @@ namespace Browser
 			}
 		}
 
+		//================================================================================
+		// 描画復旧手順（4 段階）
+		//   ① NotifyScreenInfoChanged → ② 本番検証（rAF 再開 + 新フレーム）
+		//   → ③ 強制キーフレーム再同期 → ④ display_state normal 配信（検証成立時のみ）
+		// 採用不採用: nudge（可視サイズ 1px 往復）・エンジン再注入・ブラウザ再起動は
+		// 副作用リスクに対し効果が未検証のため不採用（設計書 §3.4.4）
+		//================================================================================
+
+		/// <summary>
+		/// 表示状態悪化 / rAF ストール検知時の復旧手順。多重実行防止とクールダウンで
+		/// 恒久ヘッドレス環境での連続発動を防ぐ。例外は内部で記録し、呼び出し側を投げない。
+		/// </summary>
+		public async Task TryRecoverRenderingAsync()
+		{
+			if (Interlocked.CompareExchange(ref _recoveryInProgress, 1, 0) != 0)
+			{
+				Log(1, "[RemoteController] 復旧手順は実行中のため今回の発動をスキップします");
+				return;
+			}
+			try
+			{
+				long nowTicks = DateTime.UtcNow.Ticks;
+				long last = Interlocked.Read(ref _lastRecoveryStartTicks);
+				if (last != 0 && nowTicks - last < RecoveryCooldownTicks)
+				{
+					Log(1, "[RemoteController] 復旧手順はクールダウン中のためスキップします（連続発動防止）");
+					return;
+				}
+				Interlocked.Exchange(ref _lastRecoveryStartTicks, nowTicks);
+
+				// ① 画面情報再通知: windowed レンダリングでは効果が保証されない（公式ドキュメントは
+				// windowless 専用と明記）。成功/例外をログへ残し、効かなければ次段階へ進む二段フォールバックの前提とする
+				Log(2, "[RemoteController] 復旧手順①: NotifyScreenInfoChanged による画面情報再通知");
+				bool stage1Ok = await NotifyScreenInfoChangedAsync().ConfigureAwait(false);
+				Log(2, $"[RemoteController] 復旧手順①: {(stage1Ok ? "API 呼び出し完了" : "API 呼び出し失敗（次段階へ継続）")}");
+
+				// ② 本番検証: rAF 再開 + 新フレーム（encodeCount 増加）を 5 秒猶予で確認
+				bool verified = await WaitForEngineResumeAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+				Log(2, $"[RemoteController] 復旧手順②: 本番検証 {(verified ? "成立" : "未成立（③へ継続）")}");
+
+				// ③ 強制キーフレーム再同期: WebP は次回 pull を force に、
+				// WCS は SPS/PPS（description）再送フラグを全セッションで折り返す
+				if (!verified)
+				{
+					_forceNextKeyFrame = true;
+					int wcsResetCount = 0;
+					foreach (var session in _webSocketSessions.Values)
+					{
+						if (session.ClientMode != 1) continue;
+						session.DescriptionSent = false;
+						session.ResetDescriptionSendState();
+						wcsResetCount++;
+					}
+					Log(2, $"[RemoteController] 復旧手順③: 強制キーフレーム再同期（WebP force + WCS description 再送 {wcsResetCount} セッション）");
+					verified = await WaitForEngineResumeAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+				}
+
+				// ④ 復帰配信: 本番検証が成立した場合のみ normal を返し banner を解除する。
+				// 未成立時は degraded を維持する（banner が実態と食い違うのを防ぐ）
+				if (verified)
+				{
+					Log(2, "[RemoteController] 復旧手順④: 本番復帰を確認しました");
+					if (Interlocked.Exchange(ref _renderStallActive, 0) == 1)
+					{
+						string reason;
+						if (GetCurrentDisplayState(out reason) == DisplayState.Normal)
+						{
+							await BroadcastDisplayStateAsync(DisplayState.Normal, "ok").ConfigureAwait(false);
+						}
+					}
+				}
+				else
+				{
+					Log(2, "[RemoteController] 復旧手順④: 本番復帰は確認できず — degraded 表示を維持します（次回トリガー待ち）");
+				}
+			}
+			catch (Exception ex)
+			{
+				Log(3, $"[RemoteController] 描画復旧手順中の例外: {ex.Message}");
+			}
+			finally
+			{
+				Interlocked.Exchange(ref _recoveryInProgress, 0);
+			}
+		}
+
+		/// <summary>
+		/// UI スレッドで NotifyScreenInfoChanged を実行する。UI スレッド閉塞時に復旧手順全体が
+		/// ハングしないよう 3 秒でタイムアウト扱いとする（BeginInvoke でブロッキングしない）。
+		/// </summary>
+		private async Task<bool> NotifyScreenInfoChangedAsync()
+		{
+			var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+			try
+			{
+				var browser = _parent?.Browser;
+				if (browser == null || browser.IsDisposed)
+				{
+					Log(2, "[RemoteController] 復旧手順①: ブラウザ参照が取得できずスキップします");
+					return false;
+				}
+
+				browser.BeginInvoke(new Action(() =>
+				{
+					try
+					{
+						var host = browser.GetBrowser()?.GetHost();
+						if (host == null)
+						{
+							tcs.TrySetResult(false);
+							return;
+						}
+						host.NotifyScreenInfoChanged();
+						tcs.TrySetResult(true);
+					}
+					catch (Exception ex)
+					{
+						Log(3, $"[RemoteController] 復旧手順① NotifyScreenInfoChanged の実行で例外: {ex.Message}");
+						tcs.TrySetResult(false);
+					}
+				}));
+			}
+			catch (Exception ex)
+			{
+				Log(3, $"[RemoteController] 復旧手順① の UI スレッドディスパッチに失敗: {ex.Message}");
+				return false;
+			}
+
+			var completed = await Task.WhenAny(tcs.Task, Task.Delay(3000)).ConfigureAwait(false);
+			if (completed != tcs.Task)
+			{
+				Log(2, "[RemoteController] 復旧手順①: UI スレッド応答が 3 秒以内に戻らず（無効扱い）");
+				return false;
+			}
+			return tcs.Task.Result;
+		}
+
+		/// <summary>
+		/// 本番検証: rAF ストール解除（rafStale=false）かつ新フレーム（encodeCount 由来の
+		/// _contentVersion 増加）を 1 秒間隔で確認する。猶予超過は false（呼び出し側は次段階へ）。
+		/// 画面静止時は encodeCount が増加しないため false になりうるが、その場合は
+		/// ストール解除観測側（ObserveEngineRafStale）で normal 復帰が配信される。
+		/// </summary>
+		private async Task<bool> WaitForEngineResumeAsync(TimeSpan grace)
+		{
+			long versionBefore = Volatile.Read(ref _contentVersion);
+			DateTime deadline = DateTime.UtcNow.Add(grace);
+
+			while (DateTime.UtcNow < deadline)
+			{
+				await Task.Delay(1000).ConfigureAwait(false);
+
+				bool? stale = await QueryEngineRafStaleAsync().ConfigureAwait(false);
+				if (stale != false) continue; // ストール継続 / エンジン読込不可は再開未確認
+
+				if (Volatile.Read(ref _contentVersion) > versionBefore) return true;
+			}
+			return false;
+		}
+
 		/// <summary>
 		/// 表示状態を評価し、前回から変化があれば全セッションへ display_state を配信する。
 		/// WTS クエリ失敗時は状態を維持する（一時的なクエリ失敗で誤った悪化通知を流さない）。
@@ -387,6 +558,13 @@ namespace Browser
 				try { await BroadcastDisplayStateAsync(newState, newReason).ConfigureAwait(false); }
 				catch (Exception ex) { Log(3, $"[RemoteController] display_state 配信エラー: {ex.Message}"); }
 			});
+
+			// 悪化への遷移時は配信待ちせず復旧手順をただちに発動する。
+			// session0 は運用ミス（サポート外構成）であり復旧措置が成立しないため発動しない
+			if (newState == DisplayState.Degraded && newReason != "session0")
+			{
+				_ = TryRecoverRenderingAsync();
+			}
 		}
 
 		/// <summary>
