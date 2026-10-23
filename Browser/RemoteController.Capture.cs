@@ -328,8 +328,8 @@ namespace Browser
 		}
 
 		//------------------------------------------------------------------------------------
-		// 処理ブロック名 : PullEncodedBinaryAsync
-		// 概要           : CefSharp 経由で pull_encoded() を呼び出し、エンコード済みチャンクのバイナリを取得する。
+		// 処理ブロック名 : EncodeAndPullAsync
+		// 概要           : CefSharp 経由でエンコード済みチャンクのバイナリを取得する（チャンク一覧）。
 		// Base64 文字列受信 → Convert.FromBase64String() 変換
 		// pull_encoded() が async に変更されたことに合わせ、
 		//                  キーフレームフラグも返却するように拡張
@@ -824,68 +824,13 @@ namespace Browser
 						keyFrameSw.Restart();
 					}
 
-					// JS 側 encodeFrame() を呼び出し、_encodedChunks にフレームを生成する
-					// encodeFrame() は同期関数（Promise ではなくオブジェクトを直接返却）のため、
-					// 非 Promise 版 EvaluateScriptAsync を使用（ExecuteJavaScriptAsync 相当）。
-					// 結果は pull_encoded()（_encodedChunks キュー）で回収される。
+					// エンコード投入〜チャンク回収を 1 回のスクリプト評価で行う
+					// （旧実装の encodeFrame() 呼び出し + pull_encoded() の 2 往復を統合し、フレーム毎の IPC 固定費を半減）
 					// AGENTS.md: 空 catch 禁止 — engine 未初期化・例外時は警告ログを出力し、そのフレームをスキップしてループ継続
+					EncodeAndPullResult encPull;
 					try
 					{
-						var encodeScript = WebCodecsEncodeFrameTemplate.Replace("__IS_KEY_FRAME__", isKeyFrame ? "true" : "false");
-						var encodeResult = await kancolleFrame.EvaluateScriptAsync(encodeScript);
-						if (!encodeResult.Success || encodeResult.Result == null)
-						{
-							// engine 未初期化（window._kancolleCaptureEngine が null）または JS 例外
-							// 警告ログを出力し、そのフレームをスキップしてループ継続
-							var encodeFailReason = encodeResult.Success ? "Result null" : encodeResult.Message;
-							Log(3, $"[RemoteController] WebCodecs encodeFrame() 呼び出し失敗 (engine 未初期化または JS 例外): {encodeFailReason}");
-							// encode 失敗（Result==null: engine 未注入・undefined）時にバックオフ付き再初期化を試行。
-							// iframe 破棄で JS エンジンが消滅しても _isWebCodecsInitialized が true のまま再初期化されない
-							// 問題（W2）を解消する。成功時は次フレームをキーフレームとして強制（SPS/PPS 再生成が必要）。
-							if (await TryReinitWebCodecsEncoderAsync(token, "engine not ready")) isWebCodecsFirstFrame = true;
-							// マジックナンバー定数化（リトライ待機間隔 100ms）
-							await Task.Delay(WebCodecsFrameRetryDelayMs, token);
-							continue;
-						}
-
-						// JS 側 encodeFrame() 返却値: { success: bool, error?: string, action?: 'reinit', type?: 'encoded' }
-						// CefSharp は JS プレーンオブジェクトを IDictionary<string, object> として受信する
-						var encodeDict = encodeResult.Result as System.Collections.Generic.IDictionary<string, object>;
-						if (encodeDict != null && encodeDict.TryGetValue("action", out var actionVal) && actionVal is string actionStr && actionStr == "reinit")
-						{
-							// エンコーダ状態が closed / unconfigured → 再初期化してループ継続（次イテレーションで初回フレーム=キーフレーム）
-							Log(3, "[RemoteController] WebCodecs encodeFrame() が reinit を返却 (encoder closed/unconfigured)、再初期化します");
-							// バックオフ付き再初期化に統一（force 初期化 + 2秒バックオフ + L1 ログ）
-							var reinitOk = await TryReinitWebCodecsEncoderAsync(token, "reinit");
-							if (!reinitOk)
-							{
-								Log(3, "[RemoteController] WebCodecs 再初期化失敗、このフレームをスキップします");
-								// マジックナンバー定数化（リトライ待機間隔 100ms）
-								await Task.Delay(WebCodecsFrameRetryDelayMs, token);
-								continue;
-							}
-							// 再初期化後は次フレームをキーフレームとして強制（SPS/PPS 再生成が必要）
-							isWebCodecsFirstFrame = true;
-							continue;
-						}
-
-						// encodeFrame() 呼び出し失敗（encoder not running 等）→ 警告ログを出力し、そのフレームをスキップしてループ継続
-						if (encodeDict != null && encodeDict.TryGetValue("success", out var encodeSuccessVal) && encodeSuccessVal is bool encodeSuccess && !encodeSuccess)
-						{
-							var encodeError = encodeDict.TryGetValue("error", out var encodeErrVal) ? encodeErrVal as string : null;
-							Log(3, $"[RemoteController] WebCodecs encodeFrame() 失敗（このフレームをスキップ）: {encodeError ?? "unknown"}");
-							// encode 失敗（success:false: Encoder not running 等）時にバックオフ付き再初期化を試行。
-							// JS 側の encodeFrame() は videoEncoder==null 状態では action:'reinit' を返さないため、
-							// この success:false 経路でも再初期化を行うことで自己回復する（JS 側変更なし）。
-							// 成功時は次フレームをキーフレームとして強制（SPS/PPS 再生成が必要）。
-							if (await TryReinitWebCodecsEncoderAsync(token, $"encode failed: {encodeError}")) isWebCodecsFirstFrame = true;
-							// マジックナンバー定数化（リトライ待機間隔 100ms）
-							await Task.Delay(WebCodecsFrameRetryDelayMs, token);
-							continue;
-						}
-
-						// encodeFrame() 成功 → 初回フレームフラグをクリア（初回フレームが実際にエンコードされたことを示す）
-						isWebCodecsFirstFrame = false;
+						encPull = await EncodeAndPullAsync(isKeyFrame);
 					}
 					catch (OperationCanceledException)
 					{
@@ -894,28 +839,90 @@ namespace Browser
 					catch (Exception ex)
 					{
 						// AGENTS.md: 空 catch 禁止 — 警告ログを出力し、そのフレームをスキップしてループ継続
-						Log(3, $"[RemoteController] WebCodecs encodeFrame() 例外（このフレームをスキップ）: {ex.Message}");
+						Log(3, $"[RemoteController] WebCodecs encodeAndPull() 例外（このフレームをスキップ）: {ex.Message}");
 						// マジックナンバー定数化（リトライ待機間隔 100ms）
 						await Task.Delay(WebCodecsFrameRetryDelayMs, token);
 						continue;
 					}
 
-					// PullEncodedBinaryAsync を呼び出し、エンコード済みデータを取得
-					var pullResult = await PullEncodedBinaryAsync();
-					if (pullResult.data == null || pullResult.data.Length == 0)
+					if (encPull.timedOut)
 					{
-						// アダプティブ FPS 制御: 未データ時は短待機
+						// 500ms タイムアウト（連続回数が閾値到達時は EncodeAndPullAsync 側で再初期化をトリガー済み）。
+						// このフレームは破棄して次フレームへ進む
+						await Task.Delay(WebCodecsFrameRetryDelayMs, token);
+						continue;
+					}
+
+					if (encPull.scriptFailed)
+					{
+						// engine 未初期化（window._kancolleCaptureEngine が null）または JS 例外
+						// 警告ログを出力し、そのフレームをスキップしてループ継続
+						Log(3, $"[RemoteController] WebCodecs encodeAndPull() 呼び出し失敗 (engine 未初期化または JS 例外): {encPull.encodeError ?? "unknown"}");
+						// encode 失敗（engine 未注入）時にバックオフ付き再初期化を試行。
+						// iframe 破棄で JS エンジンが消滅しても _isWebCodecsInitialized が true のまま再初期化されない
+						// 問題（W2）を解消する。成功時は次フレームをキーフレームとして強制（SPS/PPS 再生成が必要）。
+						if (await TryReinitWebCodecsEncoderAsync(token, "engine not ready")) isWebCodecsFirstFrame = true;
 						// マジックナンバー定数化（リトライ待機間隔 100ms）
 						await Task.Delay(WebCodecsFrameRetryDelayMs, token);
 						continue;
 					}
+
+					if (encPull.requestReinit)
+					{
+						// エンコーダ状態が closed / unconfigured → 再初期化してループ継続（次イテレーションで初回フレーム=キーフレーム）
+						Log(3, "[RemoteController] WebCodecs encodeAndPull() が reinit を返却 (encoder closed/unconfigured)、再初期化します");
+						// バックオフ付き再初期化に統一（force 初期化 + 2秒バックオフ + L1 ログ）
+						var reinitOk = await TryReinitWebCodecsEncoderAsync(token, "reinit");
+						if (!reinitOk)
+						{
+							Log(3, "[RemoteController] WebCodecs 再初期化失敗、このフレームをスキップします");
+							// マジックナンバー定数化（リトライ待機間隔 100ms）
+							await Task.Delay(WebCodecsFrameRetryDelayMs, token);
+							continue;
+						}
+						// 再初期化後は次フレームをキーフレームとして強制（SPS/PPS 再生成が必要）
+						isWebCodecsFirstFrame = true;
+						continue;
+					}
+
+					if (encPull.encodeFailed)
+					{
+						// encodeFrame() 失敗（encoder not running 等）→ 警告ログを出力し、そのフレームをスキップしてループ継続
+						Log(3, $"[RemoteController] WebCodecs encodeAndPull() 失敗（このフレームをスキップ）: {encPull.encodeError ?? "unknown"}");
+						// JS 側の encodeFrame() は videoEncoder==null 状態では action:'reinit' を返さないため、
+						// この success:false 経路でも再初期化を行うことで自己回復する。
+						// 成功時は次フレームをキーフレームとして強制（SPS/PPS 再生成が必要）。
+						if (await TryReinitWebCodecsEncoderAsync(token, $"encode failed: {encPull.encodeError}")) isWebCodecsFirstFrame = true;
+						// マジックナンバー定数化（リトライ待機間隔 100ms）
+						await Task.Delay(WebCodecsFrameRetryDelayMs, token);
+						continue;
+					}
+
+					// エンコード投入は成功 → 初回フレームフラグをクリア（初回フレームが実際にエンコードされたことを示す）
+					isWebCodecsFirstFrame = false;
+
+					if (encPull.frames == null)
+					{
+						// エンコーダ出力は非同期（output コールバック）のため、まだ回収可能なチャンクが無い。
+						// 短待機して次評価へ進む（旧実装の pull 空返却時と同じ扱い）
+						// マジックナンバー定数化（リトライ待機間隔 100ms）
+						await Task.Delay(WebCodecsFrameRetryDelayMs, token);
+						continue;
+					}
+
+					// 回収したチャンクをフレーム単位に配信する（1 回の評価で複数フレームが溜まることがある）
+					foreach (var pullResult in encPull.frames)
+					{
 
 					// 固有本数: pull_result は毎回新鮮なエンコード（WCS 経路は重複キャッシュを配信しない）
 					// 配信本数: 中央ループと同じ「ファンアウトされたフレーム本数」基準で計上する（重複本数は本質的に 0）
 					wcsUniques++;
 					wcsDeliveries++;
 
-					// キーフレームフラグの統合（JS 側と C# 側を統合）
+					// キーフレームフラグ: チャンク毎の値を正とする。
+					// C# 側の isKeyFrame は「投入要求」のフラグであり、非同期出力で後から届く
+					// 古い P フレームへ誤適用すると、P フレームにキーフレームフラグが立って
+					// 受信側の復元点がずれるため使用しない
 					bool dataIsKeyFrame = pullResult.isKeyFrame;
 
 					// SPS/PPS (description) をキャッシュ（reinit_decoder 再送信・新クライアント追隨送信用）
@@ -931,8 +938,8 @@ namespace Browser
 						_lastWebCodecsDescription = cachedDesc;
 					}
 
-					// Flags: キーフレームかどうか（C# 側のキーフレーム間隔 + JS 側のキーフレームフラグを統合）
-					byte flags = (isKeyFrame || dataIsKeyFrame) ? (byte)0x01 : (byte)0x00;
+					// Flags: キーフレームかどうか（エンコーダが報告したチャンク種別が唯一の正）
+					byte flags = dataIsKeyFrame ? (byte)0x01 : (byte)0x00;
 
 					// 全 WebSocket セッションに配信
 					foreach (var session in _webSocketSessions.Values)
@@ -1044,6 +1051,7 @@ namespace Browser
 							session.SendSemaphore.Release();
 						}
 					}
+					} // foreach (var pullResult in encPull.frames)
 
 					// 二重レート計測ゲート: 10 秒窓のまとめログ（WebP 中央ループの [Profile] ログと比較用）
 					var wcsWindowSec = (DateTime.UtcNow - wcsWindowStart).TotalSeconds;
@@ -1516,28 +1524,53 @@ namespace Browser
 			SetWebCodecsFps(maxFps);
 		}
 
-		// 連続タイムアウトカウント（PullEncodedBinaryAsync）
+		// 連続タイムアウトカウント（EncodeAndPullAsync）
 		// JS 側 _acquireLock() タイムアウト（50ms）と C# 側タイムアウト（500ms）の10倍の開きにより、
 		// 連続タイムアウト時に過剰な再試行/ CPU リソース消費を防ぐための保護。
 		// 閾値超過時はループを中断して再初期化トリガーを返す。
 		private int _pullTimeoutCount = 0;
 		private const int MaxPullTimeoutCount = 10;
 
-		private async Task<PullEncodedResult> PullEncodedBinaryAsync()
+		//====================================================================================
+		// 処理ブロック名 : EncodeAndPullAsync
+		// 概要           : encodeFrame() 投入と既生成チャンクの回収を 1 回の EvaluateScriptAsync で行う。
+		//                  従来は encode 用スクリプトと pull_encoded() の 2 往復が必要で、
+		//                  フレーム毎の CefSharp IPC 往復が固定費となっていた。
+		//                  500ms タイムアウトと連続タイムアウトカウントは従来実装から継承する。
+		//------------------------------------------------------------------------------------
+		// JS 返却値の判別: 失敗系はプレーンオブジェクト（IDictionary）、成功系は配列（IList）。
+		// エンコーダ出力は非同期のため、投入時に回収済みチャンクが複数残ることがある（全件を返す）。
+		private struct EncodeAndPullResult
 		{
-			var result = new PullEncodedResult { data = null, isKeyFrame = false };
+			public bool scriptFailed;   // エンジン未注入・JS 例外・不正な返却値
+			public bool timedOut;       // 500ms タイムアウト（このフレームは破棄）
+			public bool requestReinit;  // JS 側が encoder closed/unconfigured を報告
+			public bool encodeFailed;   // encodeFrame() が success:false を返却
+			public string encodeError;
+			public List<PullEncodedResult> frames;   // 回収チャンク（null = 回収なし）
+		}
+
+		private async Task<EncodeAndPullResult> EncodeAndPullAsync(bool isKeyFrame)
+		{
+			var result = new EncodeAndPullResult { frames = null };
 
 			var kancolleFrame = _parent.GetKanColleFrame();
-			if (kancolleFrame == null) return result;
+			if (kancolleFrame == null)
+			{
+				result.scriptFailed = true;
+				result.encodeError = "Kancolle frame not found";
+				return result;
+			}
 
-			// タイムアウト制御（500ms）を追加（設計書 §5.3.2a 対応）
-			// EvaluateScriptAsync のデフォルトタイムアウトは 30秒であり、
+			string script = WebCodecsEncodeAndPullTemplate.Replace("__IS_KEY_FRAME__", isKeyFrame ? "true" : "false");
+
+			// タイムアウト制御（500ms）: EvaluateScriptAsync の既定タイムアウトは 30秒であり、
 			// JS 側の _acquireLock() でブロックされている場合、ループが永久に待機するリスクがある
 			using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500)))
 			{
 				try
 				{
-					var evalTask = kancolleFrame.EvaluateScriptAsync(WebCodecsPullScript);
+					var evalTask = kancolleFrame.EvaluateScriptAsync(script);
 					var delayTask = Task.Delay(500, timeoutCts.Token);
 
 					var completed = await Task.WhenAny(evalTask, delayTask);
@@ -1548,15 +1581,16 @@ namespace Browser
 						int currentCount = System.Threading.Interlocked.Increment(ref _pullTimeoutCount);
 						if (currentCount >= MaxPullTimeoutCount)
 						{
-							Log(3, $"[RemoteController] PullEncodedBinaryAsync 連続タイムアウト {_pullTimeoutCount} 回 (最大 {MaxPullTimeoutCount} 回に達)、再初期化をトリガーします");
+							Log(3, $"[RemoteController] EncodeAndPullAsync 連続タイムアウト {currentCount} 回 (最大 {MaxPullTimeoutCount} 回に達)、再初期化をトリガーします");
 							// Interlocked.Exchange でリセット
 							System.Threading.Interlocked.Exchange(ref _pullTimeoutCount, 0);
 						}
 						else
 						{
-							Log(3, $"[RemoteController] PullEncodedBinaryAsync タイムアウト ( {_pullTimeoutCount}/{MaxPullTimeoutCount} 回) — 再試行を続行");
+							Log(3, $"[RemoteController] EncodeAndPullAsync タイムアウト ({currentCount}/{MaxPullTimeoutCount} 回) — 再試行を続行");
 						}
 						// タイムアウト時はフレームをドロップ
+						result.timedOut = true;
 						return result;
 					}
 
@@ -1565,43 +1599,82 @@ namespace Browser
 					System.Threading.Interlocked.Exchange(ref _pullTimeoutCount, 0);
 
 					var scriptResult = await evalTask;
-					if (!scriptResult.Success || scriptResult.Result == null) return result;
-
-					// CefSharp は JS 配列を IList<object> として返す
-					var list = scriptResult.Result as System.Collections.Generic.IList<object>;
-					if (list == null || list.Count < 2) return result;
-
-					string type = list[0] as string;
-					if (type != "encoded") return result;
-
-					// Base64 文字列を受信し、直ちに byte[] 化（GC ガベージゼロ）
-					string base64 = list[1] as string;
-					if (string.IsNullOrEmpty(base64)) return result;
-					result.data = Convert.FromBase64String(base64);
-
-					// キーフレームフラグの取得（第3要素）
-					if (list.Count >= 3)
+					if (!scriptResult.Success || scriptResult.Result == null)
 					{
-						string keyFlag = list[2] as string;
-						result.isKeyFrame = keyFlag == "1";
+						result.scriptFailed = true;
+						result.encodeError = scriptResult.Success ? "Result null" : scriptResult.Message;
+						return result;
 					}
 
-					// SPS/PPS (description) の取得（第4要素: Base64 文字列または null）
-					// JS 側 pull_encoded() はキーフレーム時に metadata.decoderConfig.description を
-					// Base64 文字列として添付する（設計書 §4.2.2 ステップ2）。
-					// null / 空文字列 / 不正な Base64 の場合は description を null のままにする
-					if (list.Count >= 4 && list[3] is string descriptionB64 && !string.IsNullOrEmpty(descriptionB64))
+					// 失敗系（{ action:'reinit' } / { success:false, error }）はオブジェクトとして届く
+					var dict = scriptResult.Result as System.Collections.Generic.IDictionary<string, object>;
+					if (dict != null)
 					{
+						if (dict.TryGetValue("action", out var actionVal) && actionVal is string actionStr && actionStr == "reinit")
+						{
+							result.requestReinit = true;
+							return result;
+						}
+						result.encodeFailed = true;
+						result.encodeError = dict.TryGetValue("error", out var errVal) ? errVal as string : null;
+						return result;
+					}
+
+					// 成功系: ['none'] または ['encoded', [[base64, isKey, descBase64], …]]
+					var list = scriptResult.Result as System.Collections.Generic.IList<object>;
+					if (list == null || list.Count < 1)
+					{
+						result.scriptFailed = true;
+						result.encodeError = "予期しない返却値の型";
+						return result;
+					}
+					if (list[0] as string != "encoded") return result; // ['none'] = まだ回収可能なチャンクなし
+
+					var chunkList = list.Count >= 2 ? list[1] as System.Collections.Generic.IList<object> : null;
+					if (chunkList == null || chunkList.Count == 0) return result;
+
+					var frames = new List<PullEncodedResult>(chunkList.Count);
+					foreach (var chunkObj in chunkList)
+					{
+						var chunk = chunkObj as System.Collections.Generic.IList<object>;
+						if (chunk == null || chunk.Count < 1) continue;
+
+						// Base64 文字列を受信し、直ちに byte[] 化（GC ガベージゼロ）
+						string base64 = chunk[0] as string;
+						if (string.IsNullOrEmpty(base64)) continue;
+
+						var frame = new PullEncodedResult { isKeyFrame = false, description = null };
 						try
 						{
-							result.description = Convert.FromBase64String(descriptionB64);
+							frame.data = Convert.FromBase64String(base64);
 						}
 						catch (FormatException ex)
 						{
-							// 不正な Base64 は破棄（例外の握りつぶし禁止のためログ出力）
-							Log(3, $"[RemoteController] PullEncodedBinaryAsync: SPS/PPS Base64 復号失敗: {ex.Message}");
+							// 不正な Base64 のチャンクは破棄（例外の握りつぶし禁止のためログ出力）
+							Log(3, $"[RemoteController] EncodeAndPullAsync: フレーム Base64 復号失敗: {ex.Message}");
+							continue;
 						}
+
+						if (chunk.Count >= 2 && chunk[1] as string == "1") frame.isKeyFrame = true;
+
+						// SPS/PPS (description): キーフレームにのみ Base64 で添付される（設計書 §4.2.2 ステップ2）
+						if (chunk.Count >= 3 && chunk[2] is string descriptionB64 && !string.IsNullOrEmpty(descriptionB64))
+						{
+							try
+							{
+								frame.description = Convert.FromBase64String(descriptionB64);
+							}
+							catch (FormatException ex)
+							{
+								// 不正な Base64 は破棄（例外の握りつぶし禁止のためログ出力）
+								Log(3, $"[RemoteController] EncodeAndPullAsync: SPS/PPS Base64 復号失敗: {ex.Message}");
+							}
+						}
+
+						frames.Add(frame);
 					}
+
+					result.frames = frames.Count > 0 ? frames : null;
 
 					// 成功時に明示的にキャンセル（タイマー稼働防止）
 					timeoutCts.Cancel();
@@ -1610,11 +1683,14 @@ namespace Browser
 				catch (OperationCanceledException)
 				{
 					// タイムアウトによるキャンセル
+					result.timedOut = true;
 					return result;
 				}
 				catch (Exception ex)
 				{
-					Log(3, $"[RemoteController] PullEncodedBinaryAsync 例外: {ex.Message}");
+					Log(3, $"[RemoteController] EncodeAndPullAsync 例外: {ex.Message}");
+					result.scriptFailed = true;
+					result.encodeError = ex.Message;
 					return result;
 				}
 			}
@@ -1898,10 +1974,6 @@ namespace Browser
 		//------------------------------------------------------------------------------------
 		// （EvaluateScriptAsync 用スクリプトの事前構築：GC 負荷削減）
 
-		// WebCodecs pull 用スクリプト（Base64 文字列受信方式）
-		private const string WebCodecsPullScript =
-			"(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.pull_encoded();}})()";
-
 		// WebCodecs エンコーダ停止スクリプト
 		private const string WebCodecsStopScript =
 			"(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.stopEncoder();}})()";
@@ -1917,14 +1989,14 @@ namespace Browser
 		private const string WebCodecsInitEncoderTemplate =
 			@"return (function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.initEncoder({codec:'__CODEC__',width:1200,height:720,bitrate:__BITRATE__,framerate:__FPS__,avc:{format:'annexb'}});}})();";
 
-		// WebCodecs encodeFrame() 呼び出しスクリプトテンプレート（固有トークン: __IS_KEY_FRAME__）
-		// encodeFrame() は同期関数（Promise ではなくオブジェクトを直接返却）のため、非 Promise 版 EvaluateScriptAsync を使用。
-		// 結果は pull_encoded()（_encodedChunks キュー）で回収されるため、返却値は失敗検知のみに使用。
-		// （AGENTS.md: 空 catch 禁止 — engine 未初期化・例外時は警告ログを出力し、そのフレームをスキップしてループ継続）
-		// canvas はスクリプト内で document.querySelector('canvas') により取得（start() / pull() と同一ソース）。
+		// WebCodecs エンコード投入＋チャンク回収スクリプトテンプレート（固有トークン: __IS_KEY_FRAME__）
+		// encodeAndPull() は async（Promise 返却）のため EvaluateScriptAsync で解決値を回収する（旧 pull_encoded() と同じ）。
+		// 返却値: { action:'reinit' } / { success:false, error } / ['none'] / ['encoded', [[base64,isKey,descBase64], …]]
+		// 旧実装は encodeFrame() 用スクリプトと pull_encoded() の 2 往復だったが、1 評価に統合した。
+		// canvas はエンジン内部で document.querySelector('canvas') により取得（start() / pull() と同一ソース）。
 		// __IS_KEY_FRAME__ は true/false に置換（string.Replace）。
-		private const string WebCodecsEncodeFrameTemplate =
-			"(function(){if(window._kancolleCaptureEngine){var canvas=document.querySelector('canvas');if(!canvas){return{success:false,error:'Canvas not found'};}return window._kancolleCaptureEngine.encodeFrame(canvas,__IS_KEY_FRAME__);}})();";
+		private const string WebCodecsEncodeAndPullTemplate =
+			"(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.encodeAndPull(__IS_KEY_FRAME__);}})();";
 
 		private readonly object _modeLock = new object();
 

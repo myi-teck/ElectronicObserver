@@ -335,6 +335,20 @@ namespace Browser
 					}
 				};
 
+				// Uint8Array → Base64 変換。btoa() は文字列全体に対して 1 回だけ呼び出す
+				// （チャンク単位で btoa() すると 3 バイト境界のパディングが中間に残り不正な Base64 になる）。
+				// String.fromCharCode.apply の V8 引数展開制限（65536）を避けるため chunkSize 単位で分割し、
+				// 結合は join('') で O(n) とする（binary += 形式の O(n^2) を回避）
+				function _bytesToBase64(bytes) {
+					var chunkSize = BASE64_ENCODE_CHUNK_SIZE;
+					var parts = [];
+					for (var i = 0; i < bytes.length; i += chunkSize) {
+						var end = Math.min(i + chunkSize, bytes.length);
+						parts.push(String.fromCharCode.apply(null, bytes.subarray(i, end)));
+					}
+					return btoa(parts.join(''));
+				}
+
 				// 12x8 セルごとの平均輝度（average hash）を計算する。
 				// getImageData 失敗時は null を返し、呼び出し側で「変化あり」（疑わしきは full）として扱う
 				function _computeCellHash(ctx) {
@@ -921,34 +935,67 @@ namespace Browser
 							// btoa() は約 133KB の文字列を処理する。
 							// 再利用可能なバッファによる最適化は機能の正し性を損なうリスクがあるため、
 							// 現行の簡潔な実装を維持する（V8のbtoaは内部で高速なネイティブ実装を使用）。
-							var bytes = new Uint8Array(entry.data);
-							var chunkSize = BASE64_ENCODE_CHUNK_SIZE;  // V8 apply 引数制限の安全域 8192
-							var chunks = [];
-							for (var i = 0; i < bytes.length; i += chunkSize) {
-								var end = Math.min(i + chunkSize, bytes.length);
-								chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, end)));
-							}
-							var binary = chunks.join('');  // O(n) 連結（O(n²) の binary += を回避）
-							var base64 = btoa(binary);
+							var base64 = _bytesToBase64(new Uint8Array(entry.data));
 	
 							// [task19 P2] SPS/PPS (description) を第4要素として返却（設計書 §4.2.2 ステップ1-2）
 							// description がある場合のみ Base64 文字列、なければ null
 							// C# 側が Convert.ToBase64String() 相当で復号し、Type=0x02 フレームでクライアントへ送信する
 							var descriptionBase64 = null;
 							if (entry.description && entry.description.length > 0) {
-								var descBytes = entry.description;
-								var descChunks = [];
-								for (var j = 0; j < descBytes.length; j += chunkSize) {
-									var descEnd = Math.min(j + chunkSize, descBytes.length);
-									descChunks.push(String.fromCharCode.apply(null, descBytes.subarray(j, descEnd)));
-								}
-								descriptionBase64 = btoa(descChunks.join(''));
+								descriptionBase64 = _bytesToBase64(entry.description);
 							}
 	
 							return ['encoded', base64, entry.isKeyFrame ? '1' : '0', descriptionBase64];
 						} catch (e) {
 							console.error('[CaptureEngine] pull_encoded error:', e);
 							return ['none', null];
+						} finally {
+							_releaseLock();
+						}
+					},
+
+					// encodeAndPull(): encodeFrame() 投入と既生成チャンクの全ドレインを 1 回のスクリプト評価で行う。
+					// 従来は encodeFrame() と pull_encoded() の 2 往復（CefSharp IPC × 2）が必要で、
+					// 低 FPS 運用でもフレーム毎の往復オーバーヘッドが固定費として乗っていたため統合した。
+					// 返却値:
+					//   { action:'reinit' } / { success:false, error } … encodeFrame() の失敗をそのまま伝播（C# の再初期化分岐を維持）
+					//   ['none']                                       … エンコードは成功したが回収可能なチャンクはまだ無い
+					//   ['encoded', [[base64, isKey, descBase64], …]]  … 回収チャンク一覧
+					// エンコーダ出力は非同期（output コールバック）のため、投入時に回収済みのチャンクが
+					// 複数残ることがある。全件を返し、欠番なく配信する（リング上限 MAX_ENCODED_CHUNKS で有界）
+					encodeAndPull: async function(isKeyFrame) {
+						var canvas = document.querySelector('canvas');
+						if (!canvas) return { success: false, error: 'Canvas not found' };
+
+						var enc = this.encodeFrame(canvas, isKeyFrame);
+						if (enc && (enc.action === 'reinit' || enc.success === false)) {
+							return enc;
+						}
+
+						// 再初期化中はチャンクキューが破棄され得るため回収しない（pull_encoded() と同じ契約）
+						if (this.isReinitializing) return ['none'];
+
+						await _acquireLock();
+						try {
+							if (_encodedChunks.length === 0) return ['none'];
+
+							var out = [];
+							while (_encodedChunks.length > 0) {
+								var entry = _encodedChunks.shift();
+								if (!entry || !entry.data) continue;
+
+								var descBase64 = null;
+								if (entry.description && entry.description.length > 0) {
+									descBase64 = _bytesToBase64(entry.description);
+								}
+								out.push([_bytesToBase64(new Uint8Array(entry.data)), entry.isKeyFrame ? '1' : '0', descBase64]);
+							}
+
+							if (out.length === 0) return ['none'];
+							return ['encoded', out];
+						} catch (e) {
+							console.error('[CaptureEngine] encodeAndPull error:', e);
+							return ['none'];
 						} finally {
 							_releaseLock();
 						}
