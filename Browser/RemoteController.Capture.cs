@@ -465,6 +465,13 @@ namespace Browser
 			// 中央キャプチャループをコンシューマ不在判定で停止させないため）
 			Volatile.Write(ref _lastHttpPollTicks, DateTime.UtcNow.Ticks);
 
+			// WCS 専用構成からの切替ではエンジンを起こす経路が無く、初回 HTTP 切替で stale 画像が
+			// 返り続ける（WS 側へ switch_mode が来ないため pacing が再計算されない）。
+			// fire-and-forget とする根拠: /screen.webp は応答遅延に直結する経路で、CefScript 評価の
+			// 完了を待てないため。ガード取得・自己律速・失敗律速はすべて呼び先内部で同期実行され、
+			// 応答経路上の同期コストは状態判定と発火のみ
+			_ = TryRecoverEnginePacingAsync("http_poll");
+
 			if (_parent.Browser == null || !_parent.Browser.IsBrowserInitialized)
 			{
 				res.StatusCode = 503;
@@ -1945,6 +1952,16 @@ namespace Browser
 			await StartWebCodecsCaptureLoopAsync();
 		}
 
+		// キャプチャエンジン pacing の復旧フック用状態。
+		// int 型とする根拠: Interlocked.CompareExchange は .NET Framework 4.8 に bool オーバーロードが
+		// 存在せず、アトミックなチェック&セットを記述できないため（0/1 を使う）。
+		// 全アクセスを Interlocked / Volatile で行う根拠: HandleRequest が async void でリクエストが
+		// 並走し得る上、SetEnginePacingAsync の ConfigureAwait(false) 以降はスレッドプール上で継続するため、
+		// 書き手・読み手のスレッドが固定されない（直列性を前提にしない）。
+		private int _engineWebpPaced;         // 適用済み状態: 0=未適用/不明、1=WebP pacing 適用確認済み。更新点は SetEnginePacingAsync 内のみ
+		private int _enginePacingBusy;        // チェック&セット専用ガード: 0=idle、1=評価実行中。解放は TryRecoverEnginePacingAsync の finally のみ
+		private int _enginePacingLastTrySec;  // 直近の復旧失敗時刻（秒）: 失敗後約 1 秒の再試行律速（Cef 無応答時の EvaluateScriptAsync 連打防止）
+
 		//====================================================================================
 		// 処理ブロック名 : SetEnginePacingAsync
 		// 概要           : キャプチャエンジンの稼働パラメータを現在のセッション構成へ同期する。
@@ -1968,17 +1985,78 @@ namespace Browser
 			int intervalMs = hasWebp ? GetMaxFpsIntervalMs() : -1;
 			string activeExpr = (hasWebp || hasWcs) ? "true" : "false";
 
-			string script = "(function(){if(window._kancolleCaptureEngine){" +
-				"window._kancolleCaptureEngine.setActive(" + activeExpr + ");" +
-				"window._kancolleCaptureEngine.setCaptureInterval(" + intervalMs + ");}})()";
+			// スクリプトは成否の戻り値を返す: 旧形（if(e){…}）はエンジン未ロード時に silent no-op で
+			// EvaluateScriptAsync が Success=true を返し「適用できた」と誤認するため、復旧の打ち切り判定に
+			// 使える成功定義を明示する（判定前例: GetCaptureEngineStatsAsync）
+			string script = "(function(){var e=window._kancolleCaptureEngine;if(!e)return false;" +
+				"e.setActive(" + activeExpr + ");" +
+				"e.setCaptureInterval(" + intervalMs + ");return true;})()";
 
 			try
 			{
-				await captureSourceFrame.EvaluateScriptAsync(script).ConfigureAwait(false);
+				var response = await captureSourceFrame.EvaluateScriptAsync(script).ConfigureAwait(false);
+				// Result が true（エンジン在り・両 setter 実行済み）をもって適用成功とする。
+				// 失敗時に 1 へ更新すると復旧フックが以後発火せず症状 C が恒久化するため、
+				// 成功が確認できたときだけ状態を立て、失敗時は更新しない（0 のまま＝次で再試行）
+				if (response.Success && response.Result is true)
+				{
+					// _engineWebpPaced の唯一の更新点: 直接呼び出し元はどの経路でも更新漏れが構造的に起きない。
+					// hasWebp=false（toBlob 停止適用）は 0 へ戻し、次回の HTTP ポーリングで復旧が再発火できるようにする
+					Interlocked.Exchange(ref _engineWebpPaced, hasWebp ? 1 : 0);
+				}
 			}
 			catch (Exception ex)
 			{
 				Log(3, $"[RemoteController] エンジン稼働設定に失敗 ({reason}): {ex.Message}");
+			}
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : TryRecoverEnginePacingAsync
+		// 概要           : HTTP 専用コンシューマ向けのキャプチャエンジン pacing 復旧フック（fire-and-forget）。
+		//                  WCS 専用構成（intervalMs=-1 で toBlob 停止）から HTTP ポーリングへ切替った際、
+		//                  エンジンを再起動する経路が他に存在しない（setMode('http') は制御メッセージを
+		//                  送らず、WS セッション削除時にも pacing は呼ばれない）ため、この復旧が無いと
+		//                  /screen.webp は stale 画像を返し続ける。
+		//------------------------------------------------------------------------------------
+		// スレッド安全性: /screen.webp は HandleRequest（async void）経由でリクエストが並走し得るため
+		// 直列性を前提にしない。busy ガードはアトミックなチェック&セットで取得し、必ず本メソッドの
+		// finally だけで解放する（取りっぱなしだと復旧が永久に止まる）。SetEnginePacingAsync 本体では
+		// 解放しない: 本体は他の呼び出し元からも呼ばれるため、本体解放は他リクエストのガードを消す。
+		// 失敗後は約 1 秒律速する（Cef 無応答時にポーリング間隔で EvaluateScriptAsync を連打しない）。
+		private async Task TryRecoverEnginePacingAsync(string reason)
+		{
+			// 他リクエストが評価実行中ならその 1 本に委ねる（チェック→Act の TOCTOU をここで排除）
+			if (Interlocked.CompareExchange(ref _enginePacingBusy, 1, 0) != 0)
+				return;
+			try
+			{
+				// 自己律速: pacing 適用が確認済みなら no-op（適用済み以降は再発火しない）
+				if (Volatile.Read(ref _engineWebpPaced) != 0)
+					return;
+
+				// 直近失敗からの律速（約 1 秒）。Stopwatch はシステム時刻変更に影響されない単調時計で、
+				// int 差分は補数オーバーフローを跨いでも正しい（Environment.TickCount/1000 は
+				// 負値への巻き戻し時に秒値が非単調となり律速が壊れるため使わない）
+				int nowSec = (int)(Stopwatch.GetTimestamp() / Stopwatch.Frequency);
+				if (nowSec - Volatile.Read(ref _enginePacingLastTrySec) < 1)
+					return;
+
+				// 中央ループ自体が停止している場合は起動し直す。EnsureWebpPipelineStarted は
+				// 短時間ロック＋Task.Run のみで、ガード内・ロック内に await / Cef 呼び出しは混ぜない
+				EnsureWebpPipelineStarted(reason);
+				await SetEnginePacingAsync(reason).ConfigureAwait(false);
+
+				// 適用成否は _engineWebpPaced で判定する（本体が成功確認時のみ 1 を立てる）。
+				// 失敗（エンジン未ロード・評価失敗）は 0 のままなので律速スタンプを打ち次ポーリングで再試行
+				if (Volatile.Read(ref _engineWebpPaced) == 0)
+				{
+					Interlocked.Exchange(ref _enginePacingLastTrySec, nowSec);
+				}
+			}
+			finally
+			{
+				Interlocked.Exchange(ref _enginePacingBusy, 0);
 			}
 		}
 
