@@ -111,6 +111,11 @@ namespace Browser
 		// （WebSocket セッション管理）
 		private readonly ConcurrentDictionary<string, WebSocketSession> _webSocketSessions = new ConcurrentDictionary<string, WebSocketSession>();
 
+		// マップ書き込み操作（登録 TryAdd・置換の索引代入・削除の所有者検証→TryRemove と付随する Interlocked 会計）の直列化ロック。
+		// 読み取り・列挙（ファンアウト / FPS 再計算 / ブロードキャスト）は ConcurrentDictionary のスナップショット列挙のまま（ロック不要）。
+		// Cancel / CloseOutput / Abort / Dispose などのブロッキング操作は一律ロック外（セッション内部ロックとのネスト順序反転によるデッドロック回避）
+		private readonly object _sessionMutationLock = new object();
+
 		// （バッファプール：GC 負荷削減）
 		private static readonly ArrayPool<byte> _bufferPool = ArrayPool<byte>.Shared;
 
@@ -542,7 +547,8 @@ namespace Browser
 
 				if (shouldRemove)
 				{
-					RemoveWebSocketSession(session.SessionId);
+					// 所有者（列挙中の session）を渡す: 同一 ID に置換済みなら no-op とし、新セッションを誤削除しない
+					RemoveWebSocketSession(session.SessionId, session);
 				}
 			}
 		}
@@ -1297,7 +1303,9 @@ namespace Browser
 			// .ToList() でスレッドセーフなコピーを作成してから処理
 			foreach (var kvp in _webSocketSessions.ToList())
 			{
-				RemoveWebSocketSession(kvp.Key);
+				// expected=null の無条件削除（この全破棄経路のみ）: スナップショット後の置換レースがあっても
+				// マップ実在のセッションを例外なく削除・Dispose して終了時のリソース取りこぼしを防ぐ
+				RemoveWebSocketSession(kvp.Key, null);
 			}
 
 			// _activeConnectionCount をリセット（念のため）

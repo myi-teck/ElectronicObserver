@@ -534,31 +534,147 @@ namespace Browser
 		//                  セッションのタスク（ファンアウト/送信/受信）をキャンセルし、
 		//                  SharedFrameBufferの参照カウントが正しくデクリメントされることを保証する。
 		//------------------------------------------------------------------------------------
+		// 削除は所有者検証付き: マップ条目が渡されたセッション（expected）と同一オブジェクトの場合のみ除去する。
+		// ID のみでの削除は、旧セッションのファンアウト finally が同一 SessionID に登録済みの新セッションを
+		// 削除する事故（二重削除・新セッションの孤児化）を生むため禁止。
+		// expected == null はキー無条件削除で、終了時の全破棄経路のみが使用する。
 		//------------------------------------------------------------------------------------
-		private void RemoveWebSocketSession(string sessionId)
+		private void RemoveWebSocketSession(string sessionId, WebSocketSession expected)
 		{
-			if (_webSocketSessions.TryRemove(sessionId, out WebSocketSession session))
+			WebSocketSession removed;
+
+			// 検証と除去は _sessionMutationLock 下の単一原子ブロックで行う。
+			// ロック内で TryGetValue による参照確定後に TryRemove するため、検証と除去の間に
+			// 別スレッドの登録/置換が差し込んでも、除去対象は検証済み参照に限定される
+			lock (_sessionMutationLock)
 			{
-				Log(2, $"[RemoteController] WebSocket セッション削除開始: SessionID={sessionId}");
-
-				// 1. CancellationToken をキャンセルして全ループタスクを停止
-				session.CancellationToken.Cancel();
-
-				// 2. 接続カウントをデクリメント
-				Interlocked.Decrement(ref _activeConnectionCount);
-
-				// 3. クライアントバージョンエントリを削除
-				// 設計書 §5.3.3 定義: WebSocket 切断時に _clientVersions からエントリを削除
-				RemoveClientVersion(sessionId);
-
-				// 4. セッションの Dispose（SemaphoreSlim, CancellationTokenSource, バッファ返却等）
-				session.Dispose();
-
-				Log(2, $"[RemoteController] WebSocket セッション削除完了: SessionID={sessionId}, 接続数={Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0)}/{MaxConcurrentClients}");
-
-				// 離脱したセッション（WCS だった場合）の FPS 寄与を除去するため WCS FPS を再計算
-				RecalculateWebCodecsFps();
+				removed = null;
+				if (expected == null)
+				{
+					_webSocketSessions.TryRemove(sessionId, out removed);
+				}
+				else if (_webSocketSessions.TryGetValue(sessionId, out WebSocketSession current) && ReferenceEquals(current, expected))
+				{
+					// ロック下では検証と除去の間に条目が変わらないため TryRemove は必ず成功する
+					_webSocketSessions.TryRemove(sessionId, out removed);
+				}
 			}
+
+			if (removed == null)
+			{
+				// 所有者不一致（同一 ID が新セッションへ置換済み）または既削除（他ループの finally が先行）。
+				// 削除・会計・Dispose は先行した側が完了済みなので、ここでは何もしない（デクリメント二重計上・二重 Dispose の防止）
+				Log(3, $"[RemoteController] WebSocket セッション削除スキップ（所有者不一致または不在）: SessionID={sessionId}");
+				return;
+			}
+
+			// 以下副作用はロック外で実行する。Cancel/Dispose はソケット I/O・Channel 完了を含み、
+			// グローバルな変更ロックの保持は全セッションの登録/削除をブロックする。
+			// 変更ロック内ではマップ操作と Interlocked のみとし、セッション内部ロック（_bufferLock 等）との
+			// ネスト順序反転によるデッドロックを回避する
+			Log(2, $"[RemoteController] WebSocket セッション削除開始: SessionID={sessionId}");
+
+			// 1. CancellationToken をキャンセルして全ループタスクを停止
+			removed.CancellationToken.Cancel();
+
+			// 2. 接続カウントをデクリメント（接続確立時インクリメントと 1:1 対応する会計の精算）
+			Interlocked.Decrement(ref _activeConnectionCount);
+
+			// 3. クライアントバージョンエントリを削除
+			// 設計書 §5.3.3 定義: WebSocket 切断時に _clientVersions からエントリを削除
+			RemoveClientVersion(sessionId);
+
+			// 4. セッションの Dispose（SemaphoreSlim, CancellationTokenSource, バッファ返却等）
+			// 責務分担: 削除/置換に成功した者が Dispose を負う（マップに在席するセッションは決して Dispose されない）
+			removed.Dispose();
+
+			Log(2, $"[RemoteController] WebSocket セッション削除完了: SessionID={sessionId}, 接続数={Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0)}/{MaxConcurrentClients}");
+
+			// 離脱したセッション（WCS だった場合）の FPS 寄与を除去するため WCS FPS を再計算
+			RecalculateWebCodecsFps();
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : ReplaceStaleSession
+		// 概要           : 同一 SessionID の再接続時、マップに在席する旧セッション（リバースプロキシ経由構成で
+		//                  クライアント切断が伝播せず残りがちなハーフオープン残滓）を新セッションに原子的に置換し、
+		//                  旧セッションはロック外で Cancel/クローズ/Dispose する。
+		//------------------------------------------------------------------------------------
+		// 接続カウント会計の不変条件: _activeConnectionCount =「マップ内セッション数 + in-flight 接続（過渡値）」。
+		// 各接続の +1 は次のいずれかちょうど 1 回の -1 と対応する:
+		//   (a) 所有者一致削除成功時の RemoveWebSocketSession 内デクリメント
+		//   (b) 本メソッドの置換ブロック内デクリメント（旧セッション分）
+		//   (c) 上限超過拒否パスのデクリメント
+		// 置換と「旧セッション自身の削除」のどちらが先でもスロット寄与は正味 1:
+		//   置換が先   → 本メソッドがデクリメント＋マップ=新 → 旧 finally の Remove は所有者不一致で no-op（二重計上なし）
+		//   旧 finally が先 → Remove 一致で除去＋デクリメント → 本メソッドは TryGetValue 失敗 → 新セッション登録（デクリメントなし）
+		// 既知の制限（設計上の決定）: 同一ブラウザの複数タブは同一 session_id を共有するため「最新接続が勝つ」（旧タブは切断される）
+		//====================================================================================
+		private void ReplaceStaleSession(string sessionId, WebSocketSession session)
+		{
+			WebSocketSession oldSession;
+
+			// 「判定＋登録＋会計」は _sessionMutationLock 下の単一原子ブロックで完結させる。
+			// 索引代入はロック下で実行することを必須とする（並行 Remove の検証→除去と交錯して
+			// 検証済みでない条目を除去させる／新セッションを登録漏れさせる窓を排除するため）
+			lock (_sessionMutationLock)
+			{
+				if (_webSocketSessions.TryGetValue(sessionId, out oldSession))
+				{
+					_webSocketSessions[sessionId] = session;
+					// 旧セッション分の会計を精算（新接続の +1 は接続確立時済み。同一スロットの寄与は正味ゼロ）
+					Interlocked.Decrement(ref _activeConnectionCount);
+				}
+				else
+				{
+					// 旧セッションの finally 削除が先行し条目が不在。
+					// 不在時に登録しない分岐は新セッションが「カウント済み・マップ未登録」の孤児に逆戻りするため禁止。
+					// デクリメントしない（旧セッション分の精算は先行した Remove 側で完了済み）
+					oldSession = null;
+					_webSocketSessions[sessionId] = session;
+				}
+			}
+
+			if (oldSession == null)
+				return;
+
+			// ブロッキング操作（Cancel / CloseOutput / Abort / Dispose）は一律ロック外:
+			// グローバルな変更ロックの保持は全セッションの登録/削除を最大 1 秒ブロックするため
+			try
+			{
+				oldSession.CancellationToken.Cancel();
+			}
+			catch (ObjectDisposedException)
+			{
+				// 旧セッションが他経路で Dispose 済み（不変条件上はあり得ないが、置換競合の極稀な窓で
+				// Dispose 済み CTS への Cancel が例外を投げても目的（キャンセル）は達成済みと同義のため継続）
+			}
+
+			// 旧ソケットを 1 秒上限でグレースフルクローズ。リバースプロキシ経由ではクライアント切断が伝播せず
+			// ハーフオープンソケットでは CloseOutputAsync が完了し得ないため、タイムアウト/例外時は Abort() で強制破棄しハングさせる
+			try
+			{
+				var closeTask = oldSession.WebSocket.CloseOutputAsync(
+					System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "replaced by reconnect", CancellationToken.None);
+				if (!closeTask.Wait(TimeSpan.FromSeconds(1)))
+				{
+					// 未完了タスクの例外を観測して UnobservedTaskException を防止しつつ強制中断
+					closeTask.ContinueWith(t => { _ = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
+					oldSession.WebSocket.Abort();
+				}
+			}
+			catch (Exception ex)
+			{
+				// クローズ失敗はソケット種別の不整合（Abort 済み等）が主因。強制破棄へフォールバックして Dispose 経路を継続する
+				Log(3, $"[RemoteController] 置換対象ソケットのクローズ失敗（Abort へ移行）: SessionID={sessionId}, {ex.GetType().Name} - {ex.Message}");
+				try { oldSession.WebSocket.Abort(); } catch { /* Abort 済み・破棄済みソケットへの再 Abort は目的達成済みのため無視 */ }
+			}
+
+			// 置換成功者が Dispose を負う（旧セッションの finally の Remove は所有者不一致で no-op かつ Dispose を呼ばないため、
+			// 二重 Dispose にも Dispose 漏れにもならない。WebSocketSession.Dispose は冪等ガード持ち）
+			oldSession.Dispose();
+
+			Log(2, $"[RemoteController] 同一 SessionID の再接続により旧セッションを置換: SessionID={sessionId}, 接続数={Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0)}/{MaxConcurrentClients}");
 		}
 
 		//====================================================================================
@@ -584,6 +700,7 @@ namespace Browser
 			var req = context.Request;
 			var res = context.Response;
 			System.Net.WebSockets.WebSocket ws = null;
+			WebSocketSession session = null;
 			string sessionId = null;
 
 			// 認証チェック
@@ -595,10 +712,19 @@ namespace Browser
 				return;
 			}
 
+			// 上限ゲートの同一 ID 再接続免除:
+			// 同一 session_id の置換はマップ条目数を増やさず接続カウントも正味ゼロのため、上限到達時でも両ゲートを通過させる。
+			// リバースプロキシ経由構成ではクライアント切断が伝播せずハーフオープンセッションがゾンビスイープで回収できず、
+			// スタルセッションが上限枠を占有して正当な再接続を恒久的に拒否しうるため。
+			// ContainsKey 判定後に条目が削除される窓は一時的に上限 +1 の過計上となりうるが、旧セッション側のデクリメントで
+			// 自己是正される（ソケット実接続を伴う正当な接続の誤拒否より許容）。GetCookieValue は副作用なしの読み取りのみ
+			string cookieSessionId = GetCookieValue(req, "session_id");
+			bool isSameIdReconnect = !string.IsNullOrEmpty(cookieSessionId) && _webSocketSessions.ContainsKey(cookieSessionId);
+
 			// 最大接続数制限チェック（アトミックな比較-交換）
 			// Interlocked.CompareExchange を使用して、Check-then-Act のレースコンディションを排除
 			int currentCount = Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0);
-			if (currentCount >= MaxConcurrentClients)
+			if (!isSameIdReconnect && currentCount >= MaxConcurrentClients)
 			{
 				Log(2, $"[RemoteController] WebSocket 接続拒否: 最大接続数 ({MaxConcurrentClients}) に到達 (IP: {req.RemoteEndPoint})");
 				res.StatusCode = 503; // Service Unavailable
@@ -613,17 +739,17 @@ namespace Browser
 				ws = acceptResult.WebSocket;
 
 				// セッションIDを生成（クッキーから取得、または新規発行）
-				sessionId = GetCookieValue(req, "session_id") ?? Guid.NewGuid().ToString("N");
-				if (string.IsNullOrEmpty(GetCookieValue(req, "session_id")))
+				sessionId = cookieSessionId ?? Guid.NewGuid().ToString("N");
+				if (string.IsNullOrEmpty(cookieSessionId))
 				{
 					_sessions.TryAdd(sessionId, new SessionInfo(sessionId));
 				}
 
-				var session = new WebSocketSession(ws, sessionId);
+				session = new WebSocketSession(ws, sessionId);
 
 				// アトミックに接続カウントをインクリメント（上限チェック）
 				int count = Interlocked.Increment(ref _activeConnectionCount);
-				if (count > MaxConcurrentClients)
+				if (count > MaxConcurrentClients && !isSameIdReconnect)
 				{
 					// レースコンディションで上限超過: 接続を拒否
 					Interlocked.Decrement(ref _activeConnectionCount);
@@ -631,12 +757,27 @@ namespace Browser
 					// 標準的な WebSocket 切断フローを使用（Abort ではなく CloseOutputAsync + CloseAsync）
 					try { await ws.CloseOutputAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "接続上限に到達", CancellationToken.None); } catch { }
 					try { await ws.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "接続上限に到達", CancellationToken.None); } catch { }
+					// 拒否パスはマップへ登録しないため、作成済みセッションの Dispose 主体はここしかなく、
+					// 放置は SemaphoreSlim/CTS/Channel のリーク経路となる（未起動タスクなし・Dispose は冪等）
+					session.Dispose();
+					session = null; // catch 側で Remove を呼ばせない（未登録セッションへの空振り除去防止）
 					res.StatusCode = 503;
 					res.Close();
 					return;
 				}
 
-				_webSocketSessions.TryAdd(sessionId, session);
+				// 登録は置換・削除と同じ _sessionMutationLock で直列化（マップ全書き込みの統一ロック）。
+				// TryAdd 失敗 = 同一 ID の旧セッションが在席: 戻り値を握りつぶすと新セッションが
+				// 「カウント済み・マップ未登録」の孤児（ファンアウト対象外＝映像なし）になるため置換する
+				bool registered;
+				lock (_sessionMutationLock)
+				{
+					registered = _webSocketSessions.TryAdd(sessionId, session);
+				}
+				if (!registered)
+				{
+					ReplaceStaleSession(sessionId, session);
+				}
 
 				// セッション集合の変化に伴い WCS FPS を再計算（新セッションは ClientMode=0 のため通常は変化なし。
 				// 接続・切断のライフサイクルで再計算を取りこぼさないための対称性）
@@ -647,7 +788,9 @@ namespace Browser
 				// クライアントから PROTOCOL_VERSION メッセージを受信するまでバージョン未決状態を保持
 				_clientVersions[sessionId] = null;
 
-				Log(2, $"[RemoteController] WebSocket 接続確立: SessionID={sessionId}, IP={req.RemoteEndPoint}, 接続数={count}/{MaxConcurrentClients}");
+				// 接続数はインクリメント戻り値ではなく実値で記録する:
+				// 置換経路ではインクリメント後に旧セッション分のデクリメントが入るため、戻り値では過大表示となる
+				Log(2, $"[RemoteController] WebSocket 接続確立: SessionID={sessionId}, IP={req.RemoteEndPoint}, 接続数={Interlocked.CompareExchange(ref _activeConnectionCount, 0, 0)}/{MaxConcurrentClients}");
 
 				// WebP パイプライン起動判定を EnsureWebpPipelineStarted() に統合
 				// （TOCTOU 解消: _captureStartLock 内での再チェック / 旧 CTS は Dispose せず GC に委譲 —
@@ -668,10 +811,11 @@ namespace Browser
 			{
 				Log(3, $"[RemoteController] WebSocket アップグレードエラー (IP: {req.RemoteEndPoint}): {ex.GetType().Name} - {ex.Message}");
 
-				// セッションが既に追加された場合はクリーンアップ
-				if (sessionId != null)
+				// セッション生成後の例外時クリーンアップ: 所有者（session）を渡すことで同一 ID に登録された
+				// 別セッションを誤削除しない。session 未生成時は登録も会計も発生していないため Remove 自体をスキップ
+				if (sessionId != null && session != null)
 				{
-					RemoveWebSocketSession(sessionId);
+					RemoveWebSocketSession(sessionId, session);
 				}
 
 				// リソースリーク防止のため強制的にソケットを破棄
@@ -840,7 +984,8 @@ namespace Browser
 			}
 			finally
 			{
-				RemoveWebSocketSession(session.SessionId);
+				// 所有者（自セッション）を渡す: 同一 ID へ再接続済みなら所有者不一致で no-op（新セッションの誤削除防止）
+				RemoveWebSocketSession(session.SessionId, session);
 			}
 		}
 
@@ -961,7 +1106,8 @@ namespace Browser
 			}
 			finally
 			{
-				RemoveWebSocketSession(session.SessionId);
+				// 所有者（自セッション）を渡す: 同一 ID へ再接続済みなら所有者不一致で no-op（新セッションの誤削除防止）
+				RemoveWebSocketSession(session.SessionId, session);
 			}
 		}
 
