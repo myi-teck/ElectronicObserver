@@ -1393,6 +1393,19 @@ namespace Browser
 					{
 						session.InitSemaphore.Release();
 					}
+
+					// サーバー再起動・キャプチャループ異常終了でパイプラインが停止したままだと、
+					// クライアント再読み込み後も description も WCS フレームも再送されず WebP 退避が固定化する。
+					// init_request を自己復旧のトリガとして起動保証を呼ぶ（Start 側の Fast-Path ガードで
+					// 稼働中は無操作、キャプチャエンジン未注入ページでは初期化が即失敗し WebP 据え置き）。
+					// 応答送信と初期化セマフォ解放後の後処理に置き、init 応答の遅延に波及させない。
+					// 旧クライアントは description 非対応で待機キーフレームにより無表示になるため version >= 2 のみ。
+					if ( session.ClientMode == 1 )
+					{
+						int? initVer = GetClientVersion( session.SessionId );
+						if ( initVer.HasValue && initVer >= 2 )
+							await EnsureWcsPipelineStarted( "init_request" );
+					}
 				}
 				else if (action == "set_fps")
 				{
