@@ -107,6 +107,11 @@ namespace Browser
 		private DisplayState _displayState = DisplayState.Normal;
 		private string _displayStateReason = "ok";
 
+		/// <summary>前回配信した display_state（state/reason 連結値）。配信ログの変化検出用で、
+		/// rAF ストール検知・復旧手順など「表示状態変化」ログを経ない直接配信経路の証跡に使う。
+		/// 評価・ポーリング・復旧手順の複数スレッドから呼ばれるため _displayStateLock で保護</summary>
+		private string _lastBroadcastDisplayState = null;
+
 		private Timer _displayStateTimer;
 		private int _displayStatePollBusy; // ポーリング再入防止（Evaluate 中の次ティック実行スキップ）
 
@@ -208,6 +213,21 @@ namespace Browser
 		public Task BroadcastDisplayStateAsync(DisplayState state, string reason)
 		{
 			string stateName = state == DisplayState.Degraded ? "degraded" : "normal";
+
+			// 観測性: 前回配信値と異なる場合のみ配信ログを残す。
+			// EvaluateAndApplyDisplayState 経由でない直接配信（rAF ストール検知・復旧手順）は
+			// 「表示状態変化」ログが無く「配信されたのに変化ログが無い」盲点になっていたため、配信側で証跡化する。
+			// 配信は状態遷移時のみ発生し頻度が有界なので P3 のまま（運用上の状態遷移マーカーとして既存 degraded 系ログと整合）
+			bool logBroadcast;
+			lock (_displayStateLock)
+			{
+				string broadcastValue = stateName + "/" + reason;
+				logBroadcast = broadcastValue != _lastBroadcastDisplayState;
+				if (logBroadcast) _lastBroadcastDisplayState = broadcastValue;
+			}
+			if (logBroadcast)
+				Log(3, $"[RemoteController] display_state 配信: {stateName} (reason={reason})");
+
 			string json = "{\"type\":\"display_state\",\"state\":\"" + stateName + "\",\"reason\":\"" + reason + "\"}";
 			return BroadcastControlToAllSessionsAsync(json);
 		}

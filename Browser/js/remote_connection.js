@@ -307,10 +307,16 @@ const ProtocolManager = {
                     }
                     // サーバー伝達 codec: codec 解決の最優先情報源（旧サーバーはフィールドなし → null で導出経路へ委ねる）
                     ProtocolManager.serverCodec = (cfg && typeof cfg.codec === 'string' && cfg.codec.length > 0) ? cfg.codec : null;
-                    // 接続前に既にホスト側表示状態が悪化している場合（ヘッドレス/RDP 切断等）は即 banner を出す
+                    // 接続前に既にホスト側表示状態が悪化している場合（ヘッドレス/RDP 切断等）は即 banner を出す。
+                    // 非 degraded では防御的に解除: 表示経路は degraded 分岐のみで、前回セッション（同一ページ内の
+                    // 再接続）で表示した banner は display_state の再配信がない限り解除されず残留するため
                     if (cfg && cfg.displayState === 'degraded') {
                         ProtocolManager._showDisplayBanner(cfg.displayReason);
+                    } else {
+                        ProtocolManager._hideDisplayBanner();
                     }
+                    // 受信箱の証跡: capture-config 経由の表示状態を接続ごとに記録（旧サーバーはフィールド欠落 → normal 扱い）
+                    if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] capture-config 表示状態受信: state=' + ((cfg && cfg.displayState) || 'normal') + ' reason=' + ((cfg && cfg.displayReason) || ''), 'DISPLAY_STATE');
                     // ダミー映像バッジの初回表示（checkLoginState の 5s ポーリングを待たずに同期）
                     if (typeof setDummyBadge === 'function') {
                         setDummyBadge(!!(cfg && cfg.dummyVideo === true));
@@ -658,6 +664,8 @@ const ProtocolManager = {
                 }
             } else if (msg.type === 'display_state') {
                 // ホスト側の表示状態変化（ヘッドレス/RDP 切断/rAF ストール）。degraded は画面上部に banner で常時提示
+                // 受信箱の証跡: 全受信を state/reason 付きで統一タグに記録（下の分岐ログは banner 操作の提示として維持）
+                if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] display_state 受信: state=' + msg.state + ' reason=' + msg.reason, 'DISPLAY_STATE');
                 if (msg.state === 'degraded') {
                     console.warn('[ProtocolManager] display_state degraded:', msg.reason);
                     if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] ホスト側表示状態が悪化しました (reason=' + msg.reason + ')', 'DISPLAY_STATE_DEGRADED');
