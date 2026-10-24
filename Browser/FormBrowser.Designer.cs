@@ -622,7 +622,7 @@
 			// 
 			this.ToolMenu_Other_DummyVideo.Name = "ToolMenu_Other_DummyVideo";
 			this.ToolMenu_Other_DummyVideo.Size = new System.Drawing.Size(291, 22);
-			this.ToolMenu_Other_DummyVideo.CheckOnClick = true;
+			this.ToolMenu_Other_DummyVideo.CheckOnClick = false;
 			this.ToolMenu_Other_DummyVideo.Text = "ダミー映像（検証用映像源）";
 			this.ToolMenu_Other_DummyVideo.Click += new System.EventHandler(this.ToolMenu_Other_DummyVideo_Click);
 			// 

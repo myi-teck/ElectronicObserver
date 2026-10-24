@@ -2425,8 +2425,9 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 			//    game なしでは実 HUD が来ないため、この初回注入がそのまま空→非空遷移 broadcast として発火する。
 			_remoteController?.UpdateHudData(DummyHudJson);
 
-			// 6) 高優先度ログ（運用者が「本番でダミーが ON になっている」ことを常に認識できる）。
-			AddLog(1, "[DummyVideo] ダミー映像（検証用映像源）を開始しました: " + CustomResourceRequestHandler.DummyVideoUrlBase);
+			// 6) 運用ログ（既定 LogLevel=2 の書き出しフィルタに乗るよう優先度 2。運用者が「本番でダミーが ON に
+			//    なっている」ことを eolog で常に追跡できる）。
+			AddLog(2, "[DummyVideo] ダミー映像（検証用映像源）を開始しました: " + CustomResourceRequestHandler.DummyVideoUrlBase);
 
 			// 7) 10 分周期警告タイマ開始。
 			_dummyVideoWarnTimer.Start();
@@ -2451,7 +2452,12 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 			}
 
 			if (!_dummyVideoActive)
+			{
+				// 冪等スキップ経路でもメニューを同期する: 実状態が既に OFFなのに Checked が残留している場合、
+				// ここで表示を修復しないと以降の表示と実状態の乖離が残り続ける（表示専用 Checked の全経路同期）
+				SyncDummyVideoMenuChecked();
 				return; // 冪等（自己治癒の競合による二重解除も安全にスキップ）
+			}
 
 			_dummyVideoActive = false;
 			CustomResourceRequestHandler.ClearDummyVideoHtml(); // メモリ解放（Exit 経路でも呼ばれるが null 代入のみで冪等）
@@ -2467,11 +2473,11 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 				if (string.IsNullOrEmpty(restoreUrl) || CustomResourceRequestHandler.IsDummyVideoUrl(restoreUrl))
 					restoreUrl = ResolveLogInPageURL();
 				Navigate(restoreUrl);
-				AddLog(1, "[DummyVideo] ダミー映像を停止しました（復帰: " + restoreUrl + "）");
+				AddLog(2, "[DummyVideo] ダミー映像を停止しました（復帰: " + restoreUrl + "）");
 			}
 			else
 			{
-				AddLog(1, "[DummyVideo] ダミー映像を停止しました（手動ナビゲーションによる自己治癒）");
+				AddLog(2, "[DummyVideo] ダミー映像を停止しました（手動ナビゲーションによる自己治癒）");
 			}
 
 			SyncDummyVideoMenuChecked();
@@ -2531,7 +2537,10 @@ requestAnimationFrame(draw);
 		// HTTP 経路（StartDummyVideo 直接呼び出し）にはこのガードは存在しない（リモート自動化はサイレント）。
 		private void ToolMenu_Other_DummyVideo_Click(object sender, EventArgs e)
 		{
-			if (ToolMenu_Other_DummyVideo.Checked)
+			// 分岐は実状態（_dummyVideoActive）基準。Checked は表示専用（SyncDummyVideoMenuChecked のみ更新・
+			// CheckOnClick=false でクリック反転なし）であり、ダイアログ中止や外部リセットで実状態と乖離しうるため
+			// 分岐情報源にすると「1 回クリックしても効かない」体感遅れの原因となる
+			if (_dummyVideoActive)
 			{
 				StopDummyVideo();
 				return;
@@ -2540,7 +2549,14 @@ requestAnimationFrame(draw);
 				"ダミー映像（検証用映像源）を開始します。\n現在のページ（ゲームを含む）はアンロードされます。\n出撃・遠征中ではないことを確認してください。",
 				"ダミー映像", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
 			if (result == DialogResult.Yes)
+			{
 				StartDummyVideo();
+			}
+			else
+			{
+				// 表示専用 Checked と実状態の残留乖離を全経路で修復する（通常は反転発生のため no-op 相当）
+				SyncDummyVideoMenuChecked();
+			}
 		}
 
 		/// <summary>
@@ -2626,6 +2642,15 @@ requestAnimationFrame(draw);
 			catch (Exception ex)
 			{
 				SendErrorReport(ex.ToString(), "Browser_FrameLoadEnd: キャプチャエンジンの自動注入に失敗しました。");
+			}
+
+			// Navigate 検証（軽量）: ダミー有効化後にメインフレームのロード完了がダミー URL であることを
+			// 確認し、eolog に証跡を残す（読み込み成功の到達確認。追加タイマ・スレッドは新設しない）。
+			// 不一致時は下の自己治癒がロールバック＋警告ログを出すため、両条件は排他で二重ログにならない。
+			// AddLog は AsyncRemoteRun でメインスレッド側へ配送されるため、本ハンドラから直接呼出して安全
+			if (_dummyVideoActive && e.Frame != null && e.Frame.IsMain && CustomResourceRequestHandler.IsDummyVideoUrl(e.Frame.Url))
+			{
+				AddLog(2, "[DummyVideo] 表示確認: " + e.Frame.Url);
 			}
 
 			// 状態自己治癒: ダミー ON のままユーザーが手動でダミー以外のページ（game 等）へ遷移した場合は、
