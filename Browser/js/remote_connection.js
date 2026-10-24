@@ -756,7 +756,10 @@ const ProtocolManager = {
         		// [task19 v3] SPS/PPS (description) 受信
         		const description = arrayBuffer.slice(7);
         		// [task23 F-1-2] 空 ArrayBuffer（byteLength === 0）を保持しない（空 extradata で H.264 デコーダを初期化すると InvalidStateError）
+        		let descChanged = false;
         		if (description && description.byteLength > 0) {
+        			// 保持中バイトとの差異を判定（同一バイト列の連続受信では再初期化しない — SPS/PPS 不変ならデコーダ再構築不要）
+        			descChanged = !ProtocolManager._videoDecoderDescription || !ProtocolManager._descriptionsEqual(ProtocolManager._videoDecoderDescription, description);
         			ProtocolManager._videoDecoderDescription = description;
         		}
         		console.log('[ProtocolManager] SPS/PPS received, length:', description.byteLength || description.length);
@@ -765,6 +768,17 @@ const ProtocolManager = {
         		if (!ProtocolManager._videoDecoderInitialized) {
         			// [task23 F-1] 保持中の SPS/PPS（description）を渡与（引数なしだと 919 行で undefined 上書き破棄される）
         			ProtocolManager.initVideoDecoder(ProtocolManager._videoDecoderDescription);
+        		} else if (descChanged) {
+        			// description 変更時は完全再初期化（close → 再生成 → configure）で行う。
+        			// open デコーダへの直接 configure() は行わない: 仕様上 configure() は必ず [[key chunk required]] を
+        			// 立てるため、以降に delta が 1 枚でも到達すると DataError を同期的に投げ、エラーバーストで
+        			// リトライ/フォールバック経路を誤発動させる。キーフレーム待ち中は delta を decode() 前に
+        			// JS レイヤーでドロップし、DataError を構造的に発生させない
+        			ProtocolManager._wcsWaitKeyFrame = true;
+        			ProtocolManager._wcsWaitKeyDropCount = 0;
+        			ProtocolManager._wcsWaitKeySince = Date.now();
+        			const reinitOk = ProtocolManager.initVideoDecoder(description);
+        			if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] SPS/PPS 変更によりデコーダを再初期化 (descLen=' + description.byteLength + ' codec=' + ProtocolManager.resolveCodecString(description) + ' waitKey=1 reinit=' + (reinitOk ? 'ok' : 'skip') + ')', 'SPS_PPS_REINIT');
         		}
         		// SPS/PPS 受信はサーバー側エンコーダ稼働の証左 — 「初期化中」バッジを解除する
         		ProtocolManager.clearWcsInitBadge();
@@ -1174,6 +1188,13 @@ const ProtocolManager = {
     // WebP 退避バッジ表示フラグ: フォールバック発動でセット、onopen で再提示、switchToWcsMode で解除
     _wcsFallbackBadge: false,
 
+    // キーフレーム待ちガード: 再初期化（description 変更・エラーリトライ）後は最初のチャンクが
+    // キーフレームである必要があり（仕様上の [[key chunk required]]）、delta を decode() すると
+    // DataError となる。delta を JS レイヤーでドロップして構造的に回避する（ドロップはエラー計数に含めない）
+    _wcsWaitKeyFrame: false,
+    _wcsWaitKeyDropCount: 0,
+    _wcsWaitKeySince: 0,
+
     // サーバー伝達 codec（capture-config.codec・未伝達時 null）。codec 文字列と実 SPS の
     // profile/level は一致必須（不一致は全フレーム decode 失敗）のため、サーバー実値をローカル導出より優先する
     serverCodec: null,
@@ -1193,6 +1214,17 @@ const ProtocolManager = {
             }
         }
         return 'avc1.420028';
+    },
+
+    // description（AVCC ArrayBuffer）のバイト列一致判定: 同一バイト列の連続受信で再初期化をスキップするため
+    _descriptionsEqual(a, b) {
+        if (!a || !b || a.byteLength !== b.byteLength) return false;
+        const ua = new Uint8Array(a);
+        const ub = new Uint8Array(b);
+        for (let i = 0; i < ua.length; i++) {
+            if (ua[i] !== ub[i]) return false;
+        }
+        return true;
     },
 
     // [task19 P4] Clamp 連続計測（レビュー Minor: 連続Clamp時はサーバー側フレーム生成に問題の可能性）
@@ -1308,6 +1340,10 @@ const ProtocolManager = {
                             // - 進行中初期化なし: フラグは false のままなので再帰呼び出しは正常実行（リトライ維持）
                             // - 進行中初期化あり: フラグは true なので再帰呼び出しは TOCTOU チェックで
                             //   スキップされる（進行中初期化が新デコーダ生成を行うため、リトライは冗長で正しい挙動）
+                            // 再初期化後は最初のチャンクがキーフレーム必須となるため、待ちガードを有効化する
+                            this._wcsWaitKeyFrame = true;
+                            this._wcsWaitKeyDropCount = 0;
+                            this._wcsWaitKeySince = Date.now();
                             this.initVideoDecoder(this._videoDecoderDescription);
                         }
                     } else {
@@ -1382,6 +1418,35 @@ const ProtocolManager = {
     async decodeWebCodecsFrame(data, isKeyFrame, seq) {
         if (!this._videoDecoder || !this._videoDecoderInitialized) {
             return;
+        }
+
+        // キーフレーム待ちガード: 再初期化後は仕様上最初のチャンクがキーフレーム必須で、
+        // delta を decode() すると DataError になる。delta は decode() 前にドロップする
+        // （ドロップはエラー計数に含めない — ガードがフォールバック到達性を損なうのは意図しない）
+        if (this._wcsWaitKeyFrame) {
+            if (!isKeyFrame) {
+                this._wcsWaitKeyDropCount++;
+                if (this._wcsWaitKeyDropCount === 1 || this._wcsWaitKeyDropCount % 10 === 0) {
+                    console.warn(`[ProtocolManager] Waiting for key frame after decoder re-init, dropping delta (count=${this._wcsWaitKeyDropCount})`);
+                    if (window.__eventLog) window.__eventLog.consoleLog('warn', `[ProtocolManager] Waiting for key frame after decoder re-init, dropping delta (count=${this._wcsWaitKeyDropCount})`, 'VD_WAIT_KEY_DROP');
+                }
+                // ガード出口: 閾値（30 枚超過 / 5 秒超過）までキーフレームが来ない場合はサーバー側の
+                // エンコーダ再初期化を要求して黒画面スタールを防ぐ（既存の 5 秒スロット様式を流用し要求の連打を防止）
+                const waitNow = Date.now();
+                if ((this._wcsWaitKeyDropCount > 30 || waitNow - this._wcsWaitKeySince > 5000) &&
+                    waitNow - this._videoDecoderReinitRequestTime >= this._clampReinitIntervalMs) {
+                    this._videoDecoderReinitRequestTime = waitNow;
+                    console.warn(`[ProtocolManager] Key-frame wait exceeded threshold (drops=${this._wcsWaitKeyDropCount}), requesting reinit_decoder`);
+                    if (window.__eventLog) window.__eventLog.consoleLog('warn', `[ProtocolManager] Key-frame wait exceeded threshold (drops=${this._wcsWaitKeyDropCount}), requesting reinit_decoder`, 'VD_REINIT_REQ');
+                    if (typeof sendControlAction === 'function') {
+                        sendControlAction('reinit_decoder');
+                    }
+                }
+                return;
+            }
+            // キーフレーム到達でガードを解除し、以降は通常デコードへ復帰
+            this._wcsWaitKeyFrame = false;
+            this._wcsWaitKeyDropCount = 0;
         }
 
         const fps = ProtocolManager.webCodecsFps || 30;
@@ -1482,6 +1547,9 @@ function switchToWcsMode() {
         // 明示的な WCS 再試行: エラーカウンタの初回成功リセットをやり直せるよう初回フラグも戻し、退避バッジを解除する
         ProtocolManager._videoDecoderFirstFrameRendered = false;
         ProtocolManager._wcsFallbackBadge = false;
+        // キーフレーム待ちガードの計測状態も新試行用に振り直す
+        ProtocolManager._wcsWaitKeyFrame = false;
+        ProtocolManager._wcsWaitKeyDropCount = 0;
         ProtocolManager._videoDecoderTimestampCounter = 0;
         ProtocolManager._videoDecoderLastTimestamp = 0;
         // [task19 P4] Clamp 連続計測もリセット（モード再構築で計測状態を新規に開始）

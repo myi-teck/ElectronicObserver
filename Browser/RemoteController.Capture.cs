@@ -1305,6 +1305,24 @@ namespace Browser
 						_encoderConfiguredFps = fpsForEncoder;
 						var codec = dict.TryGetValue("codec", out var codecVal) ? codecVal as string : null;
 						Log(2, $"[RemoteController] WebCodecs エンコーダ初期化成功 (codec: {codec}, framerate: {fpsForEncoder})");
+						// 収束点: 再初期化で SPS/PPS が再生成されるため、全 WCS セッションの送信済みフラグを戻して
+						// 次キーフレームでの再送を強制する。switch_mode / reinit_decoder / 2 倍乖離 / DisplayState 復旧
+						// の全再初期化経路が本メソッド経由のため、ここで一元保証する
+						// （既存の各経路のリセットは冪等なので削除せず残す — 差分最小化）
+						int descResetCount = 0;
+						foreach (var sess in _webSocketSessions.Values)
+						{
+							if (sess.ClientMode != 1) continue;
+							var clientVer = GetClientVersion(sess.SessionId);
+							if (clientVer == null || clientVer < 2) continue;
+							sess.DescriptionSent = false;
+							sess.ResetDescriptionSendState();
+							descResetCount++;
+						}
+						if (descResetCount > 0)
+						{
+							Log(3, $"[RemoteController] エンコーダ初期化に伴い WCS セッションの description 送信フラグをリセット（{descResetCount} セッション）");
+						}
 						return true;
 					}
 					else
