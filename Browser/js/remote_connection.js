@@ -1176,14 +1176,15 @@ const ProtocolManager = {
     },
 
     //================================================================================
-    // task28 Phase 3: VideoDecoder 関連機能
+    // VideoDecoder 関連機能
     //--------------------------------------------------------------------------------
     // VideoDecoder の初期化・デコード管理を行う。
-    // AVCC 形式の SPS/PPS (description) を VideoDecoder に渡す。
+    // ビットストリームは Annex B（start code 前置）運用のため description を configure に
+    // 渡さない。保持中の description（AVCC 形式）は codec 文字列導出専用
     //================================================================================
     _videoDecoder: null,
     _videoDecoderInitialized: false,
-    _videoDecoderDescription: null,  // SPS/PPS (AVCC 形式)
+    _videoDecoderDescription: null,  // SPS/PPS (AVCC 形式)・codec 文字列導出専用
     _videoDecoderErrorCount: 0,
     _videoDecoderMaxErrors: 3,
     _videoDecoderReinitRequestTime: 0,
@@ -1203,17 +1204,19 @@ const ProtocolManager = {
     _wcsWaitKeyDropCount: 0,
     _wcsWaitKeySince: 0,
 
-    // サーバー伝達 codec（capture-config.codec・未伝達時 null）。codec 文字列と実 SPS の
-    // profile/level は一致必須（不一致は全フレーム decode 失敗）のため、サーバー実値をローカル導出より優先する
+    // サーバー伝達 codec（capture-config.codec・未伝達時 null）。この値はエンコーダ設定値であり
+    // 実ビットストリームの実測値ではない（エンコーダは設定と異なる profile/level を出力し得る）。
+    // description 未受領時の代替に留め、実 SPS からの導出を優先する
     serverCodec: null,
 
-    // VideoDecoder.configure() に渡す codec 文字列を解決する（優先順位: サーバー伝達値 → AVCC description 導出 → 固定フォールバック）。
+    // VideoDecoder.configure() に渡す codec 文字列を解決する（優先順位: AVCC description 導出 → サーバー伝達値 → 固定フォールバック）。
     // AVCC（AVCDecoderConfigurationRecord）の byte1-3 は SPS byte1-3（profile_idc / constraint_set_flags / level_idc）と
-    // 同値であり、codec 文字列サフィックスはこれら 3 バイトの 16 進表記（RFC 6381 §3.4）。
+    // 同値であり、codec 文字列サフィックスはこれら 3 バイトの 16 進表記（RFC 6381 §3.4）。サポート判定は codec 文字列が
+    // 示す正確な profile/level/constraint を要求するため、実ストリームと一致する実 SPS 導出を最優先とする。
+    // サーバー伝達値はエンコーダ設定値であり実測値ではないので導出不能時の代替に留める。
     // 導出の前提は最小長 4 バイトかつ configurationVersion(=1)。満たさない場合は導出不能（境界外アクセスは
-    // codec 文字列を破綻させる）ため固定値へフォールバックする
+    // codec 文字列を破綻させる）ため代替へ退避する
     resolveCodecString(desc) {
-        if (this.serverCodec) return this.serverCodec;
         if (desc && desc.byteLength >= 4) {
             const u8 = new Uint8Array(desc);
             if (u8[0] === 0x01) {
@@ -1221,6 +1224,7 @@ const ProtocolManager = {
                 return 'avc1.' + hex2(u8[1]) + hex2(u8[2]) + hex2(u8[3]);
             }
         }
+        if (this.serverCodec) return this.serverCodec;
         return 'avc1.420028';
     },
 
@@ -1276,8 +1280,8 @@ const ProtocolManager = {
                 this._videoDecoder = null;
             }
 
-            // [task23 F-1/F-1-2] undefined 引数・空 ArrayBuffer（byteLength === 0）の上書き破棄防止
-            // （引数なし呼び出し時に受信済み SPS/PPS が undefined で上書きされ、configure への渡与経路が断絶していた）
+            // 引数なし呼び出し時の undefined・空 ArrayBuffer（byteLength === 0）による上書き破棄防止
+            // （受信済み SPS/PPS が空値で消えると codec 導出の元データが失われる）
             if (description && description.byteLength > 0) {
                 this._videoDecoderDescription = description;
             }
@@ -1374,19 +1378,17 @@ const ProtocolManager = {
             });
 
             const config = {
-                // サーバー伝達値 → description(AVCC) 導出 → 固定値の順で解決（実 SPS との Level 不一致による
-                // 全フレーム decode 失敗を防ぐ）。codedWidth/Height は description 在り時は仕様上無視されるが、
-                // description 欠落時のフォールバック構成として整合する値を維持する
+                // description(AVCC) 導出 → サーバー伝達値 → 固定値の順で解決（codec 文字列は実ストリームの
+                // profile/level と一致必須）。codedWidth/Height はデコーダ実装選択のヒントであり、
+                // description 廃止後は実寸との整合が意味を持つ（エンコーダ固定値 1200x720 を維持）
                 codec: this.resolveCodecString(this._videoDecoderDescription),
                 codedWidth: 1200,
                 codedHeight: 720,
                 optimizeForLatency: true
             };
-            // [task23 F-1/F-1-2] SPS/PPS (description) を非空の場合のみ渡与
-            // （MDN: description は Optional メンバ・未保持時はフィールドを付けないことも仕様上妥当）
-            if (this._videoDecoderDescription && this._videoDecoderDescription.byteLength > 0) {
-                config.description = this._videoDecoderDescription;
-            }
+            // description を渡与しない: 仕様上 description 在りなら bitstream は avc 形式（NAL 長前置り）と
+            // 解釈されるが、実配信は Annex B（start code 前置）であり組合せるとチャンク先頭から解析不能となる。
+            // description 無しは annexb 形式と解釈されるため、Annex B 運用では渡さないのが正しい
 
             this._videoDecoder.configure(config);
 
