@@ -774,7 +774,7 @@ const ProtocolManager = {
         		if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] SPS/PPS received, length: ' + (description.byteLength || description.length), 'SPS_PPS');
         	
         		if (!ProtocolManager._videoDecoderInitialized) {
-        			// [task23 F-1] 保持中の SPS/PPS（description）を渡与（引数なしだと 919 行で undefined 上書き破棄される）
+        			// 保持中の description を渡与する（ローカル変数は空の可能性があるため、保持値で直前の有効な SPS/PPS を初期化に使う）
         			ProtocolManager.initVideoDecoder(ProtocolManager._videoDecoderDescription);
         		} else if (descChanged) {
         			// description 変更時は完全再初期化（close → 再生成 → configure）で行う。
@@ -1332,7 +1332,7 @@ const ProtocolManager = {
                             // クローズ済みへの close() は InvalidStateError のため、closed のときはスキップする
                             if (this._videoDecoder && this._videoDecoder.state !== 'closed') {
                                 try { this._videoDecoder.close(); } catch (e2) {
-                                    // [task19 第3回二次Minor] 例外の握りつぶし禁止（AGENTS.md NEVER）: close() 失敗をログに記録
+                                    // close() 失敗はログ記録（AGENTS.md NEVER 違反の例外握りつぶし防止）
                                     console.warn('[ProtocolManager] VideoDecoder.close() failed (error retry path):', e2 && e2.message ? e2.message : e2);
                                     if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] VideoDecoder.close() failed (error retry path): ' + (e2 && e2.message ? e2.message : e2), 'VD_CLOSE_FAIL');
                                 }
@@ -1407,7 +1407,7 @@ const ProtocolManager = {
                 // クローズ済みへの close() は InvalidStateError のため、closed のときはスキップする
                 if (this._videoDecoder.state !== 'closed') {
                     try { this._videoDecoder.close(); } catch (e2) {
-                        // [task19 第3回二次Minor] 例外の握りつぶし禁止（AGENTS.md NEVER）: close() 失敗をログに記録
+                        // close() 失敗はログ記録（AGENTS.md NEVER 違反の例外握りつぶし防止）
                         console.warn('[ProtocolManager] VideoDecoder.close() failed (initVideoDecoder exception path):', e2 && e2.message ? e2.message : e2);
                         if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] VideoDecoder.close() failed (initVideoDecoder exception path): ' + (e2 && e2.message ? e2.message : e2), 'VD_CLOSE_FAIL');
                     }
