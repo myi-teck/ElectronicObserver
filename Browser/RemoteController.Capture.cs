@@ -893,6 +893,13 @@ namespace Browser
 						var cachedDesc = new byte[pullResult.description.Length];
 						Buffer.BlockCopy(pullResult.description, 0, cachedDesc, 0, cachedDesc.Length);
 						_lastWebCodecsDescription = cachedDesc;
+						// AVCC record 先頭 4 バイト（configurationVersion / profile_idc / constraint_set_flags / level_idc）を
+						// 16 進で記録し、エンコーダ出力の実 Level を恒常的に観測可能にする
+						// （codec 文字列と実 Level の不一致はクライアントの全フレーム decode 失敗として現れるため、切り分けの証跡とする）
+						if (cachedDesc.Length >= 4)
+						{
+							Log(2, $"[RemoteController] description 先頭: {cachedDesc[0]:X2} {cachedDesc[1]:X2} {cachedDesc[2]:X2} {cachedDesc[3]:X2}");
+						}
 					}
 
 					// Flags: キーフレームかどうか（エンコーダが報告したチャンク種別が唯一の正）
@@ -1972,7 +1979,8 @@ namespace Browser
 					var displayState = GetCurrentDisplayState(out displayReason);
 					string displayStateName = displayState == DisplayState.Degraded ? "degraded" : "normal";
 					// dummyVideo: ダミー映像（検証用映像源）状態。旧クライアントは無知フィールドを無視する
-					var json = $"{{\"mode\":\"{_currentCaptureMode.ToString().ToLower()}\",\"bitrate\":{_webCodecsBitrate},\"fps\":{_webCodecsFps},\"displayState\":\"{displayStateName}\",\"displayReason\":\"{displayReason}\",\"dummyVideo\":" + WriteJsonBool(_parent.IsDummyVideo) + "}";
+					// codec: エンコーダ設定値の実値。クライアントは最優先の codec 情報源として使う（旧クライアントは未知フィールドを無視するため後方互換）
+					var json = $"{{\"mode\":\"{_currentCaptureMode.ToString().ToLower()}\",\"bitrate\":{_webCodecsBitrate},\"fps\":{_webCodecsFps},\"codec\":\"{_webCodecsCodec}\",\"displayState\":\"{displayStateName}\",\"displayReason\":\"{displayReason}\",\"dummyVideo\":" + WriteJsonBool(_parent.IsDummyVideo) + "}";
 					res.ContentType = "application/json";
 					var bytes = Encoding.UTF8.GetBytes(json);
 					res.ContentLength64 = bytes.Length;
@@ -2023,7 +2031,10 @@ namespace Browser
 
 		private volatile bool _isWebCodecsInitialized = false;
 
-		private volatile string _webCodecsCodec = "avc1.42001f"; // H.264 Baseline Level 3.1
+		// 1200×720@60 の運用には H.264 Level 3.2 以上が必須（L3.1 の maxMBPS 不足）。
+		// codec 文字列の Level と実 SPS の Level が不一致だとクライアント側で全フレーム decode 失敗となるため、
+		// 余裕を持った L4.0 を採用する
+		private volatile string _webCodecsCodec = "avc1.420028"; // H.264 Baseline Level 4.0
 
 		// WebCodecs 再初期化バックオフ（iframe 破棄直後・エンジン未注入時に毎フレーム再初期化しないためのスロットリング）
 		private DateTime _lastWebCodecsReinitUtc = DateTime.MinValue;
