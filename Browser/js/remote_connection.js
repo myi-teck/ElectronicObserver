@@ -1187,11 +1187,12 @@ const ProtocolManager = {
     //--------------------------------------------------------------------------------
     // VideoDecoder の初期化・デコード管理を行う。
     // ビットストリームは Annex B（start code 前置）運用のため description を configure に
-    // 渡さない。保持中の description（AVCC 形式）は codec 文字列導出専用
+    // 渡さない。保持中の description（AVCC 形式）は codec 文字列導出と、キーフレームへの
+    // Annex B パラメータセット再構成（前置）のみに使う
     //================================================================================
     _videoDecoder: null,
     _videoDecoderInitialized: false,
-    _videoDecoderDescription: null,  // SPS/PPS (AVCC 形式)・codec 文字列導出専用
+    _videoDecoderDescription: null,  // SPS/PPS (AVCC 形式)・codec 導出と Annex B 前置の再構成専用
     _videoDecoderErrorCount: 0,
     _videoDecoderMaxErrors: 3,
     _videoDecoderReinitRequestTime: 0,
@@ -1210,6 +1211,9 @@ const ProtocolManager = {
     _wcsWaitKeyFrame: false,
     _wcsWaitKeyDropCount: 0,
     _wcsWaitKeySince: 0,
+
+    // Annex B パラメータセット前置の発生回数（低頻度ログ可視化用・キーフレーム毎にインクリメント）
+    _wcsAnnexBPrefixCount: 0,
 
     // サーバー伝達 codec（capture-config.codec・未伝達時 null）。この値はエンコーダ設定値であり
     // 実ビットストリームの実測値ではない（エンコーダは設定と異なる profile/level を出力し得る）。
@@ -1244,6 +1248,33 @@ const ProtocolManager = {
             if (ua[i] !== ub[i]) return false;
         }
         return true;
+    },
+
+    // AVCC（AVCDecoderConfigurationRecord）から Annex B パラメータセット（00 00 00 01 + SPS + 00 00 00 01 + PPS）を再構成する。
+    // レイアウト根拠は生成側 _buildAvcc（ISO/IEC 14496-15 §5.3.3.1）:
+    // [0]=configurationVersion(1) / [1-3]=profile・constraint・level / [4]=0xFF / [5]=0xE1(reserved 111 + numSPS=1) /
+    // [6-7]=SPS 長(BE16) / [8..]=SPS 本体 / [8+spsLen]=numPPS(1) / [9-10+spsLen]=PPS 長(BE16) / [11+spsLen..]=PPS 本体。
+    // 変換不能時は null を返し、呼び出し側は「前置なしで元チャンクをそのまま decode()」へ安全フォールバックする
+    // （＝in-band 依存に戻るだけで新規の害は生まない）。全読み取りは境界チェックの後に行い、
+    // 境界外アクセス（暗黙 undefined）を発生させない
+    _buildAnnexBParameterSets(desc) {
+        if (!desc || desc.byteLength < 11) return null;              // ヘッダ 6B + SPS 長 2B + numPPS/PPS 長 3B の下限
+        const u8 = (desc instanceof Uint8Array) ? desc : new Uint8Array(desc);
+        if (u8[0] !== 0x01) return null;                             // configurationVersion（生成側は 1 固定）
+        if (u8[5] !== 0xE1) return null;                             // reserved(3)=111 + numSPS=1（生成側は 1 固定）
+        const spsLen = (u8[6] << 8) | u8[7];
+        if (spsLen === 0 || 8 + spsLen + 3 > u8.length) return null; // numPPS / PPS 長の読み出し境界
+        if (u8[8 + spsLen] !== 0x01) return null;                    // numPPS=1（生成側は 1 固定）
+        const ppsLen = (u8[9 + spsLen] << 8) | u8[10 + spsLen];
+        if (ppsLen === 0 || 11 + spsLen + ppsLen > u8.length) return null; // PPS 本体の読み出し境界
+        const sps = u8.subarray(8, 8 + spsLen);
+        const pps = u8.subarray(11 + spsLen, 11 + spsLen + ppsLen);
+        const out = new Uint8Array(8 + spsLen + ppsLen);             // start code 4B ×2 + SPS + PPS
+        out.set([0, 0, 0, 1], 0);
+        out.set(sps, 4);
+        out.set([0, 0, 0, 1], 4 + spsLen);
+        out.set(pps, 8 + spsLen);
+        return out;
     },
 
     // [task19 P4] Clamp 連続計測（レビュー Minor: 連続Clamp時はサーバー側フレーム生成に問題の可能性）
@@ -1288,7 +1319,7 @@ const ProtocolManager = {
             }
 
             // 引数なし呼び出し時の undefined・空 ArrayBuffer（byteLength === 0）による上書き破棄防止
-            // （受信済み SPS/PPS が空値で消えると codec 導出の元データが失われる）
+            // （受信済み SPS/PPS が空値で消ると codec 導出と Annex B 前置の元データが失われる）
             if (description && description.byteLength > 0) {
                 this._videoDecoderDescription = description;
             }
@@ -1507,6 +1538,27 @@ const ProtocolManager = {
         this._videoDecoderLastTimestamp = timestamp;
 
         try {
+            // Annex B 運用では description を渡さないため、仕様上 key チャンクがデコードに必要な
+            // 全パラメータセットを内包していることが期待される。エンコーダ挙動（IDR に SPS/PPS を
+            // 付けるか）に依存せず保証するため、key チャンクには description から再構成した
+            // パラメータセットを常に前置する（同一パラメータセットの再受領は Annex B では無害）。
+            // 変換不能時は無前置で in-band 依存へ退避する
+            if (isKeyFrame) {
+                const ps = this._buildAnnexBParameterSets(this._videoDecoderDescription);
+                if (ps) {
+                    const merged = new Uint8Array(ps.byteLength + data.byteLength);
+                    merged.set(ps, 0);
+                    merged.set(new Uint8Array(data), ps.byteLength);
+                    data = merged;
+                    this._wcsAnnexBPrefixCount++;
+                    // 前置は定常動作なので全件ログは帯域過大。初回と 30 件毎のみ記録する
+                    if (this._wcsAnnexBPrefixCount === 1 || this._wcsAnnexBPrefixCount % 30 === 0) {
+                        console.log(`[ProtocolManager] Annex B SPS/PPS prefixed to key chunk (count=${this._wcsAnnexBPrefixCount}, psBytes=${ps.byteLength})`);
+                        if (window.__eventLog) window.__eventLog.consoleLog('log', `[ProtocolManager] Annex B SPS/PPS prefixed to key chunk (count=${this._wcsAnnexBPrefixCount}, psBytes=${ps.byteLength})`, 'VD_PS_PREFIX');
+                    }
+                }
+            }
+
             var chunk = new EncodedVideoChunk({
                 type: isKeyFrame ? 'key' : 'delta',
                 data: data,
@@ -1567,6 +1619,7 @@ function switchToWcsMode() {
         // キーフレーム待ちガードの計測状態も新試行用に振り直す
         ProtocolManager._wcsWaitKeyFrame = false;
         ProtocolManager._wcsWaitKeyDropCount = 0;
+        ProtocolManager._wcsAnnexBPrefixCount = 0;
         ProtocolManager._videoDecoderTimestampCounter = 0;
         ProtocolManager._videoDecoderLastTimestamp = 0;
         // [task19 P4] Clamp 連続計測もリセット（モード再構築で計測状態を新規に開始）
