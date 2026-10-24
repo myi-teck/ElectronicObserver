@@ -242,6 +242,10 @@ const ProtocolManager = {
             this.wsReconnectAttempts = 0;
             this.effectiveMode = 'ws';
             this.updateConnStatus('WS', true);
+            // WebP 退避中は再接続でバッジが 'WS' に上書きされるため、退避状態を再提示する（WCS 再試行まで維持）
+            if (this._wcsFallbackBadge) {
+                this.updateConnStatus('低遅延モード不可 — WebP に退避中', true);
+            }
 
             // [指数バックオフリセット] 接続成功時にバックオフをリセット
             this._currentBackoffMs = this._initBackoffMs;
@@ -301,6 +305,8 @@ const ProtocolManager = {
                         console.log(`[ProtocolManager] サーバー配信 FPS を同期しました: ${srvFps}fps`);
                         if (window.__eventLog) window.__eventLog.consoleLog('log', `[ProtocolManager] サーバー配信 FPS を同期しました: ${srvFps}fps`, 'WCS_FPS_SYNC');
                     }
+                    // サーバー伝達 codec: codec 解決の最優先情報源（旧サーバーはフィールドなし → null で導出経路へ委ねる）
+                    ProtocolManager.serverCodec = (cfg && typeof cfg.codec === 'string' && cfg.codec.length > 0) ? cfg.codec : null;
                     // 接続前に既にホスト側表示状態が悪化している場合（ヘッドレス/RDP 切断等）は即 banner を出す
                     if (cfg && cfg.displayState === 'degraded') {
                         ProtocolManager._showDisplayBanner(cfg.displayReason);
@@ -314,6 +320,8 @@ const ProtocolManager = {
                     // 取得失敗は致命的ではない: 既定値（30fps 相当）で動作を継続する
                     console.warn('[ProtocolManager] /capture-config 取得失敗、FPS は既定値を使用: ' + err.message);
                     if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] /capture-config 取得失敗、FPS は既定値を使用: ' + err.message, 'WCS_FPS_SYNC_FAIL');
+                    // 前回セッションの伝達値が残ると現サーバーの実 Level と食い違うため、導出経路へ戻す
+                    ProtocolManager.serverCodec = null;
                 });
 
             setTimeout(() => {
@@ -1158,6 +1166,35 @@ const ProtocolManager = {
     _videoDecoderMaxErrors: 3,
     _videoDecoderReinitRequestTime: 0,
 
+    // 当該 WCS 試行の初回フレーム描画済みフラグ: エラーカウンタのリセットは初回成功時（output 内）と
+    // 明示的モード切替でのみ行う。リトライのたびにリセットすると閾値（3 回）に永久に到達せず、
+    // WebP フォールバックへ遷移できない（無限リトライループ）ため
+    _videoDecoderFirstFrameRendered: false,
+
+    // WebP 退避バッジ表示フラグ: フォールバック発動でセット、onopen で再提示、switchToWcsMode で解除
+    _wcsFallbackBadge: false,
+
+    // サーバー伝達 codec（capture-config.codec・未伝達時 null）。codec 文字列と実 SPS の
+    // profile/level は一致必須（不一致は全フレーム decode 失敗）のため、サーバー実値をローカル導出より優先する
+    serverCodec: null,
+
+    // VideoDecoder.configure() に渡す codec 文字列を解決する（優先順位: サーバー伝達値 → AVCC description 導出 → 固定フォールバック）。
+    // AVCC（AVCDecoderConfigurationRecord）の byte1-3 は SPS byte1-3（profile_idc / constraint_set_flags / level_idc）と
+    // 同値であり、codec 文字列サフィックスはこれら 3 バイトの 16 進表記（RFC 6381 §3.4）。
+    // 導出の前提は最小長 4 バイトかつ configurationVersion(=1)。満たさない場合は導出不能（境界外アクセスは
+    // codec 文字列を破綻させる）ため固定値へフォールバックする
+    resolveCodecString(desc) {
+        if (this.serverCodec) return this.serverCodec;
+        if (desc && desc.byteLength >= 4) {
+            const u8 = new Uint8Array(desc);
+            if (u8[0] === 0x01) {
+                const hex2 = n => ('0' + n.toString(16)).slice(-2);
+                return 'avc1.' + hex2(u8[1]) + hex2(u8[2]) + hex2(u8[3]);
+            }
+        }
+        return 'avc1.420028';
+    },
+
     // [task19 P4] Clamp 連続計測（レビュー Minor: 連続Clamp時はサーバー側フレーム生成に問題の可能性）
     // 連続 3 回 Clamp 発生でサーバーに reinit_decoder を要求（5秒スロットリング付き）
     _clampConsecutiveCount: 0,
@@ -1204,7 +1241,6 @@ const ProtocolManager = {
             if (description && description.byteLength > 0) {
                 this._videoDecoderDescription = description;
             }
-            this._videoDecoderErrorCount = 0;
 
             this._videoDecoder = new VideoDecoder({
                 output: (frame) => {
@@ -1217,6 +1253,12 @@ const ProtocolManager = {
                         //  null frame 時は frame が存在しないため、close も副次処理も実行しない）
                         if (frame) {
                             drawVideoFrame(frame);
+                            // 初回デコード成功時のみエラーカウンタをクリア: リトライのたびの自己リセットは
+                            // 閾値到達を永久に妨げるため、初回成功・明示的モード切替・フォールバック確定時のみリセットする
+                            if (!this._videoDecoderFirstFrameRendered) {
+                                this._videoDecoderFirstFrameRendered = true;
+                                this._videoDecoderErrorCount = 0;
+                            }
                             // [task23 指摘5] 描画副次処理は output コールバックに残留（責務分離）
                             // [task23 指摘2] frame が null 時は副次処理をスキップ（frameCount 過剰インクリメント・FPS 表示ズレ防止）
                             frameCount++;
@@ -1246,10 +1288,14 @@ const ProtocolManager = {
                         console.warn(`[ProtocolManager] VideoDecoder error retry ${this._videoDecoderErrorCount}/${this._videoDecoderMaxErrors}`);
                         if (window.__eventLog) window.__eventLog.consoleLog('warn', `[ProtocolManager] VideoDecoder error retry ${this._videoDecoderErrorCount}/${this._videoDecoderMaxErrors}`, 'VD_ERROR_RETRY');
                         if (this._videoDecoderDescription) {
-                            try { this._videoDecoder.close(); } catch (e2) {
-                                // [task19 第3回二次Minor] 例外の握りつぶし禁止（AGENTS.md NEVER）: close() 失敗をログに記録
-                                console.warn('[ProtocolManager] VideoDecoder.close() failed (error retry path):', e2 && e2.message ? e2.message : e2);
-                                if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] VideoDecoder.close() failed (error retry path): ' + (e2 && e2.message ? e2.message : e2), 'VD_CLOSE_FAIL');
+                            // デコードエラーで UA がデコーダを自動クローズする（Close is final）。
+                            // クローズ済みへの close() は InvalidStateError のため、closed のときはスキップする
+                            if (this._videoDecoder && this._videoDecoder.state !== 'closed') {
+                                try { this._videoDecoder.close(); } catch (e2) {
+                                    // [task19 第3回二次Minor] 例外の握りつぶし禁止（AGENTS.md NEVER）: close() 失敗をログに記録
+                                    console.warn('[ProtocolManager] VideoDecoder.close() failed (error retry path):', e2 && e2.message ? e2.message : e2);
+                                    if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] VideoDecoder.close() failed (error retry path): ' + (e2 && e2.message ? e2.message : e2), 'VD_CLOSE_FAIL');
+                                }
                             }
                             this._videoDecoder = null;
                             this._videoDecoderInitialized = false;
@@ -1261,8 +1307,7 @@ const ProtocolManager = {
                             // 引き起こす競合が発生する。手動解放を削除し finally の解放のみに一本化:
                             // - 進行中初期化なし: フラグは false のままなので再帰呼び出しは正常実行（リトライ維持）
                             // - 進行中初期化あり: フラグは true なので再帰呼び出しは TOCTOU チェックで
-                            //   スキップされる（進行中初期化が新デコーダ生成と _videoDecoderErrorCount
-                            //   リセットを行うため、リトライは冗長で正しい挙動）
+                            //   スキップされる（進行中初期化が新デコーダ生成を行うため、リトライは冗長で正しい挙動）
                             this.initVideoDecoder(this._videoDecoderDescription);
                         }
                     } else {
@@ -1270,7 +1315,13 @@ const ProtocolManager = {
                         if (window.__eventLog) window.__eventLog.consoleLog('error', '[ProtocolManager] VideoDecoder max errors exceeded, falling back to WebP', 'VD_FALLBACK_WEBP');
                         this._videoDecoder = null;
                         this._videoDecoderInitialized = false;
+                        // フォールバックは当該 WCS 試行の終端確定: ここでのゼロクリアは次試行（再接続/setMode）を
+                        // 1 エラー目で即再フォールバックさせないためのもの（リトライ中のリセットとは役割が異なる）
                         this._videoDecoderErrorCount = 0;
+                        // 退避の可視化: setMode の再接続で onopen がバッジを 'WS' に上書きするため、
+                        // フラグ経由で退避状態を再提示する（解除は switchToWcsMode のみ）
+                        this._wcsFallbackBadge = true;
+                        this.updateConnStatus('低遅延モード不可 — WebP に退避中', true);
                         if (typeof ProtocolManager.setMode === 'function') {
                             ProtocolManager.setMode('websocket');
                         }
@@ -1279,7 +1330,10 @@ const ProtocolManager = {
             });
 
             const config = {
-                codec: 'avc1.42001f',
+                // サーバー伝達値 → description(AVCC) 導出 → 固定値の順で解決（実 SPS との Level 不一致による
+                // 全フレーム decode 失敗を防ぐ）。codedWidth/Height は description 在り時は仕様上無視されるが、
+                // description 欠落時のフォールバック構成として整合する値を維持する
+                codec: this.resolveCodecString(this._videoDecoderDescription),
                 codedWidth: 1200,
                 codedHeight: 720,
                 optimizeForLatency: true
@@ -1293,8 +1347,10 @@ const ProtocolManager = {
             this._videoDecoder.configure(config);
 
             this._videoDecoderInitialized = true;
-            console.log('[ProtocolManager] VideoDecoder 初期化成功');
-            if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] VideoDecoder 初期化成功', 'VD_INIT_OK');
+            // 採用 codec と description 長を記録: 実 SPS Level との突合（黒画面切り分け）の証跡
+            const descLen = (this._videoDecoderDescription && this._videoDecoderDescription.byteLength) || 0;
+            console.log(`[ProtocolManager] VideoDecoder 初期化成功 (codec=${config.codec} descLen=${descLen})`);
+            if (window.__eventLog) window.__eventLog.consoleLog('log', `[ProtocolManager] VideoDecoder 初期化成功 codec=${config.codec} descLen=${descLen}`, 'VD_INIT_OK');
             return true;
         } catch (e) {
             // [task19 v3] Major 4 修正: catch した例外もエラーカウントに反映
@@ -1304,10 +1360,13 @@ const ProtocolManager = {
 
             // [task19 v4] Major 1 修正: デコーダ生成後の例外時にリソースを確実に解放
             if (this._videoDecoder) {
-                try { this._videoDecoder.close(); } catch (e2) {
-                    // [task19 第3回二次Minor] 例外の握りつぶし禁止（AGENTS.md NEVER）: close() 失敗をログに記録
-                    console.warn('[ProtocolManager] VideoDecoder.close() failed (initVideoDecoder exception path):', e2 && e2.message ? e2.message : e2);
-                    if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] VideoDecoder.close() failed (initVideoDecoder exception path): ' + (e2 && e2.message ? e2.message : e2), 'VD_CLOSE_FAIL');
+                // クローズ済みへの close() は InvalidStateError のため、closed のときはスキップする
+                if (this._videoDecoder.state !== 'closed') {
+                    try { this._videoDecoder.close(); } catch (e2) {
+                        // [task19 第3回二次Minor] 例外の握りつぶし禁止（AGENTS.md NEVER）: close() 失敗をログに記録
+                        console.warn('[ProtocolManager] VideoDecoder.close() failed (initVideoDecoder exception path):', e2 && e2.message ? e2.message : e2);
+                        if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] VideoDecoder.close() failed (initVideoDecoder exception path): ' + (e2 && e2.message ? e2.message : e2), 'VD_CLOSE_FAIL');
+                    }
                 }
                 this._videoDecoder = null;
             }
@@ -1420,6 +1479,9 @@ function switchToWcsMode() {
         ProtocolManager._videoDecoderInitializing = false;
         ProtocolManager._videoDecoderDescription = null;
         ProtocolManager._videoDecoderErrorCount = 0;
+        // 明示的な WCS 再試行: エラーカウンタの初回成功リセットをやり直せるよう初回フラグも戻し、退避バッジを解除する
+        ProtocolManager._videoDecoderFirstFrameRendered = false;
+        ProtocolManager._wcsFallbackBadge = false;
         ProtocolManager._videoDecoderTimestampCounter = 0;
         ProtocolManager._videoDecoderLastTimestamp = 0;
         // [task19 P4] Clamp 連続計測もリセット（モード再構築で計測状態を新規に開始）
