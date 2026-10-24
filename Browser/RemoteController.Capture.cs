@@ -2042,6 +2042,13 @@ namespace Browser
 				if (nowSec - Volatile.Read(ref _enginePacingLastTrySec) < 1)
 					return;
 
+				// 発動・成功・失敗を 3 状態で記録する: 発動ログが無ければ HTTP 経路でエンジンが
+				// 動いていたかをサーバー側から判定する手段が無く、失敗が黙って再試行に回っている
+				// 状態も観測できない（律速とセットで観測性を担保する）
+				bool hasWebp = HasWebpConsumers();
+				int intervalMs = hasWebp ? GetMaxFpsIntervalMs() : -1;
+				Log(2, $"[RemoteController] キャプチャエンジン復旧発動 (reason: {reason}, hasWebp: {hasWebp}, intervalMs: {intervalMs})");
+
 				// 中央ループ自体が停止している場合は起動し直す。EnsureWebpPipelineStarted は
 				// 短時間ロック＋Task.Run のみで、ガード内・ロック内に await / Cef 呼び出しは混ぜない
 				EnsureWebpPipelineStarted(reason);
@@ -2049,9 +2056,14 @@ namespace Browser
 
 				// 適用成否は _engineWebpPaced で判定する（本体が成功確認時のみ 1 を立てる）。
 				// 失敗（エンジン未ロード・評価失敗）は 0 のままなので律速スタンプを打ち次ポーリングで再試行
-				if (Volatile.Read(ref _engineWebpPaced) == 0)
+				if (Volatile.Read(ref _engineWebpPaced) != 0)
+				{
+					Log(2, $"[RemoteController] キャプチャエンジン復旧成功 (reason: {reason}, hasWebp: {hasWebp}, intervalMs: {intervalMs})");
+				}
+				else
 				{
 					Interlocked.Exchange(ref _enginePacingLastTrySec, nowSec);
+					Log(3, $"[RemoteController] キャプチャエンジン復旧失敗 (reason: {reason}, hasWebp: {hasWebp}, intervalMs: {intervalMs})");
 				}
 			}
 			finally

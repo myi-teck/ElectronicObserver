@@ -1197,6 +1197,11 @@ const ProtocolManager = {
     _videoDecoderMaxErrors: 3,
     _videoDecoderReinitRequestTime: 0,
 
+    // configure() に渡した codec 文字列の実値（採用値）。error コールバックは非同期発火のため
+    // initVideoDecoder の config ローカル変数のスコープ外となり、採用値を保持しなければ
+    // VD_ERROR 1 行からデコーダ構成を復元できない
+    _videoDecoderAdoptedCodec: null,
+
     // 当該 WCS 試行の初回フレーム描画済みフラグ: エラーカウンタのリセットは初回成功時（output 内）と
     // 明示的モード切替でのみ行う。リトライのたびにリセットすると閾値（3 回）に永久に到達せず、
     // WebP フォールバックへ遷移できない（無限リトライループ）ため
@@ -1363,7 +1368,11 @@ const ProtocolManager = {
                 },
                 error: (e) => {
                     console.error('[ProtocolManager] VideoDecoder error:', e);
-                    if (window.__eventLog) window.__eventLog.consoleLog('error', '[ProtocolManager] VideoDecoder error: ' + (e && e.message ? e.message : e), 'VD_ERROR');
+                    // VD_ERROR に採用構成を付与: メッセージ文だけでは構成を復元できない。
+                    // waitKey=false は初期構成の形式不整合、true は再初期化後の過渡エラーであり、
+                    // 原因もとるべき対策も別物（ログ 1 行で切り分けられるようにする）
+                    const errDescLen = (this._videoDecoderDescription && this._videoDecoderDescription.byteLength) || 0;
+                    if (window.__eventLog) window.__eventLog.consoleLog('error', `[ProtocolManager] VideoDecoder error: ${e && e.message ? e.message : e} (codec=${this._videoDecoderAdoptedCodec || 'unknown'} desc=${errDescLen} fmt=annexb waitKey=${this._wcsWaitKeyFrame})`, 'VD_ERROR');
                     this._videoDecoderErrorCount++;
                     // [task19 v5] 最大3回までリトライ
                     if (this._videoDecoderErrorCount <= this._videoDecoderMaxErrors) {
@@ -1433,6 +1442,7 @@ const ProtocolManager = {
             this._videoDecoderInitialized = true;
             // 採用 codec と description 長を記録: 実 SPS Level との突合（黒画面切り分け）の証跡
             const descLen = (this._videoDecoderDescription && this._videoDecoderDescription.byteLength) || 0;
+            this._videoDecoderAdoptedCodec = config.codec;
             console.log(`[ProtocolManager] VideoDecoder 初期化成功 (codec=${config.codec} descLen=${descLen})`);
             if (window.__eventLog) window.__eventLog.consoleLog('log', `[ProtocolManager] VideoDecoder 初期化成功 codec=${config.codec} descLen=${descLen}`, 'VD_INIT_OK');
             return true;
@@ -1612,6 +1622,7 @@ function switchToWcsMode() {
         ProtocolManager._videoDecoderInitialized = false;
         ProtocolManager._videoDecoderInitializing = false;
         ProtocolManager._videoDecoderDescription = null;
+        ProtocolManager._videoDecoderAdoptedCodec = null;
         ProtocolManager._videoDecoderErrorCount = 0;
         // 明示的な WCS 再試行: エラーカウンタの初回成功リセットをやり直せるよう初回フラグも戻し、退避バッジを解除する
         ProtocolManager._videoDecoderFirstFrameRendered = false;
