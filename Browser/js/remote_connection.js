@@ -25,7 +25,14 @@ function drawBitmap(bitmap) {
 function handleWebpFrame(frameData, seq) {
     const blob = new Blob([frameData]);
     ProtocolManager.safeCreateImageBitmap(blob).then((bitmap) => {
-        if (bitmap) { drawBitmap(bitmap); bitmap.close(); }
+        if (bitmap) {
+            drawBitmap(bitmap);
+            // FPS 加算は汎描画プリミティブの drawBitmap 側でなく実描画経路側に置く:
+            // 別経路（初期化専用フレーム・静止画再描画等）から呼ばれた場合の水増しを防ぐ
+            frameCount++;
+            updateFpsDisplay();
+            bitmap.close();
+        }
     });
 }
 
