@@ -387,23 +387,6 @@
 }
 
 /*
- * renderFleetHud() で使用される艦隊情報クラス（2026/07/31 追加）
- * renderFleetHud の fleet-state-{状態} クラスは上記で定義済み。
- */
-.fleet-name {
-    font-size: 9px;
-    color: var(--accent-color);
-    font-weight: bold;
-}
-
-.fleet-state {
-    font-size: 8px;
-    color: rgba(163, 247, 191, 0.6);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-
-/*
  * 資源HUDコンテナ (#resource-hud)
  * HUDコンテナ最上段に横長1行で資源を表示。
  * flex-wrap: nowrap で1行強制、gap で各項目をコンパクトに配置。

@@ -384,50 +384,14 @@ async function updateHud() {
             }
         }
 
-        // 2. 艦隊ステータス
+        // 2. 艦隊ステータス（共通レンダラ renderFleetHud へ集約。表示形式は経路で分岐しない）
         if (data.fleets && data.fleets.changed) {
             hudVersions.fleets = data.fleets.version;
             const fleetsData = data.fleets.data;
 
+            // 空配列は HUD をクリアせず旧表示を維持する（既存の空配列ガード挙動を維持し、一時的な空データで画面を消さないため）
             if (fleetsData && fleetsData.length > 0) {
-                window._fleetData = fleetsData;
-
-                const fleetHud = document.getElementById('fleet-hud');
-                fleetHud.innerHTML = '';
-
-                fleetsData.forEach(fleet => {
-                    const item = document.createElement('div');
-                    let stateClass = 'fleet-state-ready';
-
-                    if (fleet.state === 'MISSION') stateClass = 'fleet-state-expedition';
-                    else if (fleet.state === 'DOCKING') stateClass = 'fleet-state-docking';
-                    else if (fleet.state === 'STANDBY') stateClass = 'fleet-state-warning';
-                    else if (fleet.state === 'EMERGENCY') stateClass = 'fleet-state-critical';
-
-                    item.className = `fleet-hud-item ${stateClass}`;
-
-                    if (fleet.id === currentDetailFleetId) {
-                        item.classList.add('active');
-                    }
-
-                    const numSpan = document.createElement('span');
-                    numSpan.className = 'fleet-num';
-                    numSpan.textContent = fleet.id.toString().padStart(2, '0');
-
-                    const statusSpan = document.createElement('span');
-                    statusSpan.className = 'fleet-status';
-                    statusSpan.textContent = fleet.stateText || (fleet.state === 'MISSION' ? 'MISSION' : 'READY');
-
-                    item.appendChild(numSpan);
-                    item.appendChild(statusSpan);
-                    fleetHud.appendChild(item);
-                });
-
-                const label = document.createElement('span');
-                label.className = 'fleet-hud-label';
-                label.textContent = 'Tap 2 Toggle';
-                fleetHud.appendChild(label);
-
+                renderFleetHud(fleetsData);
                 renderFleetDetail(currentDetailFleetId);
             }
         }
@@ -722,9 +686,8 @@ async function updateHud() {
 
 //============================================================================================
 // 処理ブロック名 : updateHudData
-// 概要           : WebSocket経由で受信した初期HUDデータを反映する
-//                  サーバーから {"type":"init_hud","data":{...}} 形式で受信
-//                  2026/07/31 myi 新規作成（RemoteControllerBlackScreen修正）
+// 概要           : 初期HUDデータ（WS init_hud 受信・HTTP フォールバック初期化）を反映する
+//                  WS は {"type":"init_hud","data":{...}}（生形）、HTTP /hud は {changed,version,data} のラップ形で届く
 //============================================================================================
 function updateHudData(data) {
     try {
@@ -739,9 +702,19 @@ function updateHudData(data) {
         }
 
         // 2. 艦隊データ
-        if (data.fleets && Array.isArray(data.fleets)) {
-            window._fleetData = data.fleets;
-            renderFleetHud();
+        //    init_hud は生形（fleets が直接配列）、HTTP フォールバック初期化は
+        //    /hud のラップ形（fleets が {changed,version,data}）で届く。
+        //    両方を正規化して単一のレンダラへ収束させ、入口で描画有無が変わらないことを担保する。
+        const fleetsPayload = Array.isArray(data.fleets)
+            ? data.fleets
+            : (data.fleets && data.fleets.changed ? data.fleets.data : null);
+        if (Array.isArray(fleetsPayload)) {
+            // 空配列（艦隊なし）はレンダリングをスキップし旧表示を維持する。版同期はポーリング経路と同義で行う（version はサーバーデータ版でありレンダリング結果ではないため）
+            renderFleetHud(fleetsPayload);
+            // ラップ形は version を同期し、直後のポーリングが同一データを再取得（changed）しないようにする
+            if (data.fleets && data.fleets.version !== undefined) {
+                hudVersions.fleets = data.fleets.version;
+            }
         }
 
         // 3. バトルデータ
@@ -781,43 +754,65 @@ function updateHudData(data) {
     }
 }
 
+function stateClassOf(state) {
+    if (state === 'MISSION') return 'fleet-state-expedition';
+    if (state === 'DOCKING') return 'fleet-state-docking';
+    if (state === 'STANDBY') return 'fleet-state-warning';
+    if (state === 'EMERGENCY') return 'fleet-state-critical';
+    return 'fleet-state-ready';
+}
+
 //============================================================================================
 // 処理ブロック名 : renderFleetHud
-// 概要           : window._fleetData を基に艦隊ステータスHUDをレンダリングする
-//                  2026/07/31 myi 新規作成（RemoteControllerBlackScreen修正）
+// 概要           : 艦隊ステータスHUD(#fleet-hud)の唯一のレンダリング経路。
+//                  init_hud 受信(updateHudData)も差分ポーリング(updateHud)もこの関数へ寄せる。
+//                  表示形式が経路ごとに分岐しないことがこの関数の存在理由である。
+//                  艦隊名は本体表示にせず tooltip（項目の title 属性）へ退避する。
+//                  合成名・プレースホルダ名は表示しない（name 欠落・空白のみのときは title を設定しない）。
 //============================================================================================
-function renderFleetHud() {
+function renderFleetHud(fleets = window._fleetData) {
+    if (!Array.isArray(fleets) || fleets.length === 0) return;
+
     const fleetHud = document.getElementById('fleet-hud');
     if (!fleetHud) return;
 
-    const fleets = window._fleetData;
-    if (!fleets || fleets.length === 0) return;
-
+    // switchFleetDetail（艦隊数復元）/ renderFleetDetail（艦隊参照）が window._fleetData に依存するため維持
+    window._fleetData = fleets;
     fleetHud.innerHTML = '';
 
     fleets.forEach(fleet => {
         const item = document.createElement('div');
-        let stateClass = 'fleet-state-ready';
-
-        if (fleet.state === 'MISSION') stateClass = 'fleet-state-expedition';
-        else if (fleet.state === 'DOCKING') stateClass = 'fleet-state-docking';
-        else if (fleet.state === 'STANDBY') stateClass = 'fleet-state-warning';
-        else if (fleet.state === 'EMERGENCY') stateClass = 'fleet-state-critical';
-
-        item.className = `fleet-hud-item ${stateClass}`;
+        item.className = `fleet-hud-item ${stateClassOf(fleet.state)}`;
 
         if (fleet.id === currentDetailFleetId) {
             item.classList.add('active');
         }
 
-        item.innerHTML = `
-            <div class="fleet-num">${fleet.id}</div>
-            <div class="fleet-name">${fleet.name || '---'}</div>
-            <div class="fleet-state ${stateClass}">${fleet.state || 'READY'}</div>
-        `;
+        // 艦隊名は本体から tooltip へ退避（DOM プロパティ代入で特殊文字を安全に保持）。
+        // trim 後の空判定で、null・空・空白のみの名前は title を設定しない（tooltip を出さない）
+        const nm = (fleet.name ?? '').trim();
+        if (nm) {
+            item.title = nm;
+        }
 
+        // textContent / DOM プロパティで構築（innerHTML による文字列展開は XSS に脆い・MDN textContent 参照）
+        const numSpan = document.createElement('span');
+        numSpan.className = 'fleet-num';
+        numSpan.textContent = String(fleet.id).padStart(2, '0');
+
+        const statusSpan = document.createElement('span');
+        statusSpan.className = 'fleet-status';
+        statusSpan.textContent = fleet.stateText || (fleet.state === 'MISSION' ? 'MISSION' : 'READY');
+
+        item.appendChild(numSpan);
+        item.appendChild(statusSpan);
         fleetHud.appendChild(item);
     });
+
+    const label = document.createElement('span');
+    label.className = 'fleet-hud-label';
+    label.textContent = 'Tap 2 Toggle';
+    fleetHud.appendChild(label);
 }
 
 //============================================================================================
