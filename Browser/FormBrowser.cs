@@ -1145,6 +1145,14 @@ namespace Browser
 		// 未適用期は恒等・適用期は 5:3 固定（≡ 恒等）というフォールバック階層の安全側で吸収されるため、
 		// 追加のロックは取らない。
 		private volatile bool _styleSheetApplied;
+
+		// ウィンドウ最小化・非表示でコントロールが極小化されたまま残ったときに戻す「直前の有効サイズ」のコピー。
+		// 書き込みは RememberBrowserSize 経由の UI ディスパッチのみ（WCF 経路の実行スレッドはホスト生成
+		// 構成に依存するため、スレッドを仮定せず冒頭で InvokeRequired を弾く）、読み取りは
+		// UI ディスパッチ後の EnsureBrowserSizeRestored 内（= UI スレッド）のみ行うため、
+		// volatile 不要・ロック不要。
+		private Size _lastKnownBrowserSize = Size.Empty;
+
 		/// <summary>
 		/// スタイルシートの変更が適用されているか
 		/// </summary>
@@ -1172,6 +1180,7 @@ namespace Browser
 						// サイズ供給源も極小なのでこの 0×0 は自力で戻らず、入力座標変換の 0 ガードが全入力を拒否する。
 						if (SizeAdjuster.Width > 10 && SizeAdjuster.Height > 10)
 							Browser.Size = SizeAdjuster.Size;
+						RememberBrowserSize();
 					}
 					SizeAdjuster.ResumeLayout();
 				}
@@ -1427,6 +1436,7 @@ namespace Browser
 			Browser.FrameLoadEnd += Browser_FrameLoadEnd;
 			Browser.IsBrowserInitializedChanged += Browser_IsBrowserInitializedChanged;
 			SizeAdjuster.Controls.Add(Browser);
+			RememberBrowserSize();
 
 			// 遠隔操作サーバーの起動（Cef.Initialize 完了後に安全に生成）
 			if (_remoteController == null)
@@ -1775,11 +1785,84 @@ namespace Browser
 				{
 					Browser.Location = new Point(0, 0);
 					Browser.Size = SizeAdjuster.Size;
+					RememberBrowserSize();
 				}
 				return;
 			}
 
 			ApplyZoom();
+		}
+
+		// 設定後のコントロール実寸を記録する（MinimumSize 等にクリップされた値でも目に見える実寸と一致する）。
+		// 極小窓（最小化時など）の値は有効サイズとして採用しない。
+		private void RememberBrowserSize()
+		{
+			if (this.InvokeRequired)
+			{
+				// WCF サービスコール経路（InitialAPIReceived の inline ApplyZoom、Navigate /
+				// RefreshBrowser / ApplyStyleSheet のプロキシ経路）等の UI 保証が無い経路から届く。
+				// WCF 経路の実行スレッドは SynchronizationContext ディスパッチ（既定ではホストを
+				// オープンしたスレッド）で決まりホスト生成構成に依存するため、呼出スレッドを仮定しない。
+				// UI スレッドへディスパッチして書込を一箇所に寄せる（EnsureInputFocus と同一パターン）。
+				// ハンドル未生成・メッセージスレッド停止中は BeginInvoke が例外を投じうる（MS Learn
+				// Control.BeginInvoke: 適切なウィンドウハンドルが見つからない場合 InvalidOperationException、
+				// メッセージ処理スレッド停止時も例外）。この窓で 1 件記録が飛んでも無害
+				// （本キャッシュは保険であり、ハンドル生成後の正常なサイズ設定経路で再記録される）。
+				// 例外を WCF サービスメソッドまで伝播させるとチャネルが Fault になりホスト側で
+				// 誤った「ブラウザプロセス終了」報告になりうるため、ログ付きで局所的に握りつぶす。
+				try
+				{
+					this.BeginInvoke((Action)(RememberBrowserSize));
+				}
+				catch (Exception ex)
+				{
+					AddLog(2, $"[SizeCache] サイズ記録の UI ディスパッチに失敗したためスキップしました: {ex.GetType().Name} {ex.Message}");
+				}
+				return;
+			}
+			if (Browser == null)
+				return;
+			if (Browser.Width > 10 && Browser.Height > 10)
+				_lastKnownBrowserSize = new Size(Browser.Width, Browser.Height);
+		}
+
+		// ウィンドウが最小化・非表示の窓ではサイズ供給源（SizeAdjuster）自体が極小で、
+		// 通常のサイズ設定経路はすべて極小ガードにより no-op のため、極小化したコントロールは自力で戻れない
+		// （入力座標変換は寸法 0 ガード ≤0 で全入力を座標変換前に拒否する）。ゲーム読込確認時点で直前の有効サイズへ戻す。
+		// 正常時（コントロール >10）は必ず no-op。
+		private void EnsureBrowserSizeRestored(string context)
+		{
+			if (this.InvokeRequired)
+			{
+				// FrameLoadEnd（CEF イベントスレッド）・WCF サービスコール経路（InitialAPIReceived）等
+				// の UI 保証が無い経路から呼ばれる（WCF 経路の実行スレッドはホスト生成構成に依存し
+				// 断定しない・RememberBrowserSize と同じ根拠）。以下は UI スレッドで実行する
+				// （EnsureInputFocus と同一パターン）。
+				// ハンドル未生成・メッセージスレッド停止中は BeginInvoke が例外を投じうる（MS Learn
+				// Control.BeginInvoke）。例外が WCF サービスメソッドまで伝播するとチャネルが Fault に
+				// なりホスト側で誤った「ブラウザプロセス終了」報告になりうるため、ログ付きで局所的に
+				// 握りつぶす。復元 1 回の欠落は無害 — 次の復元トリガーで再試行され、窓が復元すれば
+				// 正規のサイズ設定経路が正しい寸法へ設定する。
+				try
+				{
+					this.BeginInvoke((Action)(() => EnsureBrowserSizeRestored(context)));
+				}
+				catch (Exception ex)
+				{
+					AddLog(2, $"[SizeRestore] サイズ復元の UI ディスパッチに失敗したためスキップしました: {ex.GetType().Name} {ex.Message}");
+				}
+				return;
+			}
+			if (Browser == null || !IsBrowserInitialized)
+				return;
+			if (Browser.Width > 10 && Browser.Height > 10)
+				return;
+			if (_lastKnownBrowserSize.Width <= 10 || _lastKnownBrowserSize.Height <= 10)
+				return;
+
+			Browser.Size = _lastKnownBrowserSize;
+			AddLog(1, string.Format("[SizeRestore] Browser コントロールが極小でした（context={0}）。直前の有効サイズ {1}x{2} に復元しました", context, _lastKnownBrowserSize.Width, _lastKnownBrowserSize.Height));
+			RememberBrowserSize();
 		}
 
 		private void CenteringBrowser()
@@ -2933,6 +3016,7 @@ requestAnimationFrame(draw);
 					(int)(KanColleSize.Width * zoomFactor),
 					(int)(KanColleSize.Height * zoomFactor)
 					);
+				RememberBrowserSize();
 
 				CenteringBrowser();
 			}
