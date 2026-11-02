@@ -164,8 +164,10 @@ namespace Browser
 			var snap = _gameGeomRef;
 			if (IsMeasuredUsable(snap, browserWidth, browserHeight))
 			{
-				int x = (int)(snap.G.ViewX + cursorX * snap.G.ViewW);
-				int y = (int)(snap.G.ViewY + cursorY * snap.G.ViewH);
+				// 実測矩形は DIP/CSS px 比の換算を経ているため、端の値がコントロール寸法を
+				// わずかに超え得る。Cef に入力窓外の座標を渡さないための境界。
+				int x = ClampToInt(snap.G.ViewX + cursorX * snap.G.ViewW, browserWidth);
+				int y = ClampToInt(snap.G.ViewY + cursorY * snap.G.ViewH, browserHeight);
 				p = new Point(x, y);
 				trace = new CoordTrace
 				{
@@ -454,6 +456,17 @@ namespace Browser
 			if (value is int i) { result = i; return true; }
 			return double.TryParse(value.ToString(), System.Globalization.NumberStyles.Float,
 				System.Globalization.CultureInfo.InvariantCulture, out result);
+		}
+
+		/// <summary>
+		/// 変換結果をコントロール寸法の範囲へ収める（入力窓外の座標を Cef に渡さないための境界）。
+		/// 切り捨ては既存の変換と同じ挙動に揃え、フォールバック階層間の比較で値がずれないようにする。
+		/// </summary>
+		private static int ClampToInt(double v, double max)
+		{
+			if (v <= 0) return 0;
+			if (v >= max) return (int)max;
+			return (int)v;
 		}
 
 		//====================================================================================

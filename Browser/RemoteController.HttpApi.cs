@@ -618,75 +618,21 @@ namespace Browser
 		//====================================================================================
 		// 処理ブロック名 : GetBrowserCoords
 		// 概要           : モバイル端末から受信した 0.0〜1.0 のゲーム画面上の相対座標を、
-		//                  ブラウザコントロールの現在のサイズと艦これアスペクト比(5:3)から生じる
-		//                  黒い余白（レターボックス）を動的に考慮し、実際のCefブラウザ論理ピクセル座標へ変換します。
+		//                  実際のCefブラウザ論理ピクセル座標へ変換します。
+		//                  変換本体は測地側（TryGetMapping）へ一本化しており、
+		//                  ブラウザコントロールのサイズと艦これアスペクト比(5:3)から生じる
+		//                  黒い余白（レターボックス）の考慮は、実測が取れない場合の
+		//                  フォールバック階層として那里で保持しています。
 		// セッション固有のカーソル座標を使用するオーバーロードを追加
 		//------------------------------------------------------------------------------------
 		private Point? GetBrowserCoords(double cursorX, double cursorY, out CoordTrace trace)
 		{
-			// CefSharpブラウザコントロール全体の現在の論理サイズを取得
-			double browserWidth = _parent.Browser.Width;
-			double browserHeight = _parent.Browser.Height;
-
-			// ブラウザサイズが 0/極小の場合のガード
-			// ブラウザが未ロード/未表示（Width/Height が 0）の場合、browserAspect が Infinity/NaN になり
-			// gameWidth=gameHeight=0 で (0,0) が返る（クリックが常に左上になる原因）。
-			// 座標変換の前提が崩れているため、null を返して呼び出し側でイベント送信をスキップする。
-			if (browserWidth <= 0 || browserHeight <= 0)
-			{
-				Log(3, $"[RemoteController] GetBrowserCoords: ブラウザサイズが不正 (Width={browserWidth}, Height={browserHeight}) のため座標変換をスキップします");
-				// 変換は走っていないが、ビューポート寸法そのものは観測できた値として残す（スキップ理由の実測値）
-				trace = new CoordTrace
-				{
-					Map = "skipped",
-					GSeq = 0,
-					Bw = (int)browserWidth,
-					Bh = (int)browserHeight
-				};
-				return null;
-			}
-
-			// 艦これ標準のゲーム画面領域アスペクト比は 1200:720 (5:3 = 1.6666...)
-			double gameAspect = 5.0 / 3.0;
-			double browserAspect = browserWidth / browserHeight;
-
-			double gameWidth = browserWidth;
-			double gameHeight = browserHeight;
-			double offsetX = 0;
-			double offsetY = 0;
-
-			// ブラウザウィンドウとゲーム画面のアスペクト比のズレから、黒い余白（レターボックス）のサイズを算出
-			if (browserAspect > gameAspect)
-			{
-				// ウィンドウが横長（左右に黒い余白がある状態）
-				gameWidth = browserHeight * gameAspect;
-				offsetX = (browserWidth - gameWidth) / 2.0;
-			}
-			else
-			{
-				// ウィンドウが縦長（上下に黒い余白がある状態）
-				gameHeight = browserWidth / gameAspect;
-				offsetY = (browserHeight - gameHeight) / 2.0;
-			}
-
-			// 余白の内側の実際のゲーム領域に対して、スマホ側ポインタ割合（0.0〜1.0）をピクセルマッピング
-			int x = (int)(offsetX + (cursorX * gameWidth));
-			int y = (int)(offsetY + (cursorY * gameHeight));
-
-			// 変換は「中央寄せ 5:3 のゲーム領域がある」という仮定に基づく計算であり、実測ではない。
-			// 実測ジオメトリの供給源が接続されるまで、この仮定で変換した旨だけを記録する。
-			// 変換に用いた実測版はないため版番号は 0 のまま（未取得の意味）である。
-			trace = new CoordTrace
-			{
-				Bx = x,
-				By = y,
-				Map = "assumed_5_3",
-				GSeq = 0,
-				Bw = (int)browserWidth,
-				Bh = (int)browserHeight
-			};
-
-			return new Point(x, y);
+			// 変換根拠（map）とジオメトリ版（gseq）は変換と同じ呼び出しで確定した値だけを渡す（取り違え防止）。
+			// 従来同様、変換できない場合のみ null を返し、呼び出し側でイベント送信をスキップする。
+			Point p;
+			if (TryGetMapping(cursorX, cursorY, out trace, out p))
+				return p;
+			return null;
 		}
 
 		//====================================================================================
