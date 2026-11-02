@@ -385,6 +385,21 @@ namespace Browser
 					return false;
 				}
 	
+				// 実測ジオメトリの取得: canvas の内在サイズ・kcs2 view 内の矩形・view 寸法。
+				// 入力の着地先はこの実測値で決まるが、ページ側 CSS 次第で静的には導けない。
+				// 計測失敗（canvas 未生成・ detached 等）は null を返す（C# 側は未取得として扱う）。
+				function _readCanvasGeometry() {
+					try {
+						var c = document.querySelector('canvas');
+						if (!c) return null;
+						var r = c.getBoundingClientRect();
+						return [c.width, c.height, r.left, r.top, r.width, r.height, window.innerWidth, window.innerHeight];
+					} catch (e) {
+						console.warn('[CaptureEngine] geom 計測失敗: ' + (e && e.message ? e.message : e));
+						return null;
+					}
+				}
+
 				// [task19_v1 Critical#5 修正] SPS/PPS 抽出・AVCDecoderConfigurationRecord (AVCC) 変換
 				// 根本原因: Chromium 143 の H.264 エンコーダは onoutput の
 				// metadata.decoderConfig.description を populate しない（常に null）。
@@ -489,6 +504,10 @@ namespace Browser
 					rafCount: 0,           // rAF 発火回数 — 内容新鮮度のボトルネック切り分け（toBlob 律速か canvas 再描画律速か）に使用
 					rafStale: false,       // rAF ストール検知フラグ — 5 秒以上発火が無い時にウォッチドッグがセット（pull/peek 第4要素で C# へ伝達）
 					lastRafTs: 0,          // 直近の rAF 発火時刻（performance.now）
+					// 実測ジオメトリ [canvas内在幅, 内在高, canvas view内 left/top/width/height, innerWidth, innerHeight]。
+					// 入力の着地先は canvas の実位置・実寸で決まるが、それはページ側 CSS で決まるため静的に導けない。
+					// DOM 計測を配信毎に走らせないよう、別系統の 1 秒タイマで最新値だけを保持する（計装のみ・配信動作には影響しない）
+					geom: null,
 					isEncoding: false,     // 排他フラグ
 					_dirtySincePull: false, // lastWebp が前回の pull 以降に更新されたか（WS 経路の stateful none 判定）
 
@@ -611,6 +630,9 @@ namespace Browser
 						// 閾値 5 秒は通常運用（60FPS 相当）に対する十分大きな余裕
 						if (!this._rafWatchdogTimer) {
 							this._rafWatchdogTimer = setInterval(() => {
+								// 実測ジオメトリの 1 秒サムリング。rAF が止まっている窓でも入力の着地計算には
+								// 必要なので、rAF 稼働判定より先に測る（配信・描画動作には影響しない計装）
+								this.geom = _readCanvasGeometry();
 								if (!this.lastRafTs) return;
 								const gap = performance.now() - this.lastRafTs;
 								if (gap >= 5000 && !this.rafStale) {
@@ -1117,7 +1139,11 @@ namespace Browser
 		private readonly object _initBrowserLock = new object();
 
 
-		private bool _styleSheetApplied;
+		// UI スレッド・CEF イベントスレッド・BeginInvoke 継続の複数スレッドから読み書きされる。
+		// 入力座標変換（ワーカースレッド）が読むため volatile とする。偶発的に古い値を読む被害は、
+		// 未適用期は恒等・適用期は 5:3 固定（≡ 恒等）というフォールバック階層の安全側で吸収されるため、
+		// 追加のロックは取らない。
+		private volatile bool _styleSheetApplied;
 		/// <summary>
 		/// スタイルシートの変更が適用されているか
 		/// </summary>
@@ -1148,6 +1174,12 @@ namespace Browser
 				_styleSheetApplied = value;
 			}
 		}
+
+		/// <summary>
+		/// 適用状態の読み取り専用アクセス。座標変換はワーカースレッドで走るため、
+		/// setter が持つ UI 操作の副作用を踏まないこの形でのみ参照させる。
+		/// </summary>
+		internal bool IsStyleSheetApplied => _styleSheetApplied;
 
 		/// <summary>
 		/// 艦これが読み込まれているかどうか

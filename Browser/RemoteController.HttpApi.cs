@@ -172,6 +172,7 @@ namespace Browser
 					if (!cx.HasValue) { clickTrace.Bx = null; clickTrace.By = null; }
 					// サーバ側アクション実行ログ（HTTP 経路）
 					AppendServerActionLog("click", cx, cy, sessionId, "http", clickTrace);
+					AppendFocusState("click", "http");
 				}
 				// （ゲーム画面タッチクリック）
 				// ゲーム画面（viewport）をタップした位置の絶対座標を直接クリックする
@@ -182,6 +183,7 @@ namespace Browser
 					var touchTrace = await TriggerMouseClickAsync(cursorState, sessionId);
 					// サーバ側アクション実行ログ（HTTP 経路）
 					AppendServerActionLog("touch_click", tx, ty, sessionId, "http", touchTrace);
+					AppendFocusState("touch_click", "http");
 				}
 					#region "追加アクション処理"
 					// ブラウザをログインページへ移動（確認はHUD側で行うため、ここでは即座に実行）
@@ -246,6 +248,7 @@ namespace Browser
 							if (!mx.HasValue) { downTrace.Bx = null; downTrace.By = null; }
 							// サーバ側アクション実行ログ（HTTP 経路）
 							AppendServerActionLog("mousedown", mx, my, sessionId, "http", downTrace);
+							AppendFocusState("mousedown", "http");
 						}
 						// マウスアップ（ドラッグ終了）
 						else if (action == "mouseup")
@@ -264,6 +267,7 @@ namespace Browser
 							if (!ux.HasValue) { upTrace.Bx = null; upTrace.By = null; }
 							// サーバ側アクション実行ログ（HTTP 経路）
 							AppendServerActionLog("mouseup", ux, uy, sessionId, "http", upTrace);
+							AppendFocusState("mouseup", "http");
 						}
 		
 						res.StatusCode = 200;

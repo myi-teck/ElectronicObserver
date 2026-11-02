@@ -1632,6 +1632,7 @@ namespace Browser
 					if (!cx.HasValue) { clickTrace.Bx = null; clickTrace.By = null; }
 					// サーバ側アクション実行ログ
 					AppendServerActionLog("click", cx, cy, session.SessionId, "ws", clickTrace);
+					AppendFocusState("click", "ws");
 				}
 				else if (action == "touch_click" && double.TryParse(xStr, out double tx) && double.TryParse(yStr, out double ty))
 				{
@@ -1640,6 +1641,7 @@ namespace Browser
 					var touchTrace = await TriggerMouseClickAsync(session);
 					// サーバ側アクション実行ログ
 					AppendServerActionLog("touch_click", tx, ty, session.SessionId, "ws", touchTrace);
+					AppendFocusState("touch_click", "ws");
 				}
 				else if (action == "mousedown")
 				{
@@ -1657,6 +1659,7 @@ namespace Browser
 					if (!mx.HasValue) { downTrace.Bx = null; downTrace.By = null; }
 					// サーバ側アクション実行ログ
 					AppendServerActionLog("mousedown", mx, my, session.SessionId, "ws", downTrace);
+					AppendFocusState("mousedown", "ws");
 				}
 				else if (action == "mouseup")
 				{
@@ -1674,6 +1677,7 @@ namespace Browser
 					if (!ux.HasValue) { upTrace.Bx = null; upTrace.By = null; }
 					// サーバ側アクション実行ログ
 					AppendServerActionLog("mouseup", ux, uy, session.SessionId, "ws", upTrace);
+					AppendFocusState("mouseup", "ws");
 				}
 				// WCS モード切替（クライアント switchToWcsMode() → { action: 'switch_mode', mode: 'webcodecs' }）
 				// 設計書 §5.2 整合: クライアントは既存 WebSocket 接続を維持したまま

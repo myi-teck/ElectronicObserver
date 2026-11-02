@@ -151,6 +151,7 @@
     <Compile Include="RemoteController.Capture.cs" />
     <Compile Include="RemoteController.WebSocket.cs" />
     <Compile Include="RemoteController.DisplayState.cs" />
+    <Compile Include="RemoteController.Geometry.cs" />
     <Compile Include="RemoteDedicatedLog.cs" />
     <Compile Include="CefOp\SelfHostedHtml.cs" />
     <Compile Include="FormBrowser.cs">
