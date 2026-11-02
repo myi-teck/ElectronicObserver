@@ -151,9 +151,9 @@ namespace Browser
 					// TriggerMouseClickAsync のフォールバックで (0.5, 0.5) が常に優先されていた
 					cursorState.Touch(Math.Max(0, Math.Min(1.0, x)), Math.Max(0, Math.Min(1.0, y)));
 
-					await TriggerMouseMoveAsync(cursorState);
+					var moveTrace = await TriggerMouseMoveAsync(cursorState, sessionId);
 					// サーバ側アクション実行ログ（HTTP 経路）
-					AppendServerActionLog("move", x, y, sessionId, "http");
+					AppendServerActionLog("move", x, y, sessionId, "http", moveTrace);
 				}
 				else if (action == "click")
 				{
@@ -166,9 +166,12 @@ namespace Browser
 						cy = cyy;
 						cursorState.Touch(Math.Max(0, Math.Min(1.0, cxx)), Math.Max(0, Math.Min(1.0, cyy)));
 					}
-					await TriggerMouseClickAsync(cursorState);
+					var clickTrace = await TriggerMouseClickAsync(cursorState, sessionId);
+					// 座標パース失敗行は、供給された変換値が既定座標のものになるため着地座標を記録しない
+					// （x/y が null の行と bx/by が別座標を示すと、どの入力に対する結果かを特定できない）
+					if (!cx.HasValue) { clickTrace.Bx = null; clickTrace.By = null; }
 					// サーバ側アクション実行ログ（HTTP 経路）
-					AppendServerActionLog("click", cx, cy, sessionId, "http");
+					AppendServerActionLog("click", cx, cy, sessionId, "http", clickTrace);
 				}
 				// （ゲーム画面タッチクリック）
 				// ゲーム画面（viewport）をタップした位置の絶対座標を直接クリックする
@@ -176,9 +179,9 @@ namespace Browser
 				{
 					// Touch(x,y) で座標更新と HasValue=true をアトミックに設定（move と同様）
 					cursorState.Touch(Math.Max(0, Math.Min(1.0, tx)), Math.Max(0, Math.Min(1.0, ty)));
-					await TriggerMouseClickAsync(cursorState);
+					var touchTrace = await TriggerMouseClickAsync(cursorState, sessionId);
 					// サーバ側アクション実行ログ（HTTP 経路）
-					AppendServerActionLog("touch_click", tx, ty, sessionId, "http");
+					AppendServerActionLog("touch_click", tx, ty, sessionId, "http", touchTrace);
 				}
 					#region "追加アクション処理"
 					// ブラウザをログインページへ移動（確認はHUD側で行うため、ここでは即座に実行）
@@ -238,9 +241,11 @@ namespace Browser
 								my = myy;
 								cursorState.Touch(Math.Max(0, Math.Min(1.0, mxx)), Math.Max(0, Math.Min(1.0, myy)));
 							}
-							await TriggerMouseDownAsync(cursorState);
+							var downTrace = await TriggerMouseDownAsync(cursorState, sessionId);
+							// 座標パース失敗行は、供給された変換値が既定座標のものになるため着地座標を記録しない
+							if (!mx.HasValue) { downTrace.Bx = null; downTrace.By = null; }
 							// サーバ側アクション実行ログ（HTTP 経路）
-							AppendServerActionLog("mousedown", mx, my, sessionId, "http");
+							AppendServerActionLog("mousedown", mx, my, sessionId, "http", downTrace);
 						}
 						// マウスアップ（ドラッグ終了）
 						else if (action == "mouseup")
@@ -254,9 +259,11 @@ namespace Browser
 								uy = uyy;
 								cursorState.Touch(Math.Max(0, Math.Min(1.0, uxx)), Math.Max(0, Math.Min(1.0, uyy)));
 							}
-							await TriggerMouseUpAsync(cursorState);
+							var upTrace = await TriggerMouseUpAsync(cursorState, sessionId);
+							// 座標パース失敗行は、供給された変換値が既定座標のものになるため着地座標を記録しない
+							if (!ux.HasValue) { upTrace.Bx = null; upTrace.By = null; }
 							// サーバ側アクション実行ログ（HTTP 経路）
-							AppendServerActionLog("mouseup", ux, uy, sessionId, "http");
+							AppendServerActionLog("mouseup", ux, uy, sessionId, "http", upTrace);
 						}
 		
 						res.StatusCode = 200;
@@ -508,18 +515,100 @@ namespace Browser
 			return s.Substring(0, end);
 		}
 
+		// 入力送信スキップ証跡の間引き状態（セッションID → 最終記録時刻の UTC ticks）。
+		// ワーカー複数（HTTP/WS）から同時に更新されうるため ConcurrentDictionary を使う（lost update は件数の増減にしか影響しない）
+		private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _inputSkipLogTicks
+			= new System.Collections.Concurrent.ConcurrentDictionary<string, long>();
+		private const long InputSkipLogThrottleTicks = TimeSpan.TicksPerSecond;   // 同一セッションの記録間隔（1 秒）
+		private const int InputSkipLogTrackLimit = 256;                          // 間引き記録の保持上限（実運用のセッション数より十分大きい値）
+		private const long InputSkipLogTrackKeepTicks = 10 * TimeSpan.TicksPerMinute;
+
+		/// <summary>
+		/// 座標変換 1 回分の追跡。変換の実行結果と、その変換が「どの前提で」「どのビューポート寸法に対し」
+		/// 走ったかを 1 組のまま呼び出し側へ渡す（分離するとログ上の対応が取れなくなる）。
+		/// 生成後は変更しない。変換が走らなかった経路（ブラウザ/ホスト不在・ビューポート極小）は
+		/// Map = "skipped" に統一されるため、変換実行行に仮定系の値だけが残る。
+		/// </summary>
+		private struct CoordTrace
+		{
+			/// <summary>変換後のブラウザ座標（変換未実行は null）</summary>
+			public double? Bx;
+			/// <summary>変換後のブラウザ座標（変換未実行は null）</summary>
+			public double? By;
+			/// <summary>変換に用いた前提の識別（measured / identity_unapplied / assumed_5_3 / skipped）</summary>
+			public string Map;
+			/// <summary>変換に用いたジオメトリの版番号（未取得は 0）</summary>
+			public long GSeq;
+			/// <summary>変換に用いたブラウザコントロール幅（未実行は 0）</summary>
+			public int Bw;
+			/// <summary>変換に用いたブラウザコントロール高さ（未実行は 0）</summary>
+			public int Bh;
+
+			/// <summary>変換未実行（ブラウザ・ホスト取得失敗）の既定追跡</summary>
+			public static CoordTrace Skipped => new CoordTrace { Map = "skipped" };
+		}
+
 		/// <summary>
 		/// サーバ側アクション実行ログ（src=server）。
 		/// TriggerMouse*Async を実際に実行したタイミングで呼ばれ、クライアント送信ログと
 		/// 同じ専用ファイル（remote_event_log_YYYYMMDD.log）に時系列で並ぶ。
 		/// 二重発火の再発調査（クライアント2回送信？サーバ2回実行？）に用いる（§12 参照）。
+		/// bx/by は変換後のブラウザ座標で、既存 x/y（クライアント送信の 0..1 正規値）とは別概念のため
+		/// 既存キーの意味を変えず別キーとして併記する（付加型・既存ログ解析との互換維持）。
+		/// 変換に用いた写像種・ジオメトリ版・ビューポート寸法を常時残すことで、
+		/// 「映像は正常なのにクリックが別位置に着地する」現象を 1 サイクルで切り分けられるようにする。
 		/// </summary>
-		private void AppendServerActionLog(string action, double? x, double? y, string sessionId, string route)
+		private void AppendServerActionLog(string action, double? x, double? y, string sessionId, string route, CoordTrace trace)
 		{
 			string xVal = x.HasValue ? x.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "null";
 			string yVal = y.HasValue ? y.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "null";
+			string bxVal = trace.Bx.HasValue ? trace.Bx.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "null";
+			string byVal = trace.By.HasValue ? trace.By.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "null";
+			// 呼び出し側が追跡を供給しなかった経路（変換を実行していない経路）は skipped として記録し、
+			// 空値の行が混ざって判別不能になることを防ぐ
+			string mapVal = string.IsNullOrEmpty(trace.Map) ? "skipped" : trace.Map;
 			RemoteDedicatedLog.Event.Append(
-				$@"{{""ts_ms"":{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()},""ts_local"":""{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}"",""src"":""server"",""kind"":""action"",""action"":""{action}"",""x"":{xVal},""y"":{yVal},""session"":""{sessionId}"",""route"":""{route}""}}");
+				$@"{{""ts_ms"":{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()},""ts_local"":""{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}"",""src"":""server"",""kind"":""action"",""action"":""{action}"",""x"":{xVal},""y"":{yVal},""bx"":{bxVal},""by"":{byVal},""map"":""{mapVal}"",""gseq"":{trace.GSeq},""bw"":{trace.Bw},""bh"":{trace.Bh},""session"":""{sessionId}"",""route"":""{route}""}}");
+		}
+
+		/// <summary>
+		/// 入力送信スキップの専用ログ（kind=input_skip）。
+		/// 極小・非表示ビューポートでは座標変換が null を返しイベント送信自体が止まるが、
+		/// 従来は別系統ログのみでイベントログ上に証跡がなく、客户端送信が生きている状況で
+		/// サーバが止めていることを切り分けられなかった。
+		/// 極小状態が続く間は配信ごとに同じ行が積み上がって観測対象そのものでログが増幅するため、
+		/// 同一セッションあたり 1 秒に 1 件へ間引く（荒い間引きで、多重記録は数件増えるだけ）。
+		/// </summary>
+		private void AppendInputSkipLog(string sessionId, string route, string action, CoordTrace trace)
+		{
+			string key = sessionId ?? "";
+			long nowTicks = DateTime.UtcNow.Ticks;
+			long lastTicks;
+			_inputSkipLogTicks.TryGetValue(key, out lastTicks);
+			if (lastTicks != 0 && (nowTicks - lastTicks) < InputSkipLogThrottleTicks)
+				return;
+			_inputSkipLogTicks[key] = nowTicks;
+			// セッション数は実運用で数個だが、切断で消えないキーが溜まり続けすぎないよう上限で整理する
+			if (_inputSkipLogTicks.Count > InputSkipLogTrackLimit)
+				PruneInputSkipLogTrack(nowTicks);
+
+			RemoteDedicatedLog.Event.Append(
+				$@"{{""ts_ms"":{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()},""ts_local"":""{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}"",""src"":""server"",""kind"":""input_skip"",""reason"":""viewport_zero"",""action"":""{action}"",""bw"":{trace.Bw},""bh"":{trace.Bh},""session"":""{sessionId}"",""route"":""{route}""}}");
+		}
+
+		/// <summary>間引き記録の保持上限を超える前に、古いキーだけをまとめて捨てる（ログ本体の漏れには無関係）</summary>
+		private void PruneInputSkipLogTrack(long nowTicks)
+		{
+			foreach (var kv in _inputSkipLogTicks.ToArray())
+			{
+				// 他スレッドが同時に更新していても、消えたキーは次回記録で再作成されるだけ（誤差は件数だけ）
+				if (kv.Key.Length == 0 || (nowTicks - kv.Value) > InputSkipLogTrackKeepTicks)
+				{
+					long current;
+					if (_inputSkipLogTicks.TryGetValue(kv.Key, out current) && current == kv.Value)
+						_inputSkipLogTicks.TryRemove(kv.Key, out current);
+				}
+			}
 		}
 
 		//====================================================================================
@@ -529,7 +618,7 @@ namespace Browser
 		//                  黒い余白（レターボックス）を動的に考慮し、実際のCefブラウザ論理ピクセル座標へ変換します。
 		// セッション固有のカーソル座標を使用するオーバーロードを追加
 		//------------------------------------------------------------------------------------
-		private Point? GetBrowserCoords(double cursorX, double cursorY)
+		private Point? GetBrowserCoords(double cursorX, double cursorY, out CoordTrace trace)
 		{
 			// CefSharpブラウザコントロール全体の現在の論理サイズを取得
 			double browserWidth = _parent.Browser.Width;
@@ -542,6 +631,14 @@ namespace Browser
 			if (browserWidth <= 0 || browserHeight <= 0)
 			{
 				Log(3, $"[RemoteController] GetBrowserCoords: ブラウザサイズが不正 (Width={browserWidth}, Height={browserHeight}) のため座標変換をスキップします");
+				// 変換は走っていないが、ビューポート寸法そのものは観測できた値として残す（スキップ理由の実測値）
+				trace = new CoordTrace
+				{
+					Map = "skipped",
+					GSeq = 0,
+					Bw = (int)browserWidth,
+					Bh = (int)browserHeight
+				};
 				return null;
 			}
 
@@ -572,6 +669,19 @@ namespace Browser
 			int x = (int)(offsetX + (cursorX * gameWidth));
 			int y = (int)(offsetY + (cursorY * gameHeight));
 
+			// 変換は「中央寄せ 5:3 のゲーム領域がある」という仮定に基づく計算であり、実測ではない。
+			// 実測ジオメトリの供給源が接続されるまで、この仮定で変換した旨だけを記録する。
+			// 変換に用いた実測版はないため版番号は 0 のまま（未取得の意味）である。
+			trace = new CoordTrace
+			{
+				Bx = x,
+				By = y,
+				Map = "assumed_5_3",
+				GSeq = 0,
+				Bw = (int)browserWidth,
+				Bh = (int)browserHeight
+			};
+
 			return new Point(x, y);
 		}
 
@@ -581,25 +691,30 @@ namespace Browser
 		//                  CefSharp論理ピクセル座標を求め、ブラウザへ移動イベントを送信します。
 		// async Task化、セッション固有カーソル対応
 		//------------------------------------------------------------------------------------
-		private Task TriggerMouseMoveAsync(HttpCursorState cursorState)
+		private Task<CoordTrace> TriggerMouseMoveAsync(HttpCursorState cursorState, string sessionId)
 		{
-			if (_parent.Browser == null) return Task.CompletedTask;
+			if (_parent.Browser == null) return Task.FromResult(CoordTrace.Skipped);
 			
 			// ChromiumWebBrowser から内部の IBrowser インスタンスを取得
 			var browser = _parent.Browser.GetBrowser();
 			// ブラウザのホストオブジェクト (IBrowserHost) を取得
 			var host = browser?.GetHost();
-			if (host == null) return Task.CompletedTask;
+			if (host == null) return Task.FromResult(CoordTrace.Skipped);
 
 			// セッション固有のカーソル座標を使用
-			var coords = GetBrowserCoords(cursorState.X, cursorState.Y);
-			if (coords == null) return Task.CompletedTask;
+			CoordTrace trace;
+			var coords = GetBrowserCoords(cursorState.X, cursorState.Y, out trace);
+			if (coords == null)
+			{
+				AppendInputSkipLog(sessionId, "http", "move", trace);
+				return Task.FromResult(trace);
+			}
 
 			// マウス移動イベントオブジェクトを生成して送信します
 			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 			host.SendMouseMoveEvent(mouseEvent, false);
 
-			return Task.CompletedTask;
+			return Task.FromResult(trace);
 		}
 
 		//====================================================================================
@@ -608,13 +723,13 @@ namespace Browser
 		//                  Thread.Sleep を Task.Delay に変更し、スレッドブロッキングを排除。
 		// async Task化、セッション固有カーソル対応
 		//------------------------------------------------------------------------------------
-		private async Task TriggerMouseClickAsync(HttpCursorState cursorState)
+		private async Task<CoordTrace> TriggerMouseClickAsync(HttpCursorState cursorState, string sessionId)
 			{
-				if (_parent.Browser == null) return;
+				if (_parent.Browser == null) return CoordTrace.Skipped;
 	
 				var browser = _parent.Browser.GetBrowser();
 				var host = browser?.GetHost();
-				if (host == null) return;
+				if (host == null) return CoordTrace.Skipped;
 	
 				// HasValue フラグによるフォールバック
 				// HasValue が false の場合のみデフォルト 0.5, 0.5 を使用
@@ -630,8 +745,13 @@ namespace Browser
 					cursorY = 0.5;
 				}
 	
-				var coords = GetBrowserCoords(cursorX, cursorY);
-				if (coords == null) return;
+				CoordTrace trace;
+				var coords = GetBrowserCoords(cursorX, cursorY, out trace);
+				if (coords == null)
+				{
+					AppendInputSkipLog(sessionId, "http", "click", trace);
+					return trace;
+				}
 
 			// 左クリックのためのマウス座標イベントを生成
 			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
@@ -648,6 +768,8 @@ namespace Browser
 			
 			// 2. マウスアップイベント (左ボタン) の送信
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, true, 1);
+
+			return trace;
 		}
 
 		//====================================================================================
@@ -655,19 +777,24 @@ namespace Browser
 		// 概要           : セッション固有のカーソル座標で左ボタンダウンを送信
 		// async Task化、セッション固有カーソル対応
 		//------------------------------------------------------------------------------------
-		private Task TriggerMouseDownAsync(HttpCursorState cursorState)
+		private Task<CoordTrace> TriggerMouseDownAsync(HttpCursorState cursorState, string sessionId)
 		{
-			if (_parent.Browser == null) return Task.CompletedTask;
+			if (_parent.Browser == null) return Task.FromResult(CoordTrace.Skipped);
 
 			var browser = _parent.Browser.GetBrowser();
 			var host = browser?.GetHost();
-			if (host == null) return Task.CompletedTask;
+			if (host == null) return Task.FromResult(CoordTrace.Skipped);
 
 			double cursorX = cursorState.HasValue ? cursorState.X : 0.5;
 			double cursorY = cursorState.HasValue ? cursorState.Y : 0.5;
 
-			var coords = GetBrowserCoords(cursorX, cursorY);
-			if (coords == null) return Task.CompletedTask;
+			CoordTrace trace;
+			var coords = GetBrowserCoords(cursorX, cursorY, out trace);
+			if (coords == null)
+			{
+				AppendInputSkipLog(sessionId, "http", "mousedown", trace);
+				return Task.FromResult(trace);
+			}
 			// CefEventFlags.None を使用（公式推奨）
 			// isUp=false でダウンイベントを指定
 			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
@@ -676,7 +803,7 @@ namespace Browser
 			// 1. マウスダウン
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, false, 1);
 			Console.WriteLine($"RemoteController: TriggerMouseDown @ {coords.Value.X},{coords.Value.Y}");
-			return Task.CompletedTask;
+			return Task.FromResult(trace);
 		}
 
 		//====================================================================================
@@ -684,61 +811,76 @@ namespace Browser
 		// 概要           : セッション固有のカーソル座標で左ボタンアップを送信
 		// async Task化、セッション固有カーソル対応
 		//------------------------------------------------------------------------------------
-		private Task TriggerMouseUpAsync(HttpCursorState cursorState)
+		private Task<CoordTrace> TriggerMouseUpAsync(HttpCursorState cursorState, string sessionId)
 		{
-			if (_parent.Browser == null) return Task.CompletedTask;
+			if (_parent.Browser == null) return Task.FromResult(CoordTrace.Skipped);
 
 			var browser = _parent.Browser.GetBrowser();
 			var host = browser?.GetHost();
-			if (host == null) return Task.CompletedTask;
+			if (host == null) return Task.FromResult(CoordTrace.Skipped);
 
 			double cursorX = cursorState.HasValue ? cursorState.X : 0.5;
 			double cursorY = cursorState.HasValue ? cursorState.Y : 0.5;
 
-			var coords = GetBrowserCoords(cursorX, cursorY);
-			if (coords == null) return Task.CompletedTask;
+			CoordTrace trace;
+			var coords = GetBrowserCoords(cursorX, cursorY, out trace);
+			if (coords == null)
+			{
+				AppendInputSkipLog(sessionId, "http", "mouseup", trace);
+				return Task.FromResult(trace);
+			}
 			// CefEventFlags.None を使用（公式推奨）
 			// isUp=true でアップイベントを指定
 			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, true, 1);
 			Console.WriteLine($"RemoteController: TriggerMouseUp @ {coords.Value.X},{coords.Value.Y}");
-			return Task.CompletedTask;
+			return Task.FromResult(trace);
 		}
 
 		//====================================================================================
 		// 処理ブロック名 : TriggerMouseMoveAsync (WebSocketSession)
 		// 概要           : WebSocketセッション固有のカーソル座標からマウス移動イベントを送信
 		//------------------------------------------------------------------------------------
-		private Task TriggerMouseMoveAsync(WebSocketSession session)
+		private Task<CoordTrace> TriggerMouseMoveAsync(WebSocketSession session)
 		{
-			if (_parent.Browser == null) return Task.CompletedTask;
+			if (_parent.Browser == null) return Task.FromResult(CoordTrace.Skipped);
 
 			var browser = _parent.Browser.GetBrowser();
 			var host = browser?.GetHost();
-			if (host == null) return Task.CompletedTask;
+			if (host == null) return Task.FromResult(CoordTrace.Skipped);
 
-			var coords = GetBrowserCoords(session.CursorX, session.CursorY);
-			if (coords == null) return Task.CompletedTask;
+			CoordTrace trace;
+			var coords = GetBrowserCoords(session.CursorX, session.CursorY, out trace);
+			if (coords == null)
+			{
+				AppendInputSkipLog(session.SessionId, "ws", "move", trace);
+				return Task.FromResult(trace);
+			}
 			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 			host.SendMouseMoveEvent(mouseEvent, false);
 
-			return Task.CompletedTask;
+			return Task.FromResult(trace);
 		}
 
 		//====================================================================================
 		// 処理ブロック名 : TriggerMouseClickAsync (WebSocketSession)
 		// 概要           : WebSocketセッション固有のカーソル座標で左クリックを送信
 		//------------------------------------------------------------------------------------
-		private async Task TriggerMouseClickAsync(WebSocketSession session)
+		private async Task<CoordTrace> TriggerMouseClickAsync(WebSocketSession session)
 		{
-			if (_parent.Browser == null) return;
+			if (_parent.Browser == null) return CoordTrace.Skipped;
 
 			var browser = _parent.Browser.GetBrowser();
 			var host = browser?.GetHost();
-			if (host == null) return;
+			if (host == null) return CoordTrace.Skipped;
 
-			var coords = GetBrowserCoords(session.CursorX, session.CursorY);
-			if (coords == null) return;
+			CoordTrace trace;
+			var coords = GetBrowserCoords(session.CursorX, session.CursorY, out trace);
+			if (coords == null)
+			{
+				AppendInputSkipLog(session.SessionId, "ws", "click", trace);
+				return trace;
+			}
 			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 
 			// 0. マウス移動（ホバー・フォーカス確立を先行）
@@ -748,22 +890,29 @@ namespace Browser
 			await Task.Delay(50, session.CancellationToken.Token);
 			// 2. マウスアップ
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, true, 1);
+
+			return trace;
 		}
 
 		//====================================================================================
 		// 処理ブロック名 : TriggerMouseDownAsync (WebSocketSession)
 		// 概要           : WebSocketセッション固有のカーソル座標で左ボタンダウンを送信
 		//------------------------------------------------------------------------------------
-		private Task TriggerMouseDownAsync(WebSocketSession session)
+		private Task<CoordTrace> TriggerMouseDownAsync(WebSocketSession session)
 		{
-			if (_parent.Browser == null) return Task.CompletedTask;
+			if (_parent.Browser == null) return Task.FromResult(CoordTrace.Skipped);
 
 			var browser = _parent.Browser.GetBrowser();
 			var host = browser?.GetHost();
-			if (host == null) return Task.CompletedTask;
+			if (host == null) return Task.FromResult(CoordTrace.Skipped);
 
-			var coords = GetBrowserCoords(session.CursorX, session.CursorY);
-			if (coords == null) return Task.CompletedTask;
+			CoordTrace trace;
+			var coords = GetBrowserCoords(session.CursorX, session.CursorY, out trace);
+			if (coords == null)
+			{
+				AppendInputSkipLog(session.SessionId, "ws", "mousedown", trace);
+				return Task.FromResult(trace);
+			}
 			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 			// 0. マウス移動（ホバー・フォーカス確立を先行）
 			host.SendMouseMoveEvent(mouseEvent, false);
@@ -771,28 +920,33 @@ namespace Browser
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, false, 1);
 			Console.WriteLine($"RemoteController: TriggerMouseDown @ {coords.Value.X},{coords.Value.Y}");
 
-			return Task.CompletedTask;
+			return Task.FromResult(trace);
 		}
 
 		//====================================================================================
 		// 処理ブロック名 : TriggerMouseUpAsync (WebSocketSession)
 		// 概要           : WebSocketセッション固有のカーソル座標で左ボタンアップを送信
 		//------------------------------------------------------------------------------------
-		private Task TriggerMouseUpAsync(WebSocketSession session)
+		private Task<CoordTrace> TriggerMouseUpAsync(WebSocketSession session)
 		{
-			if (_parent.Browser == null) return Task.CompletedTask;
+			if (_parent.Browser == null) return Task.FromResult(CoordTrace.Skipped);
 
 			var browser = _parent.Browser.GetBrowser();
 			var host = browser?.GetHost();
-			if (host == null) return Task.CompletedTask;
+			if (host == null) return Task.FromResult(CoordTrace.Skipped);
 
-			var coords = GetBrowserCoords(session.CursorX, session.CursorY);
-			if (coords == null) return Task.CompletedTask;
+			CoordTrace trace;
+			var coords = GetBrowserCoords(session.CursorX, session.CursorY, out trace);
+			if (coords == null)
+			{
+				AppendInputSkipLog(session.SessionId, "ws", "mouseup", trace);
+				return Task.FromResult(trace);
+			}
 			var mouseEvent = new MouseEvent(coords.Value.X, coords.Value.Y, CefEventFlags.None);
 			host.SendMouseClickEvent(mouseEvent, MouseButtonType.Left, true, 1);
 			Console.WriteLine($"RemoteController: TriggerMouseUp @ {coords.Value.X},{coords.Value.Y}");
 
-			return Task.CompletedTask;
+			return Task.FromResult(trace);
 		}
 
 		/// <summary>

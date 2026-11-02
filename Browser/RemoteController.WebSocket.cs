@@ -1612,9 +1612,9 @@ namespace Browser
 				{
 					session.SetCursorX(Math.Max(0, Math.Min(1.0, x)));
 					session.SetCursorY(Math.Max(0, Math.Min(1.0, y)));
-					await TriggerMouseMoveAsync(session);
+					var moveTrace = await TriggerMouseMoveAsync(session);
 					// サーバ側アクション実行ログ（クライアント送信ログと時系列で突き合わせる）
-					AppendServerActionLog("move", x, y, session.SessionId, "ws");
+					AppendServerActionLog("move", x, y, session.SessionId, "ws", moveTrace);
 				}
 				else if (action == "click")
 				{
@@ -1627,17 +1627,19 @@ namespace Browser
 						session.SetCursorX(Math.Max(0, Math.Min(1.0, cxx)));
 						session.SetCursorY(Math.Max(0, Math.Min(1.0, cyy)));
 					}
-					await TriggerMouseClickAsync(session);
+					var clickTrace = await TriggerMouseClickAsync(session);
+					// 座標パース失敗行は、供給された変換値がセッションカーソル（未設定なら既定座標）のものになるため着地座標を記録しない
+					if (!cx.HasValue) { clickTrace.Bx = null; clickTrace.By = null; }
 					// サーバ側アクション実行ログ
-					AppendServerActionLog("click", cx, cy, session.SessionId, "ws");
+					AppendServerActionLog("click", cx, cy, session.SessionId, "ws", clickTrace);
 				}
 				else if (action == "touch_click" && double.TryParse(xStr, out double tx) && double.TryParse(yStr, out double ty))
 				{
 					session.SetCursorX(Math.Max(0, Math.Min(1.0, tx)));
 					session.SetCursorY(Math.Max(0, Math.Min(1.0, ty)));
-					await TriggerMouseClickAsync(session);
+					var touchTrace = await TriggerMouseClickAsync(session);
 					// サーバ側アクション実行ログ
-					AppendServerActionLog("touch_click", tx, ty, session.SessionId, "ws");
+					AppendServerActionLog("touch_click", tx, ty, session.SessionId, "ws", touchTrace);
 				}
 				else if (action == "mousedown")
 				{
@@ -1650,9 +1652,11 @@ namespace Browser
 						session.SetCursorX(Math.Max(0, Math.Min(1.0, mxx)));
 						session.SetCursorY(Math.Max(0, Math.Min(1.0, myy)));
 					}
-					await TriggerMouseDownAsync(session);
+					var downTrace = await TriggerMouseDownAsync(session);
+					// 座標パース失敗行は、供給された変換値がセッションカーソル（未設定なら既定座標）のものになるため着地座標を記録しない
+					if (!mx.HasValue) { downTrace.Bx = null; downTrace.By = null; }
 					// サーバ側アクション実行ログ
-					AppendServerActionLog("mousedown", mx, my, session.SessionId, "ws");
+					AppendServerActionLog("mousedown", mx, my, session.SessionId, "ws", downTrace);
 				}
 				else if (action == "mouseup")
 				{
@@ -1665,9 +1669,11 @@ namespace Browser
 						session.SetCursorX(Math.Max(0, Math.Min(1.0, uxx)));
 						session.SetCursorY(Math.Max(0, Math.Min(1.0, uyy)));
 					}
-					await TriggerMouseUpAsync(session);
+					var upTrace = await TriggerMouseUpAsync(session);
+					// 座標パース失敗行は、供給された変換値がセッションカーソル（未設定なら既定座標）のものになるため着地座標を記録しない
+					if (!ux.HasValue) { upTrace.Bx = null; upTrace.By = null; }
 					// サーバ側アクション実行ログ
-					AppendServerActionLog("mouseup", ux, uy, session.SessionId, "ws");
+					AppendServerActionLog("mouseup", ux, uy, session.SessionId, "ws", upTrace);
 				}
 				// WCS モード切替（クライアント switchToWcsMode() → { action: 'switch_mode', mode: 'webcodecs' }）
 				// 設計書 §5.2 整合: クライアントは既存 WebSocket 接続を維持したまま
