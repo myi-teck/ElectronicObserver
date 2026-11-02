@@ -104,6 +104,7 @@ namespace Browser
 		private long _lastProbeUtcTicks;    // プローブの最終試行時刻（1 秒サムリング）
 		private int _probeRunning;          // single-flight（Interlocked.Exchange）
 		private int _lastGeomSource = -1;   // 直近合成の供給源（変化した時だけ記録するため保持、変更時のみログ）
+		private long _viewportZeroHintTicks; // 寸法 0 遷入ヒントの最終記録時刻（30 秒サムリング）
 
 		// 実測矩形を使うための鮮度上限。エンジンは 1 秒サムリングで更新するため通常は数秒以内で、
 		// この上限に達する値はページ遷移直後やエンジン不在期に古くなった値であり、
@@ -114,6 +115,9 @@ namespace Browser
 		private const double GeometrySizeTolerance = 1.05;
 		// プローブの間隔（JS 評価コストのため 1 秒に 1 回、single-flight と併せて多重評価しない）
 		private const long ProbeMinIntervalTicks = TimeSpan.TicksPerSecond;
+		// 寸法 0 遷入ヒントの間引き。寸法 0 の状態が続く間のログ増幅を防ぐ定数で、
+		// 同一症状を扱うブラウザ側のスタイル未適用ログと同じ 30 秒とする
+		private const long ViewportZeroHintIntervalTicks = 30 * TimeSpan.TicksPerSecond;
 
 		// プローブスクリプト（メインフレーム・1 評価で矩形と innerSize を一括取得）。
 		// 候補は #game_frame（PageScript の既定構造）→ src に /kcs2/ を含む iframe → 最初の iframe。
@@ -157,6 +161,7 @@ namespace Browser
 					Bw = (int)browserWidth,
 					Bh = (int)browserHeight
 				};
+				LogViewportZeroHint((int)browserWidth, (int)browserHeight);
 				return false;
 			}
 
@@ -239,6 +244,21 @@ namespace Browser
 				Bh = (int)browserHeight
 			};
 			return true;
+		}
+
+		// 寸法 0（ガード ≤0）のビューポートは「映像は正常・入力だけ死ぬ」特異症状の唯一のサーバ側兆候。
+		// input_skip 行の積み上がりとは別に、原因（ウィンドウ最小化・非表示）へ辿るヒントを
+		// 遷入時 1 回だけ残す（寸法 0 の状態が続く間のログ増幅を防ぐ 30 秒間引きは
+		// FormBrowser 側のスタイル未適用ログと同じ Interlocked サムリング方式）。
+		private void LogViewportZeroHint(int bw, int bh)
+		{
+			long nowTicks = DateTime.UtcNow.Ticks;
+			long lastTicks = System.Threading.Interlocked.Read(ref _viewportZeroHintTicks);
+			if (lastTicks != 0 && (nowTicks - lastTicks) < ViewportZeroHintIntervalTicks)
+				return;
+			// 他スレッドと同時に記録した場合は後勝ちになるが差分は 1 行の増減のみ（競合の正確な保証は不要）
+			System.Threading.Interlocked.CompareExchange(ref _viewportZeroHintTicks, nowTicks, lastTicks);
+			Log(3, $"[RemoteController] Browser コントロール寸法が 0（{bw}x{bh}）— ウィンドウ最小化・非表示かサイズ未復元の可能性。ログアウト時点の窓状態・SizeAdjuster 寸法は [task20] ログアウト行に記録");
 		}
 
 		/// <summary>
