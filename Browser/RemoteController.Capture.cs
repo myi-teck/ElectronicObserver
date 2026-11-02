@@ -424,6 +424,7 @@ namespace Browser
 		//====================================================================================
 		// 処理ブロック名 : GetCaptureEngineStatsAsync
 		// 概要           : キャプチャエンジンの統計（encodeCount / rafCount）を読み取る。
+		//                  応答に canvas 実測ジオメトリが含まれる場合は測地供給へ反映する。
 		//                  二重レート計測（配信本数 vs 固有本数）の集計窓ごとに 1 回のみ呼ぶ前提
 		//                  （呼び出し毎に CefSharp IPC が発生するため高頻度呼び出し禁止）。
 		// 戻り値         : 成功時 (encodeCount, rafCount)、エンジン未読込・解析失敗時は null
@@ -435,12 +436,31 @@ namespace Browser
 
 			try
 			{
-				const string script = "(function(){var e=window._kancolleCaptureEngine;if(!e)return null;return [e.encodeCount||0,e.rafCount||0];})()";
+				const string script = "(function(){var e=window._kancolleCaptureEngine;if(!e)return null;return [e.encodeCount||0,e.rafCount||0,e.geom||null];})()";
 				var response = await captureSourceFrame.EvaluateScriptAsync(script);
 				if (!response.Success || response.Result == null) return null;
 
 				var list = response.Result as System.Collections.Generic.IList<object>;
 				if (list == null || list.Count < 2) return null;
+
+				// 第3要素: canvas の実測ジオメトリ（cw,ch,fx,fy,fw,fh,vw,vh）。
+				// 旧エンジン（2 要素）や計測失敗時は要素が無い・null になるため、存在時のみ観測する。
+				// 統計読み取りの副次的な経路として測地を供給する（入力側は主経路の probe を使う）
+				if (list.Count >= 3 && list[2] != null)
+				{
+					var geom = list[2] as System.Collections.Generic.IList<object>;
+					if (geom != null && geom.Count >= 8)
+					{
+						double cw, ch, fx, fy, fw, fh, vw, vh;
+						if (TryToDouble(geom[0], out cw) && TryToDouble(geom[1], out ch) &&
+							TryToDouble(geom[2], out fx) && TryToDouble(geom[3], out fy) &&
+							TryToDouble(geom[4], out fw) && TryToDouble(geom[5], out fh) &&
+							TryToDouble(geom[6], out vw) && TryToDouble(geom[7], out vh))
+						{
+							OnCanvasGeometryReported(cw, ch, fx, fy, fw, fh, vw, vh);
+						}
+					}
+				}
 				return Tuple.Create(Convert.ToInt64(list[0]), Convert.ToInt64(list[1]));
 			}
 			catch (Exception ex)
