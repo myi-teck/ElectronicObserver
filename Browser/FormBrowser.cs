@@ -1928,6 +1928,10 @@ namespace Browser
 							}));
 						});
 				}
+				else if (!StyleSheetApplied)
+				{
+					LogStyleSheetNotApplied();
+				}
 			}
 			catch (Exception ex)
 			{
@@ -2629,6 +2633,73 @@ requestAnimationFrame(draw);
 			}
 		}
 
+		// フレーム URL ダンプの重複抑止（同一 URL 集合の連続重複は 1 行に留める）。
+		// 複数のフレームの FrameLoadEnd が並行して同じハンドラに入り得るため lock で保護する（抑止は best effort）。
+		private string _lastFrameUrlDump;
+		private readonly object _frameUrlDumpLock = new object();
+		// スタイルシート未適用の継続を記録する間隔（ApplyStyleSheet は複数契機で再入するため、同じ状態を毎回記録しない）。
+		// DateTime のむきだし読み書きは 32bit 環境で分割読みの可能性があるため ticks(long) を Interlocked で扱う。
+		private const long StyleSheetNotAppliedLogIntervalTicks = 30 * TimeSpan.TicksPerSecond;
+		private long _lastStyleSheetNotAppliedLogTicks = DateTime.MinValue.Ticks;
+
+		/// <summary>
+		/// 全フレームの URL を 1 行へ連結して UI ログへ残す。
+		/// ゲーム iframe の URL が既存の判定パターン（ゲームフレーム・キャプチャ源フレーム）と
+		/// 一致するかを、再現 1 回で静的に切り替えるための診断証跡であり、動作には影響しない。
+		/// 1 ページ遷移で複数フレーム分発火するため、前回と同一の URL 集合は抑止してログスパムにしない。
+		/// </summary>
+		private void DumpFrameUrls()
+		{
+			if (!IsBrowserInitialized)
+				return;
+
+			var browser = Browser.GetBrowser();
+			if (browser == null)
+				return;
+
+			var sb = new StringBuilder();
+			foreach (var id in browser.GetFrameIdentifiers())
+			{
+				var frame = browser.GetFrameByIdentifier(id);
+				if (frame == null) continue;
+				if (sb.Length > 0) sb.Append(" | ");
+				sb.Append(string.IsNullOrEmpty(frame.Url) ? "(empty)" : frame.Url);
+			}
+			if (sb.Length == 0)
+				return;
+
+			// 転送は WCF 経由の UI ログのため、異例に長い列（多数の iframe）は先頭部分だけ残して切る
+			const int maxLen = 2000;
+			string dump = sb.Length > maxLen ? sb.ToString(0, maxLen) + " …(truncated)" : sb.ToString();
+
+			lock (_frameUrlDumpLock)
+			{
+				if (string.Equals(_lastFrameUrlDump, dump, StringComparison.Ordinal))
+					return;
+				_lastFrameUrlDump = dump;
+			}
+
+			AddLog(0, "[FrameUrls] " + dump);
+		}
+
+		/// <summary>
+		/// ゲーム iframe が取得できずスタイル未適用が続いている事実を 1 回だけ記録する。
+		/// 無音だと「映像源フレームは存在するのにゲーム iframe 判定に不一致でレイアウトが復帰しない」
+		/// 状態をフレーム URL ダンプと突き合わせて確定できない（30 秒間隔で間引く）。
+		/// </summary>
+		private void LogStyleSheetNotApplied()
+		{
+			// Interlocked は using を追加せず完全修飾で呼ぶ（System.Threading の using 追加は
+			// このファイルの Timer（WinForms 側）を曖昧参照させるため）
+			long nowTicks = DateTime.UtcNow.Ticks;
+			long lastTicks = System.Threading.Interlocked.Read(ref _lastStyleSheetNotAppliedLogTicks);
+			if ((nowTicks - lastTicks) < StyleSheetNotAppliedLogIntervalTicks)
+				return;
+			// 他スレッドと同時に記録した場合は後勝ちになるが、差分は 1 行の増減のみ（正確な間隔保証は不要）
+			System.Threading.Interlocked.CompareExchange(ref _lastStyleSheetNotAppliedLogTicks, nowTicks, lastTicks);
+			AddLog(1, "[StyleSheet] ゲーム iframe が見つからず、スタイルシート未適用が続いています（レイアウトは未固定のまま）");
+		}
+
 		private void Browser_FrameLoadEnd(object sender, FrameLoadEndEventArgs e)
 		{
 			// キャプチャ源フレーム（艦これゲーム or ダミー映像テストページ）のロード完了時に、常駐キャプチャエンジンを自動注入して起動
@@ -2642,6 +2713,17 @@ requestAnimationFrame(draw);
 			catch (Exception ex)
 			{
 				SendErrorReport(ex.ToString(), "Browser_FrameLoadEnd: キャプチャエンジンの自動注入に失敗しました。");
+			}
+
+			// 全フレーム URL の診断ログ（Q6 判定の証跡・挙動不変）。
+			// 下の AppliesStyleSheet（設定値）ガードより前に置くことで、設定が false の環境でも取得できる。
+			try
+			{
+				DumpFrameUrls();
+			}
+			catch (Exception ex)
+			{
+				SendErrorReport(ex.ToString(), "Browser_FrameLoadEnd: フレーム URL の診断ログ取得に失敗しました。");
 			}
 
 			// Navigate 検証（軽量）: ダミー有効化後にメインフレームのロード完了がダミー URL であることを
