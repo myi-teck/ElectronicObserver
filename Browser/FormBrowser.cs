@@ -1167,7 +1167,11 @@ namespace Browser
 						//Browser.Anchor = AnchorStyles.Top | AnchorStyles.Left;
 						Browser.Location = new Point(0, 0);
 						Browser.MinimumSize = new Size(0, 0);
-						Browser.Size = SizeAdjuster.Size;
+						// SizeAdjuster_SizeChanged / ApplyZoom と同じ極小ガード: 最小化・非表示・ドッキング解除の
+						// 窓で SizeAdjuster が 0×0・1×1 のとき、ここだけ無ガードだとコントロールが 0×0 に退化する。
+						// サイズ供給源も極小なのでこの 0×0 は自力で戻らず、入力座標変換の 0 ガードが全入力を拒否する。
+						if (SizeAdjuster.Width > 10 && SizeAdjuster.Height > 10)
+							Browser.Size = SizeAdjuster.Size;
 					}
 					SizeAdjuster.ResumeLayout();
 				}
