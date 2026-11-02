@@ -666,8 +666,23 @@ const ProtocolManager = {
                 console.warn('[ProtocolManager] capture_mode_fallback:', msg.reason);
                 if (window.__eventLog) window.__eventLog.consoleLog('warn', 'WebCodecs 利用不可（' + msg.reason + '）→ WebSocket(WebP) に降格', 'MODE_FALLBACK');
                 if (this.currentMode === this.MODES.WEBCODECS) {
+                    // 降格の直前だけが持つ情報なので、この時点でフラグに残す（復帰判定はこの受信時に復元できない）。
+                    // デコーダ異常等の自前フォールバック（VD 起点）はこの分岐を通らないため、復帰対象から自然に外れる
+                    this._wcsForcedFallbackFromServer = true;
                     showTempToast('WebCodecs 利用不可 → WebSocket(WebP) に降格しました');
                     this.setMode(this.MODES.WEBSOCKET);
+                }
+            } else if (msg.type === 'capture_mode_ready') {
+                // サーバー側の WebCodecs 配信が復帰した通知。降格側と対称に、サーバー起因で降格したクライアントだけ戻す
+                if (window.__eventLog) window.__eventLog.consoleLog('log', 'サーバー側 WebCodecs 配信が復帰 (capture_mode_ready)', 'MODE_READY');
+                if (this._wcsForcedFallbackFromServer) {
+                    this._wcsForcedFallbackFromServer = false;
+                    this.setMode(this.MODES.WEBCODECS);
+                    // デコーダの状態は WebP へ退避したままなので、手動で低遅延モードへ切り替えた時と同じ組み直しを行う
+                    // （退避バッジの解除もこの関数の既存解除点に委ねる。VD 起点のバッジはここに触れない）
+                    if (typeof switchToWcsMode === 'function') {
+                        switchToWcsMode();
+                    }
                 }
             } else if (msg.type === 'display_state') {
                 // ホスト側の表示状態変化（ヘッドレス/RDP 切断/rAF ストール）。degraded は画面上部に banner で常時提示
@@ -1209,6 +1224,10 @@ const ProtocolManager = {
 
     // WebP 退避バッジ表示フラグ: フォールバック発動でセット、onopen で再提示、switchToWcsMode で解除
     _wcsFallbackBadge: false,
+
+    // サーバー起点の capture_mode_fallback で WEBCODECS から降格した事実のみ保持（復帰可否の判定材料は降格時の currentMode だけ）。
+    // デコーダ異常等の自前（VD 起点）フォールバックでは set しないため、復帰対象から自動的に外れる
+    _wcsForcedFallbackFromServer: false,
 
     // キーフレーム待ちガード: 再初期化（description 変更・エラーリトライ）後は最初のチャンクが
     // キーフレームである必要があり（仕様上の [[key chunk required]]）、delta を decode() すると

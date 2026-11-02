@@ -1894,7 +1894,17 @@ namespace Browser
 				// B-1 方針（旧 CTS の Dispose は省略し GC に委譲）とも整合（孤立 CTS を一切生成しない）。
 				// 降格はサーバー全体の状態変化のため、全クライアントへ通知して
 				// WCS 側クライアントも WebP 描画経路へ同期させる（黒画面の放置防止）
-				Log(2, "[RemoteController] WebCodecs 初期化失敗のため WebP にフォールバックします（クライアントへ通知）");
+				//
+				// 失敗理由の分離: 映像源フレームが無い失敗（エンジン未注入ページ・ログアウト状態）は
+				// そのフレームが現れた時に成功し得る一時的な状況なので、次回を 1 回だけ待たせる。
+				// codec/decoder 系の失敗は同じ結果が続くため再試行しない（安全側に粘着させる）。
+				bool sourceFrameMissing = _parent.GetCaptureSourceFrame() == null;
+				if (sourceFrameMissing)
+				{
+					lock (_modeLock)
+						_wcsFallbackRetryPending = true;
+				}
+				Log(2, $"[RemoteController] WebCodecs 初期化失敗（reason={(sourceFrameMissing ? "frame_not_found" : "other")}）のため WebP にフォールバックします（クライアントへ通知）");
 				await BroadcastControlToAllSessionsAsync("{\"type\":\"capture_mode_fallback\",\"to\":\"webp\",\"reason\":\"webcodecs_init_failed\"}");
 				await SetCaptureModeAsync(CaptureMode.WebP);
 				return;
@@ -1919,6 +1929,52 @@ namespace Browser
 			RecalculateWebCodecsFps();
 			// 生存性チェックによる起動
 			Log(2, "[RemoteController] WebCodecs キャプチャループを生存性チェックにより起動しました");
+		}
+
+		//====================================================================================
+		// 処理ブロック名 : NotifyCaptureSourceFrameReady
+		// 概要           : 映像源フレーム（kcs2）のロード完了を FormBrowser から受け、
+		//                  「映像源フレームが無かったこと」で降格したまま残っている場合だけ
+		//                  1 回だけ WCS の再試行をする。復帰に成功した時だけ capture_mode_ready を配信する。
+		//------------------------------------------------------------------------------------
+		// 再試行はイベント（映像源フレームの出現）起点に限る。定期リトライを持たせないのは、
+		// codec/decoder 側の失敗は再試行を積んでも同じ結果が続くため（その場合は降格を粘着させる）。
+		// 再試行が失敗してもフラグは再 set しない（= 次は次に映像源フレームが現れた時だけ試みる）。
+		//====================================================================================
+		internal void NotifyCaptureSourceFrameReady()
+		{
+			bool retry;
+			lock (_modeLock)
+			{
+				// 読み取りとクリアを同じロックで行う（複数のフレーム完了が同時に届いても 1 回しか再試行しない）
+				retry = _wcsFallbackRetryPending;
+				_wcsFallbackRetryPending = false;
+			}
+			if (!retry)
+				return;
+			// 現行モードが WebP のときだけ（既に WCS が動いている窓で余計な再初期化をしない）
+			if (_currentCaptureMode != CaptureMode.WebP)
+				return;
+
+			// フレーム完了のイベント処理を待たせない（再試行は裏側で進め、例外は必ずログへ残す）
+			_ = Task.Run(async () =>
+			{
+				try
+				{
+					await StartWebCodecsCaptureLoopAsync();
+					if (!_isWebCodecsInitialized)
+					{
+						Log(2, "[RemoteController] 映像源フレーム出現後の WebCodecs 再試行は成功しませんでした（これ以上の再試行はしません）");
+						return;
+					}
+					Log(2, "[RemoteController] 映像源フレームの出現により WebCodecs 配信へ復帰しました（クライアントへ通知）");
+					await BroadcastControlToAllSessionsAsync("{\"type\":\"capture_mode_ready\",\"to\":\"webcodecs\"}");
+				}
+				catch (Exception ex)
+				{
+					Log(3, $"[RemoteController] 映像源フレーム出現時の WebCodecs 再試行に失敗: {ex.GetType().Name}: {ex.Message}");
+				}
+			});
 		}
 
 		//====================================================================================
@@ -2156,6 +2212,10 @@ namespace Browser
 			"(function(){if(window._kancolleCaptureEngine){return window._kancolleCaptureEngine.encodeAndPull(__IS_KEY_FRAME__);}})();";
 
 		private readonly object _modeLock = new object();
+
+		// 映像源フレーム不在で WebP へ降格した時に「そのフレームが現れた時だけ 1 回やり直す」ための保留フラグ。
+		// 定期リトライは持たせず、保留は 1 発限り（読み取りとクリアは _modeLock 内で行う）
+		private bool _wcsFallbackRetryPending = false;
 
 		private volatile bool _isWebCodecsInitialized = false;
 

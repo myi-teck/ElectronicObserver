@@ -2785,6 +2785,10 @@ requestAnimationFrame(draw);
 				if (IsCaptureSourceFrame(e.Frame))
 				{
 					e.Frame.ExecuteJavaScriptAsync(CaptureEngineScript);
+					// WCS 初期化が「このフレームがまだ無い」理由で降格したまま残っている場合、
+					// ここがその状態を閉じる唯一の機会になる（映像源フレームの完了時だけを呼ぶ。
+					// 全フレームの load-end で呼ぶと、映像源ではないロードで一度限りの再試行が消費される）
+					_remoteController?.NotifyCaptureSourceFrameReady();
 				}
 			}
 			catch (Exception ex)
