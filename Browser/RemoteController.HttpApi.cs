@@ -681,6 +681,12 @@ namespace Browser
 				var host = browser?.GetHost();
 				if (host == null) return CoordTrace.Skipped;
 	
+				// 論理フォーカスが切れていると合成クリックは無音で捨てられるため、送信前に取り直す。
+				// ここは有効/無効の本体判定（EnsureInputFocus 冒頭ゲート）と同じ条件の前置で、
+				// オフ時に UI 側へ BeginInvoke を積まないための防御。Browser の null 判定より後ろに置く
+				if (_parent.Configuration != null && _parent.Configuration.RemoteInputFocusRecovery && !_parent.Browser.Focused)
+					_parent.EnsureInputFocus("input_burst");
+	
 				// HasValue フラグによるフォールバック
 				// HasValue が false の場合のみデフォルト 0.5, 0.5 を使用
 				double cursorX, cursorY;
@@ -734,6 +740,11 @@ namespace Browser
 			var browser = _parent.Browser.GetBrowser();
 			var host = browser?.GetHost();
 			if (host == null) return Task.FromResult(CoordTrace.Skipped);
+
+			// 論理フォーカスが切れていると合成クリックは無音で捨てられるため、送信前に取り直す
+			// （条件は EnsureInputFocus 冒頭ゲートと同じ前置で、オフ時に BeginInvoke を積まないための防御）
+			if (_parent.Configuration != null && _parent.Configuration.RemoteInputFocusRecovery && !_parent.Browser.Focused)
+				_parent.EnsureInputFocus("input_burst");
 
 			double cursorX = cursorState.HasValue ? cursorState.X : 0.5;
 			double cursorY = cursorState.HasValue ? cursorState.Y : 0.5;
@@ -824,6 +835,10 @@ namespace Browser
 			var host = browser?.GetHost();
 			if (host == null) return CoordTrace.Skipped;
 
+			// 論理フォーカス切れの復元（条件は EnsureInputFocus の冒頭ゲートと同じ前置）
+			if (_parent.Configuration != null && _parent.Configuration.RemoteInputFocusRecovery && !_parent.Browser.Focused)
+				_parent.EnsureInputFocus("input_burst");
+
 			CoordTrace trace;
 			var coords = GetBrowserCoords(session.CursorX, session.CursorY, out trace);
 			if (coords == null)
@@ -855,6 +870,10 @@ namespace Browser
 			var browser = _parent.Browser.GetBrowser();
 			var host = browser?.GetHost();
 			if (host == null) return Task.FromResult(CoordTrace.Skipped);
+
+			// 論理フォーカス切れの復元（条件は EnsureInputFocus の冒頭ゲートと同じ前置）
+			if (_parent.Configuration != null && _parent.Configuration.RemoteInputFocusRecovery && !_parent.Browser.Focused)
+				_parent.EnsureInputFocus("input_burst");
 
 			CoordTrace trace;
 			var coords = GetBrowserCoords(session.CursorX, session.CursorY, out trace);

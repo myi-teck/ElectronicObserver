@@ -316,6 +316,8 @@ namespace ElectronicObserver.Window
 				config.RemoteControllerAddress = c.RemoteControllerAddress;
 				// 2026/07/23 追記（パスワードの設定コピー）
 				config.RemoteControllerPassword = c.RemoteControllerPassword;
+				// 論理フォーカス復元の設定（Browser 側の defensive ガード・EnsureInputFocus が読む）
+				config.RemoteInputFocusRecovery = c.RemoteInputFocusRecovery;
 				// task28: WebCodecs 設定コピー
 				config.WebCodecsEnabled = c.WebCodecsEnabled;
 				config.WebCodecsBitrate = c.WebCodecsBitrate;

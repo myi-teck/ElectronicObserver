@@ -245,6 +245,12 @@ namespace BrowserLib
 		public string RemoteControllerPassword { get; set; }
 
 		/// <summary>
+		/// リモート操作の入力時に CEF の論理フォーカスを自動的に取り直すか
+		/// </summary>
+		[DataMember]
+		public bool RemoteInputFocusRecovery { get; set; }
+
+		/// <summary>
 		/// 【task28】WebCodecs モードを有効にするか
 		/// </summary>
 		[DataMember]

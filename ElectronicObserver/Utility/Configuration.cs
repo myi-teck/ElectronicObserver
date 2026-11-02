@@ -1094,6 +1094,11 @@ namespace ElectronicObserver.Utility
 				public string RemoteControllerPassword { get; set; }
 
 				/// <summary>
+				/// リモート操作の入力時に CEF の論理フォーカスを自動的に取り直すか（既定: true）
+				/// </summary>
+				public bool RemoteInputFocusRecovery { get; set; }
+
+				/// <summary>
 				/// 【task28】WebCodecs モードを有効にするか
 				/// </summary>
 				public bool WebCodecsEnabled { get; set; }
@@ -1140,6 +1145,8 @@ namespace ElectronicObserver.Utility
 					RemoteControllerAddress = "*";
 					// 2026/07/14 myi 新規作成（リモート操作用パスワードの初期値設定）
 					RemoteControllerPassword = "";
+					// 論理フォーカス復元は合成入力の到達に必須のため既定で有効（旧設定ファイルにキーが無い場合はここが適用される）
+					RemoteInputFocusRecovery = true;
 					// task28: WebCodecs 設定のデフォルト値
 					WebCodecsEnabled = true;
 					WebCodecsBitrate = 800000;  // 800 kbps

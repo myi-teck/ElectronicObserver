@@ -1103,7 +1103,8 @@ namespace Browser
 		// FormBrowserの通信サーバ
 		private PipeCommunicator<BrowserLib.IBrowserHost> BrowserHost;
 
-		private BrowserLib.BrowserConfiguration Configuration;
+		// RemoteController 側（同一アセンブリの別 partial）からも焦点復元の判定キーを読むため internal にする
+		internal BrowserLib.BrowserConfiguration Configuration;
 
 		// 親プロセスが生きているか定期的に確認するためのタイマー
 		private Timer HeartbeatTimer = new Timer();
@@ -1694,6 +1695,10 @@ namespace Browser
 
 		public void InitialAPIReceived()
 		{
+			// 再ログイン復帰でも論理フォーカスは戻らない（ゲーム側の操作で失われる）。
+			// 有効/無効はこのメソッドの冒頭ゲートで一括判定するため、ここでは条件を書かない。
+			EnsureInputFocus("relogin");
+
 			IsKanColleLoaded = true;
 			// [task22] ゲーム API 受信 = ゲームがロード済み（再ログイン後に再発火するため復帰検出にも機能）
 			_isLogoutBlank = false;
@@ -1706,6 +1711,46 @@ namespace Browser
 
 			//起動直後はまだ音声が鳴っていないのでミュートできないため、この時点で有効化
 			SetVolumeState();
+		}
+
+		/// <summary>
+		/// リモート操作の入力が届くよう、CEF の論理フォーカスだけを取り直す（OS ウィンドウの活性化はしない）。
+		/// 合成マウス入力は論理フォーカスが切れていると無音で捨てられるため、
+		/// 入力バースト・再ログイン復帰の両地点から呼んで復元する。
+		/// SetFocus は CEF が既にフォーカスを持つ場合は無害なので、呼び出しが重複しても過剰な実行は問題にならない。
+		/// </summary>
+		/// <param name="reason">focus_state ログに残す復元理由（relogin / input_burst 等）</param>
+		public void EnsureInputFocus(string reason)
+		{
+			if (this.InvokeRequired)
+			{
+				// WS/HTTP ワーカーから呼ばれるため、以下は UI スレッドで実行する
+				this.BeginInvoke((Action)(() => EnsureInputFocus(reason)));
+				return;
+			}
+
+			// 論理フォーカス復元の有効/無効はここで一括判定する（呼び出し側ごとに条件を書かない）。
+			// オフ時は SetFocus も focus_state 記録も行わない完全な no-op になる。
+			// Configuration はホストとの接続確立前は null になり得る（設定未確定 = 操作しない）。
+			if (Configuration == null || !Configuration.RemoteInputFocusRecovery)
+				return;
+			if (Browser == null || !Browser.IsBrowserInitialized)
+				return;
+
+			// UI スレッドで再確認（WS/HTTP スレッドでの呼出は粗い前フィルタとみなす）
+			if (!Browser.Focused)
+			{
+				var host = Browser.GetBrowser()?.GetHost();
+				if (host == null)
+					return;
+				// CefSharp の IBrowserHost.SetFocus(true) は CEF UI スレッドへ自己 post するため
+				// 任意スレッドから安全（windowed レンダリングの正規 API・SendFocusEvent は OSR 用で使わない）。
+				// OS 活性化（SetForegroundWindow 等）は合成入力経路の必要条件でなく
+				// ホストウィンドウ奪取の副作用を伴うため行わない。
+				host.SetFocus(true);
+				// RC 未起動時は focus_state 記録だけがスキップされ、復元自体は行われる（安全な no-op）
+				_remoteController?.AppendFocusState("focus_restored_setfocus", reason);
+			}
 		}
 
 
