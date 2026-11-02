@@ -1720,6 +1720,7 @@ namespace Browser
 			//ロード直後の適用ではレイアウトがなぜか崩れるのでこのタイミングでも適用
 			ApplyStyleSheet();
 			ApplyZoom();
+			EnsureBrowserSizeRestored("initial_api");
 			ApplyColorFilter();
 			DestroyDMMreloadDialog();
 
@@ -2958,6 +2959,7 @@ requestAnimationFrame(draw);
 				{
 					e.Frame.ExecuteJavaScriptAsync(FrameScript);
 					StyleSheetApplied = true;
+					EnsureBrowserSizeRestored("game_frame_load_end");
 				}
 			}
 			catch (Exception ex)
