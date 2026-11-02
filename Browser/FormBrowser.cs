@@ -2474,7 +2474,8 @@ namespace Browser
 			_isLogoutBlank = true;
 			// AddLog(0, ...) は情報ログ相当（r3 指摘7 注記）。既存パターンと整合。
 			// [task21 v1.1] 配信 URL をログに含める（一次 Minor 2: 配信失敗時のデバッグ性向上・可観測性）。
-			AddLog(0, string.Format("[task20] ログアウト（空白ページ）を実行: {0}", blankUrl));
+			AddLog(0, string.Format("[task20] ログアウト（空白ページ）を実行: {0} [Window={1}, SizeAdjuster={2}x{3}, Browser={4}x{5}]",
+				blankUrl, WindowState, SizeAdjuster.Width, SizeAdjuster.Height, Browser.Width, Browser.Height));
 		}
 
 		/// <summary>
