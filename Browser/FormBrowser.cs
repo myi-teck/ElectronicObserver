@@ -2809,6 +2809,13 @@ requestAnimationFrame(draw);
 				if (IsMainFrame(e.Frame))
 				{
 					e.Frame.ExecuteJavaScriptAsync(PageScript);
+
+					// 自己治癒: ゲーム iframe の完了がメインフレームの完了より先に起きると、
+					// スタイルシート適用の契機をそのまま失う（その後は無音のまま未適用が続く）。
+					// 冪等な既存関数を再適用して閉じる。ゲームフレーム未発見では何もしないため
+					// 無ゲーム期の余計な書き込みは発生せず、適用済みはガードで再発火しない。
+					if (!StyleSheetApplied)
+						BeginInvoke((Action)(ApplyStyleSheet));
 				}
 
 				if (IsGameFrame(e.Frame))
