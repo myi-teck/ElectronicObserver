@@ -1114,6 +1114,13 @@ namespace ElectronicObserver.Utility
 				/// </summary>
 				public double WebCodecsFps { get; set; }
 
+				/// <summary>
+				/// ダミー映像（検証用映像源）トグルの永続状態。ON は「次回起動時（初回起動・再起動含む）、
+				/// ログインページ遷移をスキップして即ダミー開始」を意味する（DMM アクセス回避）。
+				/// 明示停止・自己治癒で OFF 化。
+				/// </summary>
+				public bool DummyVideoOnStartup { get; set; }
+
 				public ConfigFormBrowser()
 				{
 					ZoomRate = 1;
@@ -1151,6 +1158,7 @@ namespace ElectronicObserver.Utility
 					WebCodecsEnabled = true;
 					WebCodecsBitrate = 800000;  // 800 kbps
 					WebCodecsFps = 30;          // 30 fps
+					DummyVideoOnStartup = false;   // 既定 OFF = 現行（非永続）と同一の起動挙動
 				}
 			}
 			/// <summary>[ブラウザ]ウィンドウ</summary>

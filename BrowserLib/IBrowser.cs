@@ -47,6 +47,12 @@ namespace BrowserLib
 		[OperationContract]
 		void DestroyDMMreloadDialog();
 
+		/// <summary>
+		/// ダミー映像（検証用映像源）を開始する（永続値 ON 時の起動経路。通常トグルは HTTP/メニュー）。
+		/// </summary>
+		[OperationContract]
+		void StartDummyVideo();
+
 		[OperationContract]
 		void CloseBrowser();
 

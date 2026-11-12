@@ -633,6 +633,48 @@ btnLogoutBlank.addEventListener('click', (e) => {
 });
 
 //============================================================================================
+// ダミー映像トグル（設定パネル「ブラウザ操作」タブ・押下状態ボタン）
+// 状態の一次情報はサーバー（/login-state dummyVideo の 5s ポーリング＋接続時 /capture-config）。
+// 追従は setDummyBadge 内フック（単一同期源・remote_connection.js は不変）。
+// クリックでは preventDefault で native 反転を抑止し、確認モーダル OK 後にのみ反転させる
+// （キャンセル時に「表示だけ ON」を残さない）。送信失敗（ネットワーク失敗・HTTP 非 OK）時は
+// 表示復元＋ checkLoginState() でサーバー実状態へ即時再同期（fetch は 4xx/5xx で reject しない）。
+//============================================================================================
+var _dummyUiOn = false;   // 表示の単一情報源（setDummyToggle が唯一の書き手・ローカル永続化は持たない）
+var btnDummyVideo = document.getElementById('btn-dummy-video');
+
+function setDummyToggle(on) {
+    on = !!on;
+    if (on === _dummyUiOn) return;
+    _dummyUiOn = on;
+    if (!btnDummyVideo) return;
+    btnDummyVideo.classList.toggle('active', on);
+    btnDummyVideo.setAttribute('aria-pressed', on ? 'true' : 'false');
+}
+
+if (btnDummyVideo) {
+    btnDummyVideo.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        var turningOn = !_dummyUiOn;
+        showConfirmModal(turningOn
+            ? 'ダミー映像（検証用映像源）を開始しますか？\n現在のページ（ゲームを含む）はアンロードされます。出撃・遠征中ではないことを確認してください。'
+            : 'ダミー映像を停止しますか？\n画面はログアウト（空白）ページへ遷移します。',
+            () => {
+                setDummyToggle(turningOn);   // 楽観更新（≤5s のポーリングで実状態に収束）
+                fetch('/control?action=dummy_video&enable=' + (turningOn ? '1' : '0'), { cache: 'no-store' })
+                    .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); })
+                    .catch(function (err) {
+                        console.warn('[DummyVideo] /control dummy_video failed:', err);
+                        if (window.__eventLog) window.__eventLog.consoleLog('warn', '[DummyVideo] トグル送信失敗: ' + err, 'DUMMY_TOGGLE_FAIL');
+                        setDummyToggle(!turningOn);   // 表示を巻き戻す
+                        checkLoginState();            // サーバー実状態へ即時再同期
+                    });
+            });
+    });
+}
+
+//============================================================================================
 // フィルター・暗視の初期化
 //============================================================================================
 // ページロード時にフィルターを初期適用
@@ -869,6 +911,12 @@ function setDummyBadge(on) {
     if (!el) return;
     on = !!on;
     el.style.display = on ? '' : 'none';
+    // 単一同期源: 既存 2 同期点（checkLoginState 5s ポーリング / remote_connection.js の
+    // /capture-config）はすべて本関数を経由するため、ここでトグルも同期させ
+    // バッジとトグルの表示乖離経路を構造的に排除する（remote_connection.js は不変）
+    if (typeof setDummyToggle === 'function') {
+        setDummyToggle(on);
+    }
     if (on === _dummyBadgeLast) return;
     _dummyBadgeLast = on;
     if (window.__eventLog) window.__eventLog.consoleLog('warn', '検証用ダミー映像: ' + (on ? 'ON' : 'OFF'), on ? 'DUMMY_ON' : 'DUMMY_OFF');

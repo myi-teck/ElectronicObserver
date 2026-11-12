@@ -66,6 +66,15 @@ namespace BrowserLib
 
 		[OperationContract]
 		void ClearCache();
+
+		/// <summary>
+		/// ダミー映像トグルの永続値を Settings XML へ保存する（全トグル経路・自己治癒から送信）。
+		/// BrowserConfiguration のスナップショットへは意図的に載せない — ConfigurationUpdated は
+		/// 全ブラウザ設定をブラウザ側コピーで上書きし BGM ミュートまで再適用するため（FormBrowserHost.ConfigurationUpdated 参照）、
+		/// 無関係な設定確定をトグル操作に紐づけないこと。
+		/// </summary>
+		[OperationContract]
+		void SetDummyVideoPersisted(bool enabled);
 	}
 
 	/// <summary>

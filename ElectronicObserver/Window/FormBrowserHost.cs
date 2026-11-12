@@ -133,9 +133,18 @@ namespace ElectronicObserver.Window
 				{
 					if (Utility.Configuration.Config.FormBrowser.IsEnabled && !_hasNavigatedToLogInPage)
 					{
-						_hasNavigatedToLogInPage = true;
-						DebugLog("InitializationStage Completed: 初回ログインページナビゲーションを実行します。");
-						NavigateToLogInPage();
+						_hasNavigatedToLogInPage = true;      // スキップ時も true（1 回限りの意味論を維持）
+						if (Utility.Configuration.Config.FormBrowser.DummyVideoOnStartup)
+						{
+							// 開始要求は SetProxyCompleted 側で送る（本時点では Browser 生成の順序保証がまだないため）
+							DebugLog("InitializationStage Completed: ダミー映像永続値 ON のため初回ログインページナビゲーションをスキップします。");
+							Utility.Logger.Add(2, "[DummyVideo] 永続設定が ON のためログインページへ遷移せずダミー映像を開始します（DMM 非接触）");
+						}
+						else
+						{
+							DebugLog("InitializationStage Completed: 初回ログインページナビゲーションを実行します。");
+							NavigateToLogInPage();
+						}
 					}
 				}
 
@@ -369,6 +378,36 @@ namespace ElectronicObserver.Window
 			if (Utility.Configuration.Config.BGMPlayer.SyncBrowserMute)
 			{
 				Utility.SyncBGMPlayer.Instance.IsMute = config.IsMute;
+			}
+		}
+
+		public void SetDummyVideoPersisted(bool enabled)
+		{
+			try
+			{
+				// メモリ設定と XML 書出しは終了時保存（FormMain.FormClosed）と同一スレッドで直列化する。
+				// WCF 既定の UseSynchronizationContext で通常は既に UI スレッド実行（防御的チェックは家訓踏襲）。
+				// BeginInvoke はハンドル未生成で InvalidOperationException を送出するため IsHandleCreated でガードする
+				// （InvokeRequired はハンドル不存在時に false を返すだけで例外にはならない）。ハンドル未生成の窓では
+				// 条件が false で直接実行パスへ退化するが、本操作は WCF ハンドシェイク（ブラウザ接続→SetProxy）
+				// 後にのみ発火するためその窓は到達不能。
+				if (IsHandleCreated && this.InvokeRequired)
+				{
+					this.BeginInvoke((Action)(() => SetDummyVideoPersisted(enabled)));
+					return;
+				}
+
+				var c = Utility.Configuration.Config.FormBrowser;
+				if (c.DummyVideoOnStartup == enabled) return;   // 冪等（起動時・重複トグルで無駄な Save をしない）
+				c.DummyVideoOnStartup = enabled;
+				Utility.Configuration.Instance.Save();          // 既存の終了時保存と同一 API（全設定の書出し）
+				Utility.Logger.Add(2, "[DummyVideo] 永続設定を保存しました（起動時ダミー映像=" + enabled + "）");
+			}
+			catch (Exception ex)
+			{
+				// 例外を WCF チャネルへ返すと EOBrowser 側が親プロセス終了と誤認し得る。
+				// DataStorage.Save 内部でも ErrorReport に残すが、ここではチャネル意味論を護るために留める。
+				Utility.ErrorReporter.SendErrorReport(ex, "ダミー映像の永続設定の保存に失敗しました。");
 			}
 		}
 
@@ -677,6 +716,18 @@ namespace ElectronicObserver.Window
 		{
 			DebugLog($"SetProxyCompleted called from Browser process. Current Stage before flag: {InitializationStage}");
 			InitializationStage |= InitializationStageFlag.SetProxyCompleted;
+
+			// 永続値 ON のブラウザは（初回起動・キャッシュクリア・パネル再生を問わず）ログインページへ
+			// 遷移せずダミー映像を開始する。本時点は EOBrowser 側 InitializeBrowser 完了後
+			// （Browser 生成済み: SetProxy が InitializeBrowser の同期完了後にのみ SetProxyCompleted を送るため）
+			// かつ本体 Proxy 確立後（同一 UI スレッド塊の Connect→SetProxy が先行）なので
+			// 要求が失われない。未初期化分は Navigate の navigateCache 保留が吸収する。
+			var fb = Utility.Configuration.Config.FormBrowser;
+			if (fb.IsEnabled && fb.DummyVideoOnStartup)
+			{
+				DebugLog("SetProxyCompleted: ダミー映像永続値 ON のためダミー映像開始要求を送信します。");
+				Browser.AsyncRemoteRun(() => Browser.Proxy.StartDummyVideo());
+			}
 		}
 
 

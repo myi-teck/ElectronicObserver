@@ -2265,11 +2265,6 @@ namespace Browser
 		/// <summary>キャプチャ源が現在ダミー映像（検証用映像源）状態かどうか（RemoteController が HTTP スレッドから読む。volatile 読み込み）。</summary>
 		public bool IsDummyVideo => _dummyVideoActive;
 
-		// 停止時の復元先（直前 URL・UI スレッドのみアクセス）。
-		// ダミー開始前に取得するため、冪等ガードによりダミー URL 自身が取得されることはない
-		// （防御チェックは StopDummyVideo 側にもある）。
-		private string _preDummyVideoUrl = null;
-
 		// 10 分周期で「ダミーが ON のままか」を警告するタイマ（WinForms Timer・UI スレッド）。
 		// 非永続トグルの「見落としたまま常時 ON」検知用（_isLogoutBlank と同様、起動毎リセット）。
 		// auto-FPS 状態機械（接続＝活動）には接続しない（レンダリング活動判定と無関係なため）。
@@ -2560,10 +2555,6 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 			if (_dummyVideoActive)
 				return; // 冪等（重複開始は no-op）
 
-			// 1) 復元先の取得（Navigate 前に読む。冪等ガードによりダミー表示中には本メソッドが
-			//    走らないためダミー URL 自身が取得されることはない。null/空は停止時フォールバックで吸収）。
-			_preDummyVideoUrl = Browser?.Address;
-
 			// 2) ブラウザがまだ生成されていない場合は開始できない（Browser.Load は NRE となる）。
 			//    フラグは立てずエラーログで終了し、状態と画面の乖離を防ぐ。
 			if (Browser == null)
@@ -2589,6 +2580,8 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 			//    初期化完了前でよい（Navigate は URL を navigateCache に保留し、初期化完了時に
 			//    再実行されるため、初期化前起動でも初期化完了後にダミー映像が表示される）。
 			_dummyVideoActive = true;
+			// 実状態変更時点で即永続化（単一書込点: 全トグル経路が Start/Stop に収束する）
+			PersistDummyVideo(true);
 			Navigate(CustomResourceRequestHandler.DummyVideoUrlBase);
 
 			// 5) HUD パイプライン検証用のダミー HUD を 1 回注入。静的 JSON のみ（更新タイマは新設しない）。
@@ -2605,19 +2598,19 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 			SyncDummyVideoMenuChecked();
 		}
 
-		/// <summary>ダミー映像を停止し、直前 URL（取得不能/ダミー URL 時はログインページ）へ復帰する。</summary>
+		/// <summary>ダミー映像を停止し、ログアウト（空白）ページ（LOGGED OUT 画面）へ遷移する。</summary>
 		public void StopDummyVideo()
 		{
-			StopDummyVideo(restore: true);
+			StopDummyVideo(toLogoutBlank: true);
 		}
 
-		// restore=false は「状態のみ解除（ナビゲーションしない）」。手動ナビゲーションによる
-		// ダミー離脱（自己治癒）では、ユーザーは既に希望のページにいるため再ナビゲーションしない。
-		private void StopDummyVideo(bool restore)
+		// toLogoutBlank=false は「状態のみ解除（遷移しない）」。手動ナビゲーションによる
+		// ダミー離脱（自己治癒）では、ユーザーは既に希望のページにいるため遷移しない。
+		private void StopDummyVideo(bool toLogoutBlank)
 		{
 			if (this.InvokeRequired)
 			{
-				this.BeginInvoke((Action)(() => StopDummyVideo(restore)));
+				this.BeginInvoke((Action)(() => StopDummyVideo(toLogoutBlank)));
 				return;
 			}
 
@@ -2630,20 +2623,18 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 			}
 
 			_dummyVideoActive = false;
+			PersistDummyVideo(false);
 			CustomResourceRequestHandler.ClearDummyVideoHtml(); // メモリ解放（Exit 経路でも呼ばれるが null 代入のみで冪等）
 			_dummyVideoWarnTimer.Stop();
-			string restoreUrl = _preDummyVideoUrl;
-			_preDummyVideoUrl = null;
 
-			if (restore)
+			if (toLogoutBlank)
 			{
-				// ログインページへ復帰が既定。直前 URL が取得できた（null/空でない）場合のみそれへ戻す。
-				// ダミー URL 自体（開始直後の異常経路で取得値が汚染された場合）はログインページへ
-				// フォールバックし、「停止後もダミーに残る」経路を構造的に排除する。
-				if (string.IsNullOrEmpty(restoreUrl) || CustomResourceRequestHandler.IsDummyVideoUrl(restoreUrl))
-					restoreUrl = ResolveLogInPageURL();
-				Navigate(restoreUrl);
-				AddLog(2, "[DummyVideo] ダミー映像を停止しました（復帰: " + restoreUrl + "）");
+				// 明示停止（クライアントトグル / メニュー / HTTP の全経路）はログアウト空白ページ（LOGGED OUT 画面）へ遷移する。
+				// メモリ配信ページのため DMM サーバーに一切触れない（Cookie も非削除）。
+				// クライアントは /login-state 5 秒ポーリングで _isLogoutBlank を検知し /logout-page へ自動遷移する。
+				// 未生成 / 未初期化は LogoutToBlankPage 内の _pendingLogoutBlank 保留機構が吸収する。
+				LogoutToBlankPage();
+				AddLog(2, "[DummyVideo] ダミー映像を停止しました（ログアウト（空白）ページへ遷移）");
 			}
 			else
 			{
@@ -2651,6 +2642,33 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 			}
 
 			SyncDummyVideoMenuChecked();
+		}
+
+		// 保存要求の発行順＝反映順を保証する単一列。AsyncRemoteRun は都度 Task.Run で別スレッドに
+		// 投げるため（PipeCommunicator.AsyncRemoteRun）、連続トグルで WCF 到着順が実状態の順序と
+		// 逆転し、XML に「最後のトグル状態」と異なる値が残って次回起動の挙動を壊し得る
+		// （同一プロキシの並行送信は順序保証されない: MS Learn Middle-Tier Client Applications）。
+		// 前要求の応答を待ってから次を同期発行する。列の更新は Start/Stop（UI スレッド自己ディスパッチ済み）
+		// からのみ行うため追加のロックは不要。同期 WCF 呼び出しはプール上（EOBrowser UI を止めない）。
+		private Task _dummyPersistChain = Task.CompletedTask;
+
+		private void PersistDummyVideo(bool on)
+		{
+			_dummyPersistChain = _dummyPersistChain.ContinueWith(_ =>
+			{
+				try
+				{
+					if (BrowserHost == null || BrowserHost.Closed || BrowserHost.Proxy == null)
+						return;     // 本体消失時は EOBrowser も Exit 経路（バックストップ不要）
+					BrowserHost.Proxy.SetDummyVideoPersisted(on);
+				}
+				catch (Exception ex)
+				{
+					// 例外を列に残さない（故障で列が停止すると以後の保存が永久に止まる）。
+					// AddLog は AsyncRemoteRun 経由なので、チャネル故障なら既存の Faulted→Exit 経路に乗る。
+					AddLog(2, "[DummyVideo] 永続値の反映に失敗しました: " + ex.GetType().Name + " " + ex.Message);
+				}
+			}, System.Threading.Tasks.TaskScheduler.Default);
 		}
 
 		// メニュー Checked の同期（UI スレッド上のみ）。Designer 生成前でも呼ばれ得るため null ガード。
@@ -2913,9 +2931,9 @@ requestAnimationFrame(draw);
 			if (_dummyVideoActive && e.Frame != null && e.Frame.IsMain && !CustomResourceRequestHandler.IsDummyVideoUrl(e.Frame.Url))
 			{
 				if (this.InvokeRequired)
-					this.BeginInvoke((Action)(() => StopDummyVideo(restore: false)));
+					this.BeginInvoke((Action)(() => StopDummyVideo(toLogoutBlank: false)));
 				else
-					StopDummyVideo(restore: false);
+					StopDummyVideo(toLogoutBlank: false);
 			}
 
 			// [task22] URL 監視セーフティネット: メインフレーム URL からログアウト状態フラグを更新する。
