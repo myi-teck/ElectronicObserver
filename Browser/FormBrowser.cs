@@ -2534,6 +2534,17 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 				&& uri.AbsolutePath.StartsWith("/task20-logout-blank", StringComparison.Ordinal);
 		}
 
+		/// <summary>
+		/// ブラウザの初期ページ（about:blank）判定。
+		/// 初期ページのロード完了は自動開始要求の後に（非同期ロードとして）遅れて届くことがあり、
+		/// ユーザー遷移ではないため自己治癒トリガーから除外する（除外しないと自動開始のたびに
+		/// ダミーが誤解除され OFF が永続化される）。
+		/// </summary>
+		private static bool IsBrowserInitialBlank(string url)
+		{
+			return string.Equals(url, "about:blank", StringComparison.OrdinalIgnoreCase);
+		}
+
 		//------------------------------------------------------------------------------------
 		// ダミー映像（検証用映像源）: 開始/停止/状態同期
 		// game 未ログイン状態からそのまま起動でき、停止時は直前 URL へ復帰する。
@@ -2928,7 +2939,10 @@ requestAnimationFrame(draw);
 			// 解除しないと「映像は game なのに DUMMY バッジ/フラグが ON のまま」になる誤認経路が生まれる。
 			// FrameLoadEnd は UI スレッド保証がないため書き込みは BeginInvoke でディスパッチする。
 			// volatile 読み取り後に UI スレッド側で StopDummyVideo が先行しても冪等ガードにより二重解除は無害。
-			if (_dummyVideoActive && e.Frame != null && e.Frame.IsMain && !CustomResourceRequestHandler.IsDummyVideoUrl(e.Frame.Url))
+			// 初期ページ about:blank はユーザー遷移ではない（ロード完了が自動開始より遅れて届く経路あり）。
+			if (_dummyVideoActive && e.Frame != null && e.Frame.IsMain
+				&& !CustomResourceRequestHandler.IsDummyVideoUrl(e.Frame.Url)
+				&& !IsBrowserInitialBlank(e.Frame.Url))
 			{
 				if (this.InvokeRequired)
 					this.BeginInvoke((Action)(() => StopDummyVideo(toLogoutBlank: false)));
