@@ -2,7 +2,6 @@
 // remote_connection.js
 // WebSocket / HTTP通信・自動再接続・ステータス管理
 // 依存: remote_config.js (定数・グローバル変数)
-// 2026/08/01 myi 修正: 単一メッセージ受信対応・指数バックオフ・HUD同期・サンプリング検証
 //============================================================================================
 
 //============================================================================================
@@ -81,12 +80,12 @@ const ProtocolManager = {
     _minSyncFpsInterval: 2000,
 
     // [案C-1] デコードエラーカウンタ + init要求レートリミット
-    // [FPS Fix] init要求の最小インターバルを1000ms→3000msに拡大（サーバー負荷抑制）
+    // init要求の最小インターバルを1000ms→3000msに拡大（サーバー負荷抑制）
     _consecutiveDecodeErrors: 0,
     _lastInitRequestTime: 0,
     _minInitInterval: 3000,
 
-    // [FPS Fix] 可観測性: 受信FPSカウント用
+    // 可観測性: 受信FPSカウント用
     _frameReceiveCount: 0,
     _frameReceiveStartTime: Date.now(),
     _decodeErrorCount: 0,
@@ -100,7 +99,7 @@ const ProtocolManager = {
     // [🔍 plan02 1-5] デコード成功FPS計測用
     _decodeSuccessCount: 0,
 
-    // [二次レビュー修正] init要求送信後の保護期間フラグ
+    // init要求送信後の保護期間フラグ
     _initProtectionActive: false,
     _initProtectionMs: 5000,
 
@@ -134,7 +133,7 @@ const ProtocolManager = {
     // 黒画面が「初期化中」か「故障」かをユーザーに区別させるバッジの状態
     _wcsWaitingFirstFrame: false,
     
-    // [task19 v3] HTTP モード用 HUD 初期化リトライカウンタ
+    // HTTP モード用 HUD 初期化リトライカウンタ
     _hudInitRetryCount: 0,
 
     // [🔍 plan02 1-5] WebP検証サンプリング用
@@ -157,7 +156,7 @@ const ProtocolManager = {
     // GPUデコードキュー飽和防止: 1つずつcreateImageBitmapを逐次実行（厳格なシリアル化）
     _bitmapDecodeChain: Promise.resolve(),
     
-    // [二次レビュー修正] デコードキュー長管理 - GPUメモリ枯渇防止
+    // デコードキュー長管理 - GPUメモリ枯渇防止
     _pendingDecodeCount: 0,       // 待機中のデコード処理数
     _maxDecodeQueue: 5,           // キュー長閾値（5フレーム以上で破棄）
 
@@ -201,7 +200,7 @@ const ProtocolManager = {
             this.effectiveMode = 'ws';
             this.attemptWebSocket();
         } else if (this.currentMode === this.MODES.WEBCODECS) {
-            // [task28 WebCodecs] WebCodecsモード: 制御はWS、画面配信はWebCodecs
+            // WebCodecsモード: 制御はWS、画面配信はWebCodecs
             this.effectiveMode = 'ws';
             this.attemptWebSocket();
         } else {
@@ -292,9 +291,9 @@ const ProtocolManager = {
                 }
             }, 5000);
 
-            // [FPS Fix] init要求送信を100ms遅延させ、サーバー側の準備を待つ
-            // 【二次レビュー Major 修正】 PROTOCOL_VERSION 送信: サーバーにクライアントのバージョンを通知
-            // 設計書 §5.3.3 定義: 接続確立後に PROTOCOL_VERSION を送信
+            // init要求送信を100ms遅延させ、サーバー側の準備を待つ
+            // PROTOCOL_VERSION 送信: サーバーにクライアントのバージョンを通知
+            // 接続確立後に PROTOCOL_VERSION を送信
             // Version 2 = 7Bヘッダー (Version + Type + Flags + Seq)
             this.sendWsControl({ action: 'PROTOCOL_VERSION', version: 2 });
             console.log('[ProtocolManager] PROTOCOL_VERSION=2 を送信しました');
@@ -347,7 +346,7 @@ const ProtocolManager = {
 
             this.startHeartbeat();
 
-            // [task19 Bug 1 fix] In the case of WCS mode, request a mode switch to the server after the connection is established
+            // In the case of WCS mode, request a mode switch to the server after the connection is established
             // Since setMode('webcodecs') → startConnection() → attemptWebSocket() does not send switch_mode,
             // we send it here after the connection is established (onopen). The server executes SetCaptureModeAsync(WebCodecs).
             if (this.currentMode === this.MODES.WEBCODECS) {
@@ -435,7 +434,7 @@ const ProtocolManager = {
         } else if (this.currentMode === this.MODES.WEBSOCKET) {
             this.reconnectWebSocket();
         } else if (this.currentMode === this.MODES.WEBCODECS) {
-            // [task28 WebCodecs] WebCodecsモード: WebSocket再接続を試みる
+            // WebCodecsモード: WebSocket再接続を試みる
             this.reconnectWebSocket();
         }
     },
@@ -471,7 +470,7 @@ const ProtocolManager = {
         console.log('[ProtocolManager] Falling back to HTTP Polling');
         if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] Falling back to HTTP Polling', 'FALLBACK_HTTP');
 
-        // [task19 v3] 順序を明示: closeWebSocket → effectiveMode → initializeHudViaHttp
+        // 順序を明示: closeWebSocket → effectiveMode → initializeHudViaHttp
         // 1. WebSocket 切断（先に切断し、その後にモード切替）
         // [A1 fix] 意図的 close: 旧 WS の onclose による再接続トリガーを抑制
         this._intentionalClose = true;
@@ -483,7 +482,7 @@ const ProtocolManager = {
         // [A1 fix] HTTP モード切替後に意図的 close フラグをリセット（WS 再接続は発生しない）
         this._intentionalClose = false;
 
-        // [task19 v4] 二次レビュー Minor 2 修正: セッション切替時にリトライカウンタをリセット
+        // セッション切替時にリトライカウンタをリセット
         this._hudInitRetryCount = 0;
 
         // 3. HUD 初期化: 初回 /hud fetch で _hudInitialized を正しく立てる
@@ -494,7 +493,7 @@ const ProtocolManager = {
         this.updateConnStatus('HTTP (FB)', true);
     },
 
-    // [task19 v3] HTTP モード用 HUD 初期化関数（ハック排除 + リトライ追加）
+    // HTTP モード用 HUD 初期化関数（ハック排除 + リトライ追加）
     async initializeHudViaHttp() {
         this._hudInitRetryCount = (this._hudInitRetryCount || 0) + 1;
 
@@ -719,7 +718,7 @@ const ProtocolManager = {
         }
     },
 
-    // [二次レビュー修正] シーケンス番号判定のタイミング修正
+    // シーケンス番号判定のタイミング修正
     // _frameReceiveCount と latestSequenceNumber の更新を受信直後に実行し、
     // Promiseチェーン内での判定が常に最新のシーケンス番号に基づいていることを保証する。
     async handleScreenUpdateBinary(arrayBuffer) {
@@ -732,8 +731,8 @@ const ProtocolManager = {
             if (window.__eventLog) window.__eventLog.consoleLog('log', 'frame gate opened by first frame', 'FRAME_GATE_OPEN');
         }
 
-        // [FPS Fix] 可観測性: フレーム受信カウントを**受信直後**に更新
-        // [二次レビュー修正] _frameReceiveCount の更新タイミングを受信直後に移動
+        // 可観測性: フレーム受信カウントを**受信直後**に更新
+        // _frameReceiveCount の更新タイミングを受信直後に移動
         ProtocolManager._frameReceiveCount++;
 
         // [🔍 plan02 diag] WebSocket受信状態の可視化
@@ -751,7 +750,7 @@ const ProtocolManager = {
             updateDataUsage(arrayBuffer.byteLength + WS_FRAME_OVERHEAD);
         }
 
-        // [FPS Fix] 可観測性: 受信FPS計測
+        // 可観測性: 受信FPS計測
         const now = Date.now();
         const elapsed = (now - ProtocolManager._frameReceiveStartTime) / 1000;
         if (elapsed >= 10) {
@@ -770,7 +769,7 @@ const ProtocolManager = {
             ProtocolManager._dupFrameCount = 0;
         }
 
-        // [task28] プロトコルヘッダー拡張対応（6B → 7B）
+        // プロトコルヘッダー拡張対応（6B → 7B）
         // Version 2 (7B): Version(1B) + Type(1B) + Flags(1B) + Seq(4B)
         // Version 1 (6B): Version(1B) + Combined(1B) + Seq(4B)
         const view = new DataView(arrayBuffer);
@@ -783,9 +782,9 @@ const ProtocolManager = {
         	const seq = view.getUint32(3, false);
         
         	if (type === 0x02) {
-        		// [task19 v3] SPS/PPS (description) 受信
+        		// SPS/PPS (description) 受信
         		const description = arrayBuffer.slice(7);
-        		// [task23 F-1-2] 空 ArrayBuffer（byteLength === 0）を保持しない（空 extradata で H.264 デコーダを初期化すると InvalidStateError）
+        		// 空 ArrayBuffer（byteLength === 0）を保持しない（空 extradata で H.264 デコーダを初期化すると InvalidStateError）
         		let descChanged = false;
         		if (description && description.byteLength > 0) {
         			// 保持中バイトとの差異を判定（同一バイト列の連続受信では再初期化しない — SPS/PPS 不変ならデコーダ再構築不要）
@@ -823,7 +822,7 @@ const ProtocolManager = {
 
         		// キーフレーム受信時、デコーダ未初期化であれば即時初期化
         		if (isKeyFrame && !ProtocolManager._videoDecoderInitialized) {
-        			// [task23 F-1] 保持中の SPS/PPS（description）を渡与
+        			// 保持中の SPS/PPS（description）を渡与
         			ProtocolManager.initVideoDecoder(ProtocolManager._videoDecoderDescription);
         		}
 
@@ -835,7 +834,7 @@ const ProtocolManager = {
         		await ProtocolManager.decodeWebCodecsFrame(frameData, isKeyFrame, seq);
         		return;
         	} else if (type === 0x00) {
-        		// 【Critical修正 指摘3】 Version 2 における WebP フレーム処理（7Bヘッダー）
+        		// Version 2 における WebP フレーム処理（7Bヘッダー）
         		// 7バイトヘッダーを正しくパースし、slice(7) でデータ部分を抽出
         		const frameData = arrayBuffer.slice(7);
        
@@ -879,7 +878,7 @@ const ProtocolManager = {
             return;
         }
 
-        // [二次レビュー修正] シーケンス番号判定のタイミング修正
+        // シーケンス番号判定のタイミング修正
         // latestSequenceNumber を**受信直後**に更新し、Promiseチェーン内での判定が
         // 常に最新のシーケンス番号に基づいていることを保証する。
         // (seqV1 - latestSequenceNumber) | 0 は意図的に整数強制（オーバーフロー保護）
@@ -926,7 +925,7 @@ const ProtocolManager = {
             return;
         }
 
-        // [🚨 Critical 修正] デコードキュー飽和防止 - フレーム破棄ロジック
+        // デコードキュー飽和防止 - フレーム破棄ロジック
         // キュー長が閾値を超えた場合は新しいフレームを即座に破棄
         if (ProtocolManager._pendingDecodeCount >= ProtocolManager._maxDecodeQueue) {
             // 破棄（静かにドロップ - 正常なフロー制御）
@@ -935,7 +934,7 @@ const ProtocolManager = {
 
         // [🔍 plan02 根本原因対策] Promiseチェーンによる厳格なシリアライズデコード
         // 前のデコードが完了するまで次のデコードを開始しない
-        // [二次レビュー修正] decodeAndDraw は安定したメソッド参照を使用（クロージャ生成抑制）
+        // decodeAndDraw は安定したメソッド参照を使用（クロージャ生成抑制）
         ProtocolManager._pendingDecodeCount++;
         ProtocolManager._bitmapDecodeChain = ProtocolManager._bitmapDecodeChain
             .then(() => ProtocolManager.decodeAndDraw(frameDataV1, seqV1))
@@ -967,7 +966,7 @@ const ProtocolManager = {
             });
     },
 
-    // [🚨 Critical 修正] decodeAndDraw を ProtocolManager のメソッドとして定義
+    // decodeAndDraw を ProtocolManager のメソッドとして定義
     // 呼び出しのたびに匿名関数として生成されないよう、安定した参照を提供する。
     // GC負荷低減 + メモリ断片化防止。
     async decodeAndDraw(frameData, seq) {
@@ -1004,7 +1003,7 @@ const ProtocolManager = {
             }
 
             try {
-                // [💡 Minor 修正] gameCtx の null チェック追加
+                // gameCtx の null チェック追加
                 if (!gameCtx) {
                     console.error('[ProtocolManager] gameCtx is null - draw skipped');
                     if (window.__eventLog) window.__eventLog.consoleLog('error', '[ProtocolManager] gameCtx is null - draw skipped', 'DRAW_CTX_NULL');
@@ -1042,7 +1041,7 @@ const ProtocolManager = {
             ProtocolManager._consecutiveDecodeErrors = 0;
             ProtocolManager._initProtectionActive = false;
 
-            // [二次レビュー修正] latestSequenceNumber は受信直後に更新されるため、
+            // latestSequenceNumber は受信直後に更新されるため、
             // ここでの更新は不要（削除済み）
 
             drawMagnifier();
@@ -1054,7 +1053,7 @@ const ProtocolManager = {
             updateFpsDisplay();
 
         } finally {
-            // [🚨 Critical 修正] キュー長カウントをデコード完了時にデクリメント
+            // キュー長カウントをデコード完了時にデクリメント
             ProtocolManager._pendingDecodeCount--;
         }
     },
@@ -1246,7 +1245,7 @@ const ProtocolManager = {
 
     // VideoDecoder.configure() に渡す codec 文字列を解決する（優先順位: AVCC description 導出 → サーバー伝達値 → 固定フォールバック）。
     // AVCC（AVCDecoderConfigurationRecord）の byte1-3 は SPS byte1-3（profile_idc / constraint_set_flags / level_idc）と
-    // 同値であり、codec 文字列サフィックスはこれら 3 バイトの 16 進表記（RFC 6381 §3.4）。サポート判定は codec 文字列が
+    // 同値であり、codec 文字列サフィックスはこれら 3 バイトの 16 進表記（RFC 6381 3.4）。サポート判定は codec 文字列が
     // 示す正確な profile/level/constraint を要求するため、実ストリームと一致する実 SPS 導出を最優先とする。
     // サーバー伝達値はエンコーダ設定値であり実測値ではないので導出不能時の代替に留める。
     // 導出の前提は最小長 4 バイトかつ configurationVersion(=1)。満たさない場合は導出不能（境界外アクセスは
@@ -1275,7 +1274,7 @@ const ProtocolManager = {
     },
 
     // AVCC（AVCDecoderConfigurationRecord）から Annex B パラメータセット（00 00 00 01 + SPS + 00 00 00 01 + PPS）を再構成する。
-    // レイアウト根拠は生成側 _buildAvcc（ISO/IEC 14496-15 §5.3.3.1）:
+    // レイアウト根拠は生成側 _buildAvcc（ISO/IEC 14496-15 5.3.3.1）:
     // [0]=configurationVersion(1) / [1-3]=profile・constraint・level / [4]=0xFF / [5]=0xE1(reserved 111 + numSPS=1) /
     // [6-7]=SPS 長(BE16) / [8..]=SPS 本体 / [8+spsLen]=numPPS(1) / [9-10+spsLen]=PPS 長(BE16) / [11+spsLen..]=PPS 本体。
     // 変換不能時は null を返し、呼び出し側は「前置なしで元チャンクをそのまま decode()」へ安全フォールバックする
@@ -1301,23 +1300,23 @@ const ProtocolManager = {
         return out;
     },
 
-    // [task19 P4] Clamp 連続計測（レビュー Minor: 連続Clamp時はサーバー側フレーム生成に問題の可能性）
+    // Clamp 連続計測（連続Clamp時はサーバー側フレーム生成に問題の可能性）
     // 連続 3 回 Clamp 発生でサーバーに reinit_decoder を要求（5秒スロットリング付き）
     _clampConsecutiveCount: 0,
     _clampTotalCount: 0,
     _clampReinitThreshold: 3,
     _clampReinitIntervalMs: 5000,
     
-    // [task19 v3] WebCodecs 用の独立 timestamp カウンタ（Critical 5 修正）
+    // WebCodecs 用の独立 timestamp カウンタ
     _videoDecoderTimestampCounter: 0,
     _videoDecoderLastTimestamp: 0,
     
-    // [task19 v3] Critical 8 修正: TOCTOU 競合防止の排他制御
+    // : TOCTOU 競合防止の排他制御
     _videoDecoderInitializing: false,
 
     // VideoDecoder の初期化（SPS/PPS が必要）
     initVideoDecoder(description) {
-        // [task19 v3] Critical 8 修正: TOCTOU 競合防止の排他制御
+        // : TOCTOU 競合防止の排他制御
         if (this._videoDecoderInitializing) {
             console.log('[ProtocolManager] initVideoDecoder already in progress, skipping');
             return false;
@@ -1335,7 +1334,7 @@ const ProtocolManager = {
             // 旧デコーダの解放
             if (this._videoDecoder) {
                 try { this._videoDecoder.close(); } catch (e) {
-                    // [task19 第4回Minor] 例外の握りつぶし禁止（AGENTS.md NEVER）: 旧デコーダ解放時の close() 失敗をログに記録
+                    // 例外の握りつぶし禁止（AGENTS.md NEVER）: 旧デコーダ解放時の close() 失敗をログに記録
                     console.warn('[ProtocolManager] VideoDecoder.close() failed (initVideoDecoder old decoder release path):', e && e.message ? e.message : e);
                     if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] VideoDecoder.close() failed (initVideoDecoder old decoder release path): ' + (e && e.message ? e.message : e), 'VD_CLOSE_FAIL');
                 }
@@ -1350,10 +1349,10 @@ const ProtocolManager = {
 
             this._videoDecoder = new VideoDecoder({
                 output: (frame) => {
-                    // [task23 F-0-2] 現行の output 内 frame.close() を削除し、close 所有権を drawVideoFrame に単一化
+                    // 現行の output 内 frame.close() を削除し、close 所有権を drawVideoFrame に単一化
                     // （W3C "Close is final" に従い、drawImage 直後に drawVideoFrame 内で close() する）
                     if (typeof drawVideoFrame === 'function') {
-                        // [task23 Minor-2] null frame 時は drawVideoFrame(frame) の関数呼出を呼び出し側でガード
+                        // null frame 時は drawVideoFrame(frame) の関数呼出を呼び出し側でガード
                         // （drawVideoFrame 本体は `if (!frame) return;` で早期 return するため機能的には安全だが、
                         //  呼び出し側で null をガードし、null frame ごとに発生していた不要な関数呼出を排除する。
                         //  null frame 時は frame が存在しないため、close も副次処理も実行しない）
@@ -1365,8 +1364,8 @@ const ProtocolManager = {
                                 this._videoDecoderFirstFrameRendered = true;
                                 this._videoDecoderErrorCount = 0;
                             }
-                            // [task23 指摘5] 描画副次処理は output コールバックに残留（責務分離）
-                            // [task23 指摘2] frame が null 時は副次処理をスキップ（frameCount 過剰インクリメント・FPS 表示ズレ防止）
+                            // 描画副次処理は output コールバックに残留（責務分離）
+                            // frame が null 時は副次処理をスキップ（frameCount 過剰インクリメント・FPS 表示ズレ防止）
                             frameCount++;
                             updateFpsDisplay();
                             drawMagnifier();
@@ -1374,7 +1373,7 @@ const ProtocolManager = {
                             status.classList.add('ok');
                         }
                     } else {
-                        // [task23 Minor-1] drawVideoFrame 未定義時の緊急フォールバック（実務到達不可）
+                        // drawVideoFrame 未定義時の緊急フォールバック（実務到達不可）
                         // drawVideoFrame は remote_screen.js:395 で必ず window に公開されるため、
                         // 本分岐は通常到達しない（リーク防止の安全策）。
                         // 描画経路（drawVideoFrame）が存在しないため、副次処理（frameCount++ /
@@ -1393,7 +1392,7 @@ const ProtocolManager = {
                     const errDescLen = (this._videoDecoderDescription && this._videoDecoderDescription.byteLength) || 0;
                     if (window.__eventLog) window.__eventLog.consoleLog('error', `[ProtocolManager] VideoDecoder error: ${e && e.message ? e.message : e} (codec=${this._videoDecoderAdoptedCodec || 'unknown'} desc=${errDescLen} fmt=annexb waitKey=${this._wcsWaitKeyFrame})`, 'VD_ERROR');
                     this._videoDecoderErrorCount++;
-                    // [task19 v5] 最大3回までリトライ
+                    // 最大3回までリトライ
                     if (this._videoDecoderErrorCount <= this._videoDecoderMaxErrors) {
                         console.warn(`[ProtocolManager] VideoDecoder error retry ${this._videoDecoderErrorCount}/${this._videoDecoderMaxErrors}`);
                         if (window.__eventLog) window.__eventLog.consoleLog('warn', `[ProtocolManager] VideoDecoder error retry ${this._videoDecoderErrorCount}/${this._videoDecoderMaxErrors}`, 'VD_ERROR_RETRY');
@@ -1409,7 +1408,7 @@ const ProtocolManager = {
                             }
                             this._videoDecoder = null;
                             this._videoDecoderInitialized = false;
-                            // [task19 レビュー指摘 M5] 二重フラグ解放の解消:
+                            // 二重フラグ解放の解消:
                             // 本 error コールバックは非同期に発火するため、発火時点では直前の
                             // initVideoDecoder の finally が既にフラグを解放済み。ここで手動解放すると、
                             // 別経路（Type=0x02 受信）の初期化が進行中（フラグ=true）のタイミングで
@@ -1466,12 +1465,12 @@ const ProtocolManager = {
             if (window.__eventLog) window.__eventLog.consoleLog('log', `[ProtocolManager] VideoDecoder 初期化成功 codec=${config.codec} descLen=${descLen}`, 'VD_INIT_OK');
             return true;
         } catch (e) {
-            // [task19 v3] Major 4 修正: catch した例外もエラーカウントに反映
+            // : catch した例外もエラーカウントに反映
             this._videoDecoderErrorCount++;
             console.error(`[ProtocolManager] initVideoDecoder exception (count: ${this._videoDecoderErrorCount}):`, e);
             if (window.__eventLog) window.__eventLog.consoleLog('error', `[ProtocolManager] initVideoDecoder exception (count: ${this._videoDecoderErrorCount}):` + (e && e.message ? ' ' + e.message : ' ' + e), 'VD_INIT_EX');
 
-            // [task19 v4] Major 1 修正: デコーダ生成後の例外時にリソースを確実に解放
+            // : デコーダ生成後の例外時にリソースを確実に解放
             if (this._videoDecoder) {
                 // クローズ済みへの close() は InvalidStateError のため、closed のときはスキップする
                 if (this._videoDecoder.state !== 'closed') {
@@ -1486,7 +1485,7 @@ const ProtocolManager = {
 
             return false;
         } finally {
-            // [task19 v3] Critical 8 修正: 排他フラグを解放
+            // : 排他フラグを解放
             this._videoDecoderInitializing = false;
         }
     },
@@ -1528,14 +1527,14 @@ const ProtocolManager = {
 
         const fps = ProtocolManager.webCodecsFps || 30;
 
-        // [task19 v3] Critical 2 修正: マイクロ秒単位 (μs)
-        // Critical 5 修正: 独立カウンタで単調増加を保証
+        // : マイクロ秒単位 (μs)
+        // 独立カウンタで単調増加を保証
         this._videoDecoderTimestampCounter++;
         let timestamp = Math.floor(this._videoDecoderTimestampCounter * 1_000_000 / fps);
 
-        // [task19 v5] Critical 1/5/7 修正: Clamp 方式による単調増加保証（永久ループ解消版）
+        // : Clamp 方式による単調増加保証（永久ループ解消版）
         if (timestamp <= this._videoDecoderLastTimestamp) {
-            // [task19 P4] Clamp 連続計測（レビュー Minor 対応: サーバー側のフレーム生成ジッタ可観測性）
+            // Clamp 連続計測（サーバー側のフレーム生成ジッタ可観測性）
             this._clampTotalCount++;
             this._clampConsecutiveCount++;
             if (this._clampConsecutiveCount === 1 || this._clampConsecutiveCount % 10 === 0) {
@@ -1543,7 +1542,7 @@ const ProtocolManager = {
                 if (window.__eventLog) window.__eventLog.consoleLog('warn', `[ProtocolManager] Timestamp not monotonically increasing, clamping (consecutive=${this._clampConsecutiveCount}, total=${this._clampTotalCount})`, 'TS_CLAMP');
             }
 
-            // [task19 P4] 連続 3 回 Clamp 発生はサーバー側のフレーム生成に問題がある可能性
+            // 連続 3 回 Clamp 発生はサーバー側のフレーム生成に問題がある可能性
             // （ジッタ / 遅延）のため、reinit_decoder を要求して SPS/PPS 再取得・デコーダ再構築を促す
             // 5秒スロットリングで要求の連打を防ぐ（既存 _videoDecoderReinitRequestTime を流用）
             if (this._clampConsecutiveCount >= this._clampReinitThreshold) {
@@ -1592,12 +1591,12 @@ const ProtocolManager = {
                 type: isKeyFrame ? 'key' : 'delta',
                 data: data,
                 timestamp: timestamp,
-                duration: Math.floor(1_000_000 / fps)  // [task19 v3] マイクロ秒単位
+                duration: Math.floor(1_000_000 / fps)  // マイクロ秒単位
             });
 
             await this._videoDecoder.decode(chunk);
         } catch (e) {
-            // [task19 v3] Major 4 修正: decode 例外をエラーカウントに反映
+            // : decode 例外をエラーカウントに反映
             this._videoDecoderErrorCount++;
             console.error(`[ProtocolManager] decode exception (count: ${this._videoDecoderErrorCount}):`, e);
             if (window.__eventLog) window.__eventLog.consoleLog('error', `[ProtocolManager] decode exception (count: ${this._videoDecoderErrorCount}):` + (e && e.message ? ' ' + e.message : ' ' + e), 'VD_DECODE_EX');
@@ -1613,14 +1612,14 @@ const ProtocolManager = {
 };
 
 //============================================================================================
-// [task19 v6] WCS モード切替関数
+// WCS モード切替関数
 // 既存 WebSocket 接続を維持したまま VideoDecoder 状態リセットのみを行う。
-// [Round 7 Major 修正] switch_mode webcodecs の WS 送信は onopen ハンドラに一本化（本関数には送信を置かない）。
+// switch_mode webcodecs の WS 送信は onopen ハンドラに一本化（本関数には送信を置かない）。
 //============================================================================================
 function switchToWcsMode() {
     try {
         // 1. 既存の VideoDecoder を解放
-        // 【Secondary-Major 2 修正】 close() は非同期で完了するため、
+        // close() は非同期で完了するため、
         //    閉鎖前にローカル参照を取得し、ondequeueerror を null にして
         //    コールバックによる null 参照を防ぐ
         if (ProtocolManager._videoDecoder) {
@@ -1631,7 +1630,7 @@ function switchToWcsMode() {
             try {
                 decoder.close();
             } catch (e) {
-                // [task19 P4] 例外の握りつぶし禁止（AGENTS.md NEVER）: close() 失敗をログに記録
+                // 例外の握りつぶし禁止（AGENTS.md NEVER）: close() 失敗をログに記録
                 console.warn('[switchToWcsMode] decoder.close() failed:', e && e.message ? e.message : e);
                 if (window.__eventLog) window.__eventLog.consoleLog('warn', '[switchToWcsMode] decoder.close() failed: ' + (e && e.message ? e.message : e), 'VD_CLOSE_FAIL');
             }
@@ -1652,19 +1651,19 @@ function switchToWcsMode() {
         ProtocolManager._wcsAnnexBPrefixCount = 0;
         ProtocolManager._videoDecoderTimestampCounter = 0;
         ProtocolManager._videoDecoderLastTimestamp = 0;
-        // [task19 P4] Clamp 連続計測もリセット（モード再構築で計測状態を新規に開始）
+        // Clamp 連続計測もリセット（モード再構築で計測状態を新規に開始）
         ProtocolManager._clampConsecutiveCount = 0;
         ProtocolManager._clampTotalCount = 0;
         ProtocolManager._videoDecoderReinitRequestTime = 0;
 
-        // 3. [Round 7 Major 修正] switch_mode webcodecs の WS 送信は onopen ハンドラに一本化。
+        // 3. switch_mode webcodecs の WS 送信は onopen ハンドラに一本化。
         //    本関数は VideoDecoder 状態リセットのみを行う（ここでは WS 送信を行わない）。
         //    理由: setMode('webcodecs') → startConnection() → closeWebSocket() + attemptWebSocket() の直後は
         //    新 WS が CONNECTING 状態で、sendWsControl は readyState === WebSocket.OPEN のときのみ
         //    送信するため no-op になる。実際の送信は接続確立後の onopen ハンドラ
         //    (this.currentMode === this.MODES.WEBCODECS 判定付き) で行われる。
     } finally {
-        // [task19 レビュー指摘 M6] try-finally による状態整合保護（設計書 §5.2 二次独自 Minor 1 修正）:
+        // try-finally による状態整合保護（リソース解放漏れ防止）:
         // close() 後の状態リセット処理で例外が発生した場合も、_videoDecoderInitializing が
         // true のまま残る（デッドロック的な TOCTOU 競合）状態を防ぐ
         ProtocolManager._videoDecoderInitializing = false;
@@ -1673,7 +1672,7 @@ function switchToWcsMode() {
 
 //============================================================================================
 // [案C-2] WebPデータ検証関数
-// [FPS Fix] WebPマジックナンバーチェック (RIFF/WEBP)
+// WebPマジックナンバーチェック (RIFF/WEBP)
 //           実行頻度は10フレームに1回のサンプリング
 //============================================================================================
 function validateWebpData(data) {
@@ -1829,10 +1828,10 @@ function sendControlAction(action, x, y) {
 }
 
 //=============================================================================================
-// [task06] スリープ復帰・リロード時の画面即時更新トリガー
+// スリープ復帰・リロード時の画面即時更新トリガー
 //=============================================================================================
 /**
- * [task06] スリープ復帰・リロード時の画面即時更新トリガー
+ * スリープ復帰・リロード時の画面即時更新トリガー
  * - 二重ループの発生を防止しながら、即座に1回画面リフレッシュを実行する
  * - lastOperationTime には触れず、Auto-FPS 状態を破壊しない
  * - 100ms以内の重複呼出し（visibilitychangeとfocusの同時発生等）をタイムスタンプで確実にガード (KISS原則)

@@ -35,7 +35,7 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 			return;
 		}
 		// remote モード: 既存 /control API で本体ブラウザをログインページへ遷移させる
-		// [task22 v1.5 / r2 Suggestion] 連打による navigate_login 重複送信の防止:
+		// 連打による navigate_login 重複送信の防止:
 		// クリック直後にボタンを disabled 化（disabled ボタンには click イベントが発火しないため
 		// リトライタイマー等の追加機構なしに構造的に防止）。成功時は再活性化不要（2 秒ポーリングが
 		// 本体のログイン完了を検知して / へ自動復帰する）。失敗時のみ再活性化（再試行可能）。
@@ -50,7 +50,7 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 				hint.textContent = '要求済み: 本体ブラウザがログインページへ遷移中です（Cookie保持で自動ログイン）。';
 			})
 			.catch(function (err) {
-				// [task22 v1.6 / M-1 + SS-1] 失敗時は再活性化後、hint に再試行可能状態を明示する
+				// 失敗時は再活性化後、hint に再試行可能状態を明示する
 				// （2 回目クリック時に hint が前回の失敗文のまま再試行可否が不明な状態にならないため）
 				btn.disabled = false;
 				hint.textContent = '要求に失敗しました: ' + err + '（再試行できます）';
@@ -62,7 +62,7 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 		setInterval(function () {
 			fetch('/login-state', { cache: 'no-store' })
 				.then(function (res) {
-					// [task22 二次コードレビュー SS-2] 401（リモート認証セッション切れ）は明示的に /login-page
+					// 401（リモート認証セッション切れ）は明示的に /login-page
 					// へリダイレクトしてセッションを復旧する（remote_main.js の checkLoginState と同方針）。
 					if (res.status === 401) {
 						window.location.href = '/login-page';
@@ -74,7 +74,7 @@ html,body { margin:0; padding:0; width:100%; height:100%; background:#000; color
 					if (data && data.loggedOut === false) window.location.replace('/');
 				})
 				.catch(function (e) {
-					// [task22 E2E 修正レビュー SS-E2E-3] 例外の握りつぶしをしない（プロジェクトルールの「サイレントな例外の握りつぶし禁止」に準拠）:
+					// 例外の握りつぶしをしない（プロジェクトルールの「サイレントな例外の握りつぶし禁止」に準拠）:
 					// エラー内容をコンソールに warn 出力（remote_main.js checkLoginState と同方針・1 行に留める）。
 					// 一時的な通信エラーは次回のポーリングで再試行（リモート画面ポーリングと同方針）
 					console.warn('[task22] /login-state poll failed:', e);

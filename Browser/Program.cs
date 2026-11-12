@@ -26,7 +26,7 @@ namespace Browser
 			Application.SetCompatibleTextRenderingDefault(false);
 			AppDomain.CurrentDomain.AssemblyResolve += CurrentDomain_AssemblyResolve;
 
-			// [task19 不具合3修正 / Round 7 Minor 修正] CefSharpSettings.Proxy の既定値設定は本箇所に集約する。
+			// CefSharpSettings.Proxy の既定値設定は本箇所に集約する。
 			// Application.Run（FormBrowser コンストラクタ・型ロード）より前にプロキシを早期設定するため、
 			// FormBrowser が CefSharp の自動初期化をトリガーする前に、
 			// APIObserver の既定プロキシ（127.0.0.1:40620）を反映させる。

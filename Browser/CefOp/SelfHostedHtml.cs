@@ -6,7 +6,7 @@ using System.Text;
 namespace Browser
 {
 	/// <summary>
-	/// [task22] 自ホスト HTML ファイル探索ヘルパー。
+	/// 自ホスト HTML ファイル探索ヘルパー。
 	/// FormBrowser（本体ブラウザのログアウト空白ページ）と RemoteController
 	/// （/logout-page の logout.html）で共用する。
 	/// 探索順序（GetHtmlContent / GetLoginPageContent と同一パターン）:
@@ -29,7 +29,7 @@ namespace Browser
 			var pathsToSearch = new List<string>();
 
 			// 1. ソース Browser/<fileName> の探索（開発時の利便性: 親ディレクトリ遡り + 兄弟 Browser/）
-			// [task22] 候補パスはすべて Path.GetFullPath で正規化する。
+			// 候補パスはすべて Path.GetFullPath で正規化する。
 			// ソース探索は意図的に baseDir の**祖先**およびその**兄弟**（baseDir 外）を辿るため、
 			// 「baseDir 配下」チェックは**ソース探索分には適用しない**（適用するとソース直接編集の
 			// リソース発見が機能しない）。代わりに fileName は呼び出し側がハードコードしたリテラル
@@ -61,7 +61,7 @@ namespace Browser
 				{
 					Console.WriteLine($"SelfHostedHtml: ソースディレクトリ探索エラー ({fileName}): {ex.Message}");
 				}
-				// [task22 一次コードレビュー P-5] ループの自然終了: ルートディレクトリ到達時（dir.Parent == null）も
+				// ループの自然終了: ルートディレクトリ到達時（dir.Parent == null）も
 				// 上記の dir.Parent != null チェックで安全に評価され、末尾の dir = dir.Parent で null 代入され、
 				// 次のイテレーションの while (dir != null) 判定で終了する（null 参照例外は発生しない）。
 				dir = dir.Parent;
@@ -81,7 +81,7 @@ namespace Browser
 					if (File.Exists(path))
 					{
 						// File.ReadAllText は BOM がある場合も正しく除去して文字列を返すため、
-						// 後続の Encoding.UTF8.GetBytes（BOM なし）変換で task21 の BOM なし要件に整合する
+						// 後続の Encoding.UTF8.GetBytes（BOM なし）変換で  BOM なし要件に整合する
 						return File.ReadAllText(path, Encoding.UTF8);
 					}
 				}

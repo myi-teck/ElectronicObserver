@@ -1099,18 +1099,18 @@ namespace ElectronicObserver.Utility
 				public bool RemoteInputFocusRecovery { get; set; }
 
 				/// <summary>
-				/// 【task28】WebCodecs モードを有効にするか
+				/// WebCodecs モードを有効にするか
 				/// </summary>
 				public bool WebCodecsEnabled { get; set; }
 
 				/// <summary>
-				/// 【task28】WebCodecs エンコーダのビットレート（bps, ビット/秒）
+				/// WebCodecs エンコーダのビットレート（bps, ビット/秒）
 				/// 例: 800000 = 800 kbps
 				/// </summary>
 				public int WebCodecsBitrate { get; set; }
 
 				/// <summary>
-				/// 【task28】WebCodecs エンコーダの FPS
+				/// WebCodecs エンコーダの FPS
 				/// </summary>
 				public double WebCodecsFps { get; set; }
 
@@ -1147,14 +1147,12 @@ namespace ElectronicObserver.Utility
 					ForceColorProfile = false;
 					SavesBrowserLog = false;
 					
-					// 2026/06/10 myi 新規作成（リモート操作用ポート・リッスンアドレスの初期値設定）
 					RemoteControllerPort = 8080;
 					RemoteControllerAddress = "*";
-					// 2026/07/14 myi 新規作成（リモート操作用パスワードの初期値設定）
 					RemoteControllerPassword = "";
 					// 論理フォーカス復元は合成入力の到達に必須のため既定で有効（旧設定ファイルにキーが無い場合はここが適用される）
 					RemoteInputFocusRecovery = true;
-					// task28: WebCodecs 設定のデフォルト値
+					//WebCodecs 設定のデフォルト値
 					WebCodecsEnabled = true;
 					WebCodecsBitrate = 800000;  // 800 kbps
 					WebCodecsFps = 30;          // 30 fps

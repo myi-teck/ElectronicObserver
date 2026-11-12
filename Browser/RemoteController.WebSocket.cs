@@ -4,13 +4,7 @@
 // file name      : RemoteController.WebSocket.cs
 // summary        : WebSocket session, fanout, heartbeat, control messages
 //----------------------------------------------------------------------------
-// author         : myi
-// creation date  : 2026-08-25
 // version        : 1.00
-//----------------------------------------------------------------------------
-#region "change history"
-// change history : 2026-08-25 myi task30 split out of RemoteController.cs
-#endregion
 // Copyright 2026 myi
 //============================================================================================
 
@@ -118,16 +112,16 @@ namespace Browser
 	
 			/// <summary>
 			/// フレームドロップカウント（TryWrite 失敗時にインクリメント、統計・ログに反映）
-			/// 設計書 §5.1.2 規定によるフレームドロップの可視化用
-			/// ※ 設計書ではメソッドスコープの droppedCount を規定しているが、
+			/// フレームドロップの可視化用
+			/// ※ メソッドスコープの droppedCount を規定しているが、
 			///   セッション全体のドロップ回数の累積統計は運用上のデバッグ・監視に有用なため、
-			///   セッションスコープのフィールドとして実装している（設計書整合性の明記）
+			///   セッションスコープのフィールドとして実装している
 			/// </summary>
 			public int _droppedFrameCount;
 	
 			/// <summary>
 			/// フレーム到着シグナル（Channel使用、例外ベースフロー制御排除）
-			/// キューサイズ 30 に統一（設計書規定）
+			/// キューサイズ 30 に統一
 			/// 30fps で約1秒分のバッファリング。30フレーム超過で TryWrite 失敗→フレームドロップ
 			/// </summary>
 			public readonly Channel<int> _frameSignal = Channel.CreateBounded<int>(new BoundedChannelOptions(30)
@@ -581,7 +575,7 @@ namespace Browser
 			Interlocked.Decrement(ref _activeConnectionCount);
 
 			// 3. クライアントバージョンエントリを削除
-			// 設計書 §5.3.3 定義: WebSocket 切断時に _clientVersions からエントリを削除
+			// WebSocket 切断時に _clientVersions からエントリを削除
 			RemoveClientVersion(sessionId);
 
 			// 4. セッションの Dispose（SemaphoreSlim, CancellationTokenSource, バッファ返却等）
@@ -784,7 +778,7 @@ namespace Browser
 				RecalculateWebCodecsFps();
 
 				// クライアントバージョンの初期化（null = 未決状態）
-				// 設計書 §5.3.3 定義: 接続確立時に _clientVersions に null エントリを追加
+				// 接続確立時に _clientVersions に null エントリを追加
 				// クライアントから PROTOCOL_VERSION メッセージを受信するまでバージョン未決状態を保持
 				_clientVersions[sessionId] = null;
 
@@ -843,7 +837,7 @@ namespace Browser
 			double ticksPerMs = (double)System.Diagnostics.Stopwatch.Frequency / 1000.0;
 			long droppedFramesCount = 0;
 			int sessionFrameCounter = 0;
-			// フレーム到着待機連続タイムアウト回数（try 外で初期化、§7.4-5）
+			// フレーム到着待機連続タイムアウト回数（try 外で初期化）
 			int frameWaitTimeoutStreak = 0;
 		
 			try
@@ -1171,7 +1165,7 @@ namespace Browser
 							header[4] = (byte)(seq >> 8);
 							header[5] = (byte)seq;
 
-							// [FPS Fix] セマフォ待機時間を測定
+							// セマフォ待機時間を測定
 							var swWait = System.Diagnostics.Stopwatch.StartNew();
 							await session.SendSemaphore.WaitAsync(token);
 							long semaphoreWaitMs = swWait.ElapsedMilliseconds;
@@ -1180,7 +1174,7 @@ namespace Browser
 							{
 								if (IsWebSocketOpen(ws))
 								{
-									// [FPS Fix] WebSocketフラグメント化を排除: ヘッダーとデータを単一メッセージとして送信
+									// WebSocketフラグメント化を排除: ヘッダーとデータを単一メッセージとして送信
 									byte[] combined = _bufferPool.Rent(6 + actualDataLength);
 									try
 									{
@@ -1194,14 +1188,14 @@ namespace Browser
 										// データをコピー
 										Buffer.BlockCopy(webpData, 0, combined, 6, actualDataLength);
 										
-										// [FPS Fix] 単一メッセージとして送信 (endOfMessage = true)
+										// 単一メッセージとして送信 (endOfMessage = true)
 										var swSendLocal = System.Diagnostics.Stopwatch.StartNew();
 										await ws.SendAsync(
 											new ArraySegment<byte>(combined, 0, 6 + actualDataLength),
 											WebSocketMessageType.Binary, true, token);
 										long sendMs = swSendLocal.ElapsedMilliseconds;
 										
-										// [FPS Fix] 可観測性: 送信所要時間・セマフォ待機時間をログ出力（100フレームに1回）
+										// 可観測性: 送信所要時間・セマフォ待機時間をログ出力（100フレームに1回）
 										if (Interlocked.Add(ref _sendFrameCounter, 1) >= 100)
 										{
 											Interlocked.Exchange(ref _sendFrameCounter, 0);
@@ -1418,7 +1412,7 @@ namespace Browser
 				string yStr = ExtractJsonString(message, "y");
 	
 				// PROTOCOL_VERSION: クライアントのプロトコルバージョンを受信
-				// 設計書 §5.3.3 定義: クライアント接続時に PROTOCOL_VERSION を送信し、サーバーがセッションごとにバージョンを記録
+				// クライアント接続時に PROTOCOL_VERSION を送信し、サーバーがセッションごとにバージョンを記録
 				// バージョン番号は将来の仕様が互換性なく変更される場合にインクリメント
 				// Version 2: 7Bヘッダー (Version + Type + Flags + Seq)
 				if (action == "PROTOCOL_VERSION")
@@ -1476,7 +1470,7 @@ namespace Browser
 							header[5] = (byte)(seq >> 8);
 							header[6] = (byte)seq;
 
-							// [FPS Fix] セマフォ待機時間を測定
+							// セマフォ待機時間を測定
 							var swWait = System.Diagnostics.Stopwatch.StartNew();
 							await session.SendSemaphore.WaitAsync(session.CancellationToken.Token);
 							long semaphoreWaitMs = swWait.ElapsedMilliseconds;
@@ -1485,7 +1479,7 @@ namespace Browser
 							{
 								if (session.WebSocket.State == WebSocketState.Open)
 								{
-									// [FPS Fix] WebSocketフラグメント化を排除: ヘッダーとデータを単一メッセージとして送信
+									// WebSocketフラグメント化を排除: ヘッダーとデータを単一メッセージとして送信
 									// 7Bヘッダー対応
 									byte[] combined = _bufferPool.Rent(7 + actualDataLength);
 									try
@@ -1501,14 +1495,14 @@ namespace Browser
 										// データをコピー
 										Buffer.BlockCopy(webpData, 0, combined, 7, actualDataLength);
 										
-										// [FPS Fix] 単一メッセージとして送信 (endOfMessage = true)
+										// 単一メッセージとして送信 (endOfMessage = true)
 										var swSend = System.Diagnostics.Stopwatch.StartNew();
 										await session.WebSocket.SendAsync(
 											new ArraySegment<byte>(combined, 0, 7 + actualDataLength),
 											WebSocketMessageType.Binary, true, session.CancellationToken.Token);
 										long sendMs = swSend.ElapsedMilliseconds;
 										
-										// [FPS Fix] 可観測性ログ
+										// 可観測性ログ
 										Log(2, $"[RemoteController] WebSocket init フルフレーム送信成功 ({actualDataLength} bytes, seq={seq}, send={sendMs}ms, semaphore_wait={semaphoreWaitMs}ms, Session: {session.SessionId})");
 									}
 									finally
@@ -1595,7 +1589,7 @@ namespace Browser
 						await SetEnginePacingAsync("set_fps");
 					}
 				}
-				// クライアント中継イベントログの受信（§3.5a: move 分岐より前に配置）
+				// クライアント中継イベントログの受信（move 分岐より前に配置）
 				else if (action == "event_log")
 				{
 					string evJson = ExtractJsonString(message, "ev"); // 既存ヘルパを流用（JSON ライブラリ不使用・既存パターン）
@@ -1680,7 +1674,7 @@ namespace Browser
 					AppendFocusState("mouseup", "ws");
 				}
 				// WCS モード切替（クライアント switchToWcsMode() → { action: 'switch_mode', mode: 'webcodecs' }）
-				// 設計書 §5.2 整合: クライアントは既存 WebSocket 接続を維持したまま
+				// クライアントは既存 WebSocket 接続を維持したまま
 				// sendWsControl を用いてモード切替を要求し、サーバーはこのセッションの配信経路（ClientMode）を更新し
 				// 対応パイプラインの起動を保証する（反対側パイプラインは停止しない）
 				else if (action == "switch_mode")
@@ -1772,7 +1766,7 @@ namespace Browser
 						Log(2, $"[RemoteController] switch_mode(WebCodecs) で SPS/PPS 再送トリガー (Session: {session.SessionId})");
 					}
 				}
-				// SPS/PPS 再送信要求（クライアントがデコードエラー上限到達時に送信、設計書 §4.2.3 Major 4）
+				// SPS/PPS 再送信要求（クライアントがデコードエラー上限到達時に送信）
 				// DescriptionSent をリセットすると WebCodecsCaptureLoopAsync が
 				// 次フレームより前に Type=0x02 の SPS/PPS フレームを再送信する
 				else if (action == "reinit_decoder")

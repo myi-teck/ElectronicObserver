@@ -5,7 +5,7 @@
 //============================================================================================
 
 //============================================================================================
-// Viewport CSS変数同期サブシステム (task07 v3 決定版)
+// Viewport CSS変数同期サブシステム
 //============================================================================================
 
 // [v3対応] TDZ回避のため、モジュール変数は関数の実行より前に定義（let使用）
@@ -16,7 +16,7 @@ let viewportSyncRafId = null;
  * @param {DOMRect|Object|boolean} rectOrImmediate - 座標オブジェクトまたは即時実行フラグ
  * @param {boolean} immediate2 - rect を渡した場合の即時実行フラグ
  *
- * 【v3対応】ダックタイピングで DOMRect 互換を判定（'top' in rectOrImmediate）
+ * ダックタイピングで DOMRect 互換を判定（'top' in rectOrImmediate）
  * 期待されるオブジェクト構造: { top, left, right, bottom }
  *
  * 主な呼び出し元と引数パターン:
@@ -37,7 +37,7 @@ function syncViewportToCSSVariables(rectOrImmediate, immediate2 = false) {
     }
 
     const update = () => {
-        // [task15] 計測対象を #screen-container（ゲーム画面実体）とする
+        // 計測対象を #screen-container（ゲーム画面実体）とする
         const screenContainer = document.getElementById('screen-container');
         if (!screenContainer) return;
         // rect が渡された場合は再取得せず使用（二重 getBoundingClientRect 防止）
@@ -81,7 +81,7 @@ window.addEventListener('resize', () => syncViewportToCSSVariables());
 window.addEventListener('scroll', () => syncViewportToCSSVariables(), { passive: true });
 
 //============================================================================================
-// [task25] body 高さの visual viewport 追従（iOS layout/visual viewport 乖離対策）
+// body 高さの visual viewport 追従（iOS layout/visual viewport 乖離対策）
 // 根本原因: iOS（viewport-fit=cover）は layout viewport（100dvh / 100% の基準）が
 //   visual viewport（実表示領域）より高くなり、iOS は visual viewport を layout 中央に
 //   配置するため body 上下端が (layout高さ − 可視高さ) / 2 ずつ隠れる。
@@ -108,7 +108,7 @@ function syncBodyHeightToVisualViewport() {
     if (root.style.getPropertyValue('--kc-body-height') !== newHeight) {
         root.style.setProperty('--kc-body-height', newHeight);
     }
-    // [task25 補足] body 高さ変更 → #game-screen の rect が変化。window.resize は発火しないため、
+    // body 高さ変更 → #game-screen の rect が変化。window.resize は発火しないため、
     // remote_screen.js の rect キャッシュを明示的に無効化し座標ズレを防止。
     // [P-C2 検証済み] remote_screen.js は remote_main.js より先読み込み（RemoteController.html:415-420）
     // かつ window.invalidateGameScreenRect が公開済み（remote_screen.js:34）。typeof ガードは予防。
@@ -122,25 +122,25 @@ function syncBodyHeightToVisualViewport() {
 //   本関数実行時点で document.body / document.documentElement の存在が確定している。
 syncBodyHeightToVisualViewport();
 
-// [task25] visual viewport の resize / scroll で再適用（iOS のキーボード・アドレスバー表示/隠蔽・回転等）
+// visual viewport の resize / scroll で再適用（iOS のキーボード・アドレスバー表示/隠蔽・回転等）
 if (window.visualViewport) {
     // resize: visual viewport の寸法変化（キーボード表示/隠蔽・回転等）で発火。再適用の主経路。
     window.visualViewport.addEventListener('resize', syncBodyHeightToVisualViewport);
     // [P-M1] scroll: iOS ではキーボード展開時等に visual viewport のオフセット/寸法がスクロール連動で
     //   変化しうるため登録。再書込みガード（値変化時のみ書き込み）があるため、高さ変化なしで発火しても
     //   実害は皆無。オフセット変化シナリオの検知を目的に残す。
-    //   [review r1 Suggestion 1 反映] 既存の window scroll リスナ（81行目）と同様 { passive: true } を指定し、
+    //   既存の window scroll リスナと同様 { passive: true } を指定し、
     //   ブラウザのスクロール最適化（コンポジタスレッドのスムーズスクロール）を阻害しない。
     //   本関数は preventDefault() を呼ばないため passive 指定は安全。
     window.visualViewport.addEventListener('scroll', syncBodyHeightToVisualViewport, { passive: true });
 }
 
-// [task25] 既存の window.resize で再適用。
+// 既存の window.resize で再適用。
 // [S-7] これは既存 resize リスナ（remote_main.js:80、syncViewportToCSSVariables）とは
 //   独立した「並列登録」であり、置換ではない。同一の resize イベントで両リスナが独立に発火する。
 window.addEventListener('resize', syncBodyHeightToVisualViewport);
 
-// [task25] iOS はレイアウト更新が数回に分かれるため、orientationchange で 0/100/300ms の
+// iOS はレイアウト更新が数回に分かれるため、orientationchange で 0/100/300ms の
 // setTimeout で複数回再適用。
 // [P-N3] 各タイミングの意図（iOS は orientationchange 後にレイアウト更新が複数回に分かれるため）:
 //   - 0ms   = イベントループの次のタスクで即時再適用（iOS はイベント直後に第1回レイアウト更新を行う）
@@ -172,7 +172,7 @@ function formatTimer(milliseconds) {
 
 //============================================================================================
 // 状態判定および state-badge / hud-mini-state のクラス・テキスト更新関数 (v2 DRY化)
-// [task04 修正] 接続ステータスガードを削除し、制御モードバッジの専用に統合
+// 接続ステータスガードを削除し、制御モードバッジの専用に統合
 //============================================================================================
 function updateStateBadge() {
     const stateBadge = document.getElementById('state-badge');
@@ -442,8 +442,8 @@ initSettingsButtons('sensitivity-group', targetSensitivity, value => {
             buttons.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             ProtocolManager.setMode(mode);
-            // [task19 Bug 1 fix] In the case of WCS mode, call switchToWcsMode() to reset the VideoDecoder state
-            // [Round 7 Major 修正] switchToWcsMode() は VideoDecoder 状態リセットのみを行う（WS 送信は関数内にない）。
+            // In the case of WCS mode, call switchToWcsMode() to reset the VideoDecoder state
+            // switchToWcsMode() は VideoDecoder 状態リセットのみを行う（WS 送信は関数内にない）。
             // setMode('webcodecs') → startConnection() → closeWebSocket() + attemptWebSocket() により
             // 新 WS は CONNECTING 状態のため、switch_mode webcodecs の実際の送信は接続確立後の
             // onopen ハンドラ (remote_connection.js) で行われる。
@@ -519,7 +519,7 @@ function setHudBarPosition(mode) {
 
     syncViewportToCSSVariables(true);
 
-    // [task19 不具合2修正] HUD バー位置変更で #game-screen の実寸が変わるため rect キャッシュを無効化
+    // HUD バー位置変更で #game-screen の実寸が変わるため rect キャッシュを無効化
     if (typeof window.invalidateGameScreenRect === 'function') {
         window.invalidateGameScreenRect();
     }
@@ -540,7 +540,7 @@ function setHudBarPosition(mode) {
     setHudBarPosition(hudBarPosition);
 })();
 
-// [task06] スリープ復帰およびタブフォーカス復帰時の即時画面更新トリガー
+// スリープ復帰およびタブフォーカス復帰時の即時画面更新トリガー
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
         triggerResumeUpdate();
@@ -550,7 +550,7 @@ window.addEventListener('focus', () => {
     triggerResumeUpdate();
 });
 
-// [task06] 初期化時にも即座に呼び出してSLEEP状態から脱出
+// 初期化時にも即座に呼び出してSLEEP状態から脱出
 // ページリロード時はvisibilityStateが既に'versible'のためvisibilitychangeイベントが発火しない
 triggerResumeUpdate();
 
@@ -622,7 +622,7 @@ btnNavigateLogin.addEventListener('click', (e) => {
 //============================================================================================
 // ログアウト（空白ページ）ボタン
 // 確認メッセージは既存 btn-navigate-login と同様の「○○へ移動しますか？」形式に統一
-//（二次レビュー Minor 3 対応）
+//
 //============================================================================================
 const btnLogoutBlank = document.getElementById('btn-logout-blank');
 btnLogoutBlank.addEventListener('click', (e) => {
@@ -745,7 +745,7 @@ window.isDismissingPanel = false;
 
 //============================================================================================
 // 横画面用：操作パネルの折り畳み/展開トグルおよびゲーム画面タップ消去制御
-// 【クリティカルレビュー指摘1,2反映】transitionend廃止 + 状態管理簡素化
+// transitionend廃止 + 状態管理簡素化
 //============================================================================================
 (function initTrackpadPanel() {
     const toggleBtn = document.getElementById('trackpad-toggle');
@@ -782,7 +782,7 @@ window.isDismissingPanel = false;
         // viewport マージン変更を即座にCSS変数へ反映
         syncViewportToCSSVariables(true);
 
-        // [task19 不具合2修正] パネル展開/閉合で #game-screen の実寸が変わるため rect キャッシュを無効化
+        // パネル展開/閉合で #game-screen の実寸が変わるため rect キャッシュを無効化
         if (typeof window.invalidateGameScreenRect === 'function') {
             window.invalidateGameScreenRect();
         }
@@ -815,7 +815,7 @@ window.isDismissingPanel = false;
         // パネルリセットに伴う viewport マージン変更を即座にCSS変数へ反映
         syncViewportToCSSVariables(true);
 
-        // [task19 不具合2修正] パネルリセットに伴い #game-screen の実寸が変わるため rect キャッシュを無効化
+        // パネルリセットに伴い #game-screen の実寸が変わるため rect キャッシュを無効化
         if (typeof window.invalidateGameScreenRect === 'function') {
             window.invalidateGameScreenRect();
         }
@@ -825,13 +825,13 @@ window.isDismissingPanel = false;
      * ゲーム画面タッチ/クリックでHUDを非表示にする（initTrackpadPanel IIFE 内定義）
      *
      * スコープ: initTrackpadPanel IIFE 内定義、window.dismissIfExpanded としてグローバル公開
-     * resetPanelState() は同一 IIFE 内の関数として参照可能（クリティカルレビュー指摘1対応）
+     * resetPanelState() は同一 IIFE 内の関数として参照可能
      *
-     * 注意（クリティカルレビュー指摘2対応）:
+     * 注意:
      * resetPanelState() の中で isDismissingPanel = false を実行してはならない。
      * isDismissingPanel のリセットは touchend ハンドラおよび orientationchange ハンドラに限定する。
      *
-     * 注意（クリティカルレビュー指摘3対応）:
+     * 注意:
      * タッチ操作（touchstart）の場合のみ isDismissingPanel = true を設定。
      * マウス操作（click）では touchend が発火しないためフラグは不要。
      */
@@ -839,13 +839,13 @@ window.isDismissingPanel = false;
         // ガード節: 展開中でない場合は早期リターン
         if (!trackpadArea || !trackpadArea.classList.contains('panel-expanded')) return false;
 
-        // タッチ操作（touchstart）の場合のみガードフラグを立てる（クリティカルレビュー指摘3対応）
+        // タッチ操作（touchstart）の場合のみガードフラグを立てる
         if (e && e.type === 'touchstart') {
             window.isDismissingPanel = true;
         }
 
         // 既存の resetPanelState() を呼び出し、ロジックの共通化を図る
-        // resetPanelState() 内で isDismissingPanel を変更しない（クリティカルレビュー指摘2対応）
+        // resetPanelState() 内で isDismissingPanel を変更しない
         resetPanelState();
 
         // イベントを消費する（誤タップ防止）
@@ -859,13 +859,13 @@ window.isDismissingPanel = false;
     // 外部（remote_input.js 等）からアクセス可能にするためグローバル公開
     window.dismissIfExpanded = dismissIfExpanded;
 
-    // [Task10 v2] 外部（initHudPosition IIFE 等）からアクセス可能にするためグローバル公開
+    // 外部（initHudPosition IIFE 等）からアクセス可能にするためグローバル公開
     window.resetPanelState = resetPanelState;
 
     // クリックイベント（マウス操作時、フォールバック用）
-    // touchstart は remote_input.js 側で処理するため、click のみを登録（クリティカルレビュー指摘4対応）
+    // touchstart は remote_input.js 側で処理するため、click のみを登録
     if (viewport) {
-        // [task14] viewport click を計装（§3.4: dismissIfExpanded をラップして計装。gesture('click', e, null, null)）
+        // viewport click を計装（dismissIfExpanded をラップして計装。gesture('click', e, null, null)）
         viewport.addEventListener('click', (e) => {
             if (window.__eventLog) window.__eventLog.gesture('click', e, null, null);
             return dismissIfExpanded(e);
@@ -893,7 +893,7 @@ window.isDismissingPanel = false;
 })();
 
 //============================================================================================
-// [Task10 v2] 画面回転デバウンス用タイマー
+// 画面回転デバウンス用タイマー
 //============================================================================================
 let orientationDebounceTimer = null;
 
@@ -923,7 +923,7 @@ function setDummyBadge(on) {
 }
 
 //=============================================================================================
-// [task22] ログイン状態ポーリング（5 秒間隔）
+// ログイン状態ポーリング（5 秒間隔）
 // 本体ブラウザがログアウト空白ページ状態の間、/logout-page へフルページリダイレクトする
 // （「ログイン中フラグが false ならログアウト中画面にリダイレクト」要件の実装）。
 // WS モードでは remote_screen.js の HTTP ポーリングがスキップされ
@@ -949,7 +949,7 @@ function checkLoginState() {
             }
         })
         .catch(function (e) {
-            // [task22 E2E 修正レビュー SS-E2E-2] 例外の握りつぶしをしない（プロジェクトルールの「サイレントな例外の握りつぶし禁止」に準拠）:
+            // 例外の握りつぶしをしない（プロジェクトルールの「サイレントな例外の握りつぶし禁止」に準拠）:
             // エラー内容をコンソールに warn 出力し、開発者ツールで可視化する（5 秒ポーリングで繰り返し発火する可能性はあるが、
             // パーサー・通信障害の可観測性向上のため 1 行の warn に留める）。
             // 一時的な通信エラーは次回のポーリングで再試行（updateScreenDiff の catch と同方針）

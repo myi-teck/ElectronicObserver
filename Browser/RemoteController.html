@@ -9,9 +9,6 @@
 // summary        : モバイル端末からの遠隔操作（画面配信・操作転送）のUI定義
 //----------------------------------------// // version        : 2.33
 //--------------------------------------------------------------------------------------------
-#region "change history"
-// change history : 2026/05/25 myi 新規作成
-//============================================================================================
 -->
 <!DOCTYPE html>
 <html lang='ja'>
@@ -33,7 +30,7 @@
             <canvas id='game-screen' width='1200' height='720'></canvas>
             <div id='virtual-cursor'></div>
         </div>
-        <!-- [task15] #hud-control-bar を #viewport の子要素に移動（flexboxフローベースレイアウト） -->
+        <!-- #hud-control-bar を #viewport の子要素に移動（flexboxフローベースレイアウト） -->
         <div id='hud-control-bar' class='position-right'>
             <div id='hud-mini-info'>
                 <span id='hud-mini-conn' class='hud-mini-item'>SYNCHRONIZING...</span>
@@ -74,7 +71,7 @@
             <!-- 右側: 選択した項目の設定内容 -->
             <div id='settings-detail-area'>
 
-                <!-- ブラウザ操作設定（先頭に移動・初期表示 [task20]） -->
+                <!-- ブラウザ操作設定（先頭に移動・初期表示 ） -->
                 <div class='detail-panel active' id='detail-browser-nav-group'>
                     <div class='setting-group'>
                         <label>ブラウザ操作</label>
@@ -392,7 +389,7 @@
                 <!-- タクティカルモニター調のセンタリングロゴ -->
                 <span id='trackpad-label' class='trackpad-info'>86式艦隊臨時指揮端末</span>
                 
-                <!-- 【右下に新規配置】拡大表示パネル（タクティカルスコープ・正方形） -->
+                <!-- 拡大表示パネル（タクティカルスコープ・正方形） -->
                 <div class='magnifier-container trackpad-info'>
                     <canvas id='magnifier-canvas'></canvas>
                     <div class='reticle-line-h'></div>
@@ -409,9 +406,8 @@
         </button>
     </div>
 
-    <!-- [task15] #hud-control-bar は #viewport の子要素へ移動済み（flexboxフローベースレイアウト） -->
+    <!-- #hud-control-bar は #viewport の子要素へ移動済み（flexboxフローベースレイアウト） -->
 
-    <!-- [FIX] 2026/07/27 #trackpad-overlay 要素を削除。フィルター方式へ変更 -->
 
     <!-- 外部JSファイル参照 -->
     <script src="/js/remote_config.js"></script>
@@ -419,8 +415,8 @@
     <script src="/js/remote_screen.js"></script>
     <script src="/js/remote_input.js"></script>
     <script src="/js/remote_hud.js"></script>
-    <script src="/js/remote_main.js?v=t39"></script>
-    <!-- [task14] クリック・タッチイベント専用ログ（window.__eventLog を公開する・§3.3） -->
+    <script src="/js/remote_main.js"></script>
+    <!-- クリック・タッチイベント専用ログ（window.__eventLog を公開する） -->
     <script src="/js/remote_eventlog.js"></script>
 </body>
 </html>

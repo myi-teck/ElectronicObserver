@@ -25,7 +25,7 @@ let lastFpsUpdate = Date.now();
 let isFirstWebpRequest = true;
 let isUpdating = false;
 
-// [task06] スリープ復帰判定用変数
+// スリープ復帰判定用変数
 let lastFrameStartTime = Date.now();
 // 注: lastScheduledDelay の初期値は Infinity に設定する。
 // 0 や 1000 などの小さな値だと、初回更新前にスリープ復帰判定が誤検知される可能性がある。
@@ -105,11 +105,11 @@ let targetZoom = parseFloat(localStorage.getItem('targetZoom')) || 3.0;
 let dragThreshold = parseInt(localStorage.getItem('dragThreshold'), 10) || 10;
 let tapTimeout = parseInt(localStorage.getItem('tapTimeout'), 10) || 300;
 let hudBarPosition = localStorage.getItem('hudBarPosition') || 'right';
-// [task14 P2] touchend 直後のマウスイベントを合成とみなす時間窓（ms）。
+// touchend 直後のマウスイベントを合成とみなす時間窓（ms）。
 // 合成マウスイベントは touchend 直後（通常数 ms 以内）に発火するため 700ms には余裕がある。
 // ハイブリッドデバイスでの実マウス誤爆が許容できない場合は DevTools/localStorage で短縮可能。
 let touchMouseGuardMs = parseInt(localStorage.getItem('touchMouseGuardMs'), 10) || 700;
-// [task14] move 系ログのスロットリング間隔（ms）
+// move 系ログのスロットリング間隔（ms）
 let eventLogMoveThrottleMs = parseInt(localStorage.getItem('eventLogMoveThrottleMs'), 10) || 100;
 
 // HUDタップ/ドラッグ判定用定数

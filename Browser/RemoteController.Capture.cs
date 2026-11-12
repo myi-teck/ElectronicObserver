@@ -4,13 +4,7 @@
 // file name      : RemoteController.Capture.cs
 // summary        : WebP + WebCodecs capture, mode switching, central capture loop
 //----------------------------------------------------------------------------
-// author         : myi
-// creation date  : 2026-08-25
 // version        : 1.00
-//----------------------------------------------------------------------------
-#region "change history"
-// change history : 2026-08-25 myi task30 split out of RemoteController.cs
-#endregion
 // Copyright 2026 myi
 //============================================================================================
 
@@ -340,7 +334,7 @@ namespace Browser
 			public bool isKeyFrame;
 			// SPS/PPS (description) バイト列（AVCDecoderConfigurationRecord / AVCC 形式）
 			// WebCodecs 仕様（W3C AVC 登録仕様に準拠）: avc.format='avc' 時、description は
-			// ISO/IEC 14496-15 §5.3.3.1 の AVCDecoderConfigurationRecord 形式。
+			// ISO/IEC 14496-15 5.3.3.1 の AVCDecoderConfigurationRecord 形式。
 			// JS 側 pull_encoded() の第4要素（Base64）を復号した値。null = 未設定
 			public byte[] description;
 		}
@@ -658,14 +652,14 @@ namespace Browser
 		//====================================================================================
 		// 処理ブロック名 : プロトコル拡張・サーバー側制御基盤
 		//------------------------------------------------------------------------------------
-		// 設計書に対応するプロトコル拡張およびサーバー側制御ロジックを実装
+		// プロトコル拡張およびサーバー側制御ロジックを実装
 		//------------------------------------------------------------------------------------
 
 		//------------------------------------------------------------------------------------
 		// 処理ブロック名 : BuildWebCodecsHeader
 		// 概要           : WebCodecs モード用の7バイトヘッダーを構築する。
 		//                  Version(1B)=0x02 + Type(1B)=0x01 + Flags(1B) + Seq(4B)
-		// 設計書 §4.2.1 対応: version 引数を削除し常に 0x02 固定
+		// version 引数を削除し常に 0x02 固定
 		//------------------------------------------------------------------------------------
 		private byte[] BuildWebCodecsHeader(byte type, byte flags, uint seq)
 		{
@@ -692,7 +686,7 @@ namespace Browser
 			// 初回フレームフラグ（初回はキーフレームを強制）
 			bool isWebCodecsFirstFrame = true;
 			// seq の型整合性の明文字
-			// 設計書 §4.2 では uint (32bit 単調増加) が規定されているが、
+			// uint (32bit 単調増加) が規定されているが、
 			// C# の Interlocked.Increment は uint 型をサポートしないため int 型を使用。
 			// ヘッダー書き込み時（BuildWebCodecsHeader）で (uint) キャストを行う。
 			// int 型として -2147483648 〜 +2147483647 の範囲で単調増加し、
@@ -774,13 +768,13 @@ namespace Browser
 					}
 
 					// IPC最適化: isReinitializing チェックを個別EvaluateScriptAsyncから削除
-					// 設計書 §5.3.2 対応: pull_encoded() 内で isReinitializing チェックを行う設計に統一
+					// pull_encoded() 内で isReinitializing チェックを行う設計に統一
 					// JS 側 pull_encoded() は isReinitializing=true のとき ['none', null] を返す
 
-					// キーフレーム強制タイミングの判定（設計書 §5.3.2 対応）
+					// キーフレーム強制タイミングの判定
 					// ① 初回フレーム ② DescriptionSent 未送信状態（reinit_decoder / switch_mode でリセット後）
 					// ③ 2秒毎のキーフレーム強制（GOP 周期: WebCodecsKeyFrameIntervalMs）
-					// 2秒毎のキーフレーム強制要求（設計書 §5.3.2 対応）
+					// 2秒毎のキーフレーム強制要求
 					// 独立 keyFrameSw を使用（sw.Restart() が FPS 計測を破壊する既存問題を回避）
 					// SPS/PPS (Type=0x02) を受信できる Version 2+ クライアントのみを判定対象にする。
 					// Version 1 クライアントは SPS/PPS を受信できない（送信ループでスキップされる）ため、
@@ -933,7 +927,7 @@ namespace Browser
 					byte flags = dataIsKeyFrame ? (byte)0x01 : (byte)0x00;
 
 					// SPS/PPS キュー投入パス: description 未送信のセッションにはフレームより先に
-					// SPS/PPS (Type=0x02) をセッション別チャネルへ投入する（設計書 §4.2.2 ステップ3）。
+					// SPS/PPS (Type=0x02) をセッション別チャネルへ投入する。
 					// seq をフレーム seq より前のここで採番することで、SPS/PPS seq < フレーム seq が
 					// seq 空間・チャネル順の両方で保証される。実際の送信はセッション別の
 					// WebCodecsFanoutLoopAsync が行う（送信のループ外化）
@@ -1005,7 +999,7 @@ namespace Browser
 
 					// フレーム seq 採番: フレーム単位で 1 回（セッションループ外）で採番し、
 					// 同一フレームが全セッションに同一 seq で共有される。受信側は seq で順序保証を行う設計であり、
-					// セッション横断の単調増加（シーケンス空間）が維持される（§1.3 の不変条件）。
+					// セッション横断の単調増加（シーケンス空間）が維持される。
 					// 同一グローバルカウンタ（_globalSequenceNumber）を維持し、heartbeat は seq を消費しない
 					seq = Interlocked.Increment(ref _globalSequenceNumber);
 
@@ -1083,7 +1077,7 @@ namespace Browser
 			}
 			finally
 			{
-				// finally ブロックで StopWebCodecsEncoderAsync を await 実行（設計書 §5.3.2 対応）
+				// finally ブロックで StopWebCodecsEncoderAsync を await 実行
 				try
 				{
 					await StopWebCodecsEncoderAsync();
@@ -1107,12 +1101,12 @@ namespace Browser
 						if (_webCodecsCaptureCts != null && _webCodecsCaptureCts.Token == token)
 						{
 							_webCodecsCaptureTask = null;
-							// 判定結果（一致）をログ出力（§5 L7 と整合、優先度2）
+							// 判定結果（一致）をログ出力
 							Log(2, "[RemoteController] WebCodecs ループ終了: token一致でタスク参照をクリア");
 						}
 						else
 						{
-							// token 不一致（新ループが既に起動済み）または CTS null の場合、クリアしない（§5 L7 と整合）
+							// token 不一致（新ループが既に起動済み）または CTS null の場合、クリアしない
 							Log(2, "[RemoteController] WebCodecs ループ終了: token不一致（またはCTS null）でタスク参照をクリアしない");
 						}
 					}
@@ -1135,7 +1129,7 @@ namespace Browser
 		//------------------------------------------------------------------------------------
 		// バックオフ判定（比較→更新）を lock 内で原子化し、並行呼び出しでの
 		// 過剰な再初期化発火・過剰な抑制を防ぐ。InitializeWebCodecsEncoderAsync への呼び出しは
-		// ロック解放後（_modeLock / _captureStartLock の同時取得禁止、§6.3 参照）。
+		// ロック解放後（_modeLock / _captureStartLock の同時取得禁止）。
 		private async Task<bool> TryReinitWebCodecsEncoderAsync(CancellationToken token, string reason)
 		{
 			var nowUtc = DateTime.UtcNow;
@@ -1144,10 +1138,10 @@ namespace Browser
 				if ((nowUtc - _lastWebCodecsReinitUtc).TotalMilliseconds < WebCodecsReinitBackoffMs)
 				{
 					// バックオフ期間中は再初期化をスキップ（100ms 待機は呼び出し側で実施）
-					// スキップ理由もログに残す（可観測性向上、§5 L1 参照）
+					// スキップ理由もログに残す（可観測性向上）
 					// 優先度1（デバッグレベル）: 既定の LogLevel=2 では非表示
 					// （FormLog は Priority >= LogLevel で表示、既定 LogLevel=2）。
-					// 検証時は LogLevel=1 へ変更して確認（§7.4 / SEC-MINOR-2 参照）
+					// 検証時は LogLevel=1 へ変更して確認
 					Log(1, $"[RemoteController] WebCodecs 再初期化をバックオフでスキップ (reason: {reason})");
 					return false;
 				}
@@ -1196,7 +1190,7 @@ namespace Browser
 			// Dispose() により破棄され、WaitAsync が ObjectDisposedException を投げ得る。
 			// 捕捉してログ出力する（サイレントな握りつぶし禁止）。許可未取得のため Release は不要。
 			// 注意: WaitAsync の OperationCanceledException はここでは捕捉せず従来通り呼び出し側に伝播させる
-			// （R3-MINOR-1 の「try ブロック外配置」の正しいパターンを維持）。
+			// （「try ブロック外配置」の正しいパターンを維持）。
 			try
 			{
 				await _webCodecsInitSemaphore.WaitAsync(cancellationToken);
@@ -1270,8 +1264,8 @@ namespace Browser
 					.Replace("__CODEC__", escapedCodec);
 	
 				// タイムアウト制御（5秒）
-				// design doc §5.3.2a: timeoutCts.Cancel() により delayTask を確実にキャンセル
-				// 設計書 §5.3.2a 通り 5秒 に統一
+				// timeoutCts.Cancel() により delayTask を確実にキャンセル
+				// 5秒 に統一
 				// using 句で CancellationTokenSource を確実に破棄（タスクリーク防止）
 				using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
 				using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token))
@@ -1427,7 +1421,7 @@ namespace Browser
 		//------------------------------------------------------------------------------------
 		// 処理ブロック名 : SetWebCodecsCodec
 		// 概要           : WebCodecs エンコーダのコーデック値を変更し、再初期化を行う。
-		// 設計書 §5.3.1 対応: コーデック変更経路の実装
+		// コーデック変更経路の実装
 		//------------------------------------------------------------------------------------
 		public async Task<bool> SetWebCodecsCodec(string codec)
 		{
@@ -1723,7 +1717,7 @@ namespace Browser
 
 						if (chunk.Count >= 2 && chunk[1] as string == "1") frame.isKeyFrame = true;
 
-						// SPS/PPS (description): キーフレームにのみ Base64 で添付される（設計書 §4.2.2 ステップ2）
+						// SPS/PPS (description): キーフレームにのみ Base64 で添付される
 						if (chunk.Count >= 3 && chunk[2] is string descriptionB64 && !string.IsNullOrEmpty(descriptionB64))
 						{
 							try
@@ -1794,7 +1788,7 @@ namespace Browser
 						case "http": newMode = CaptureMode.HttpPolling; break;
 						case "webp": newMode = CaptureMode.WebP; break;
 						default:
-							// [Minor修正] 想定外の文字列時はデフォルトモードにフォールバックし警告ログを出力
+							// 想定外の文字列時はデフォルトモードにフォールバックし警告ログを出力
 							Log(2, $"[RemoteController] 無効なキャプチャモード文字列 \"{modeStr}\"、デフォルト(WebP)にフォールバック");
 							newMode = CaptureMode.WebP;
 							break;

@@ -1918,7 +1918,6 @@ namespace ElectronicObserver.Window
 
 		/// <summary>
 		/// メモ押下時イベントハンドラ
-		/// 2024/01/23 myi ADD
 		/// </summary>
 		/// <param name="sender"></param>
 		/// <param name="e"></param>

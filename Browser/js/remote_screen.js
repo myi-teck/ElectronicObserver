@@ -7,14 +7,14 @@
 // DOM要素の取得（ページ読み込み時に実行される）
 const screen = document.getElementById('game-screen');
 
-// [task19 v5] Critical 4 修正: screen 変数が宣言されている remote_screen.js 側で rect キャッシュを定義・公開
+// screen 変数が宣言されている remote_screen.js 側で rect キャッシュを定義・公開
 // script 読み込み順: remote_config.js → remote_connection.js → remote_screen.js → remote_input.js → remote_hud.js → remote_main.js
 // （RemoteController.html の実読み込み順。remote_connection.js が remote_screen.js より先読み込み）
 // remote_screen.js が screen 変数を所有し、remote_input.js が getCachedGameScreenRect() を呼び出す
-// [task27 用語注] `screen` = remote_screen.js:8 の `const screen = document.getElementById('game-screen')`（canvas 要素ローカル変数）。
+// 用語注: `screen` は本ファイル冒頭の `const screen`（getElementById('game-screen') の canvas 要素ローカル変数）。
 // `window.screen`（画面解像度 API）とは無関係。canvas 内在サイズ `screen.width × screen.height` は
 // RemoteController.html:33 の HTML attribute（1200×720）で固定・JS での再代入なし
-// [task27] キャッシュ内容の変更: canvas の box rect（letterbox 込み）→ content rect（letterbox 適用後）
+// キャッシュ内容の変更: canvas の box rect（letterbox 込み）→ content rect（letterbox 適用後）
 //   - object-fit: contain の letterbox を canvas box（W×H）と canvas 内在（screen.width×screen.height = 1200×720 = 5:3）から復元
 //     scale = min(W/iw, H/ih) / content = iw*scale × ih*scale / offset = (W−contentW)/2, (H−contentH)/2
 //   - box が 5:3 ちょうど（top/bottom/縦画面）では content = box（offset 0）で現行挙動と等価
@@ -23,7 +23,7 @@ let _cachedBoxRect = null;
 let _cachedContentRect = null;
 let _gameScreenRectCacheValid = false;
 
-// [task27] object-fit: contain サポート判定（極古ブラウザのフォールバック: content = box = 現行挙動）
+// object-fit: contain サポート判定（極古ブラウザのフォールバック: content = box = 現行挙動）
 // [M-1/E-1 反映] `CSS.supports` 自体が非存在する極古環境では「サポート不明」を安全側 = false とみなす。
 // object-fit 非サポート環境では letterbox 自体が存在しない（canvas が box に引き伸ばされる）ため content = box が正しく、
 // false 側（content = box フォールバック）に落ちる方が安全。対象環境（CefSharp Chromium 91+ / PWA iOS Safari 14+）
@@ -33,13 +33,13 @@ const _supportsObjectFitContain =
         ? CSS.supports('object-fit', 'contain')
         : false;
 
-// [task27] box rect から content rect（object-fit: contain 相当）を算出
+// box rect から content rect（object-fit: contain 相当）を算出
 // canvas 内在サイズ（RemoteController.html:33 で 1200×720 固定・JS での再代入なし）を
 // contain 計算の一次情報源とする（CSS 変数 --game-aspect-ratio と値は一致する 5:3）
 function computeContentRect(boxRect) {
-    // [v1.2・Suggestion 1 (r1 critical-review) 反映] boxRect が null / undefined の防御的ガードを関数先頭に明示。
+    // boxRect が null / undefined の防御的ガードを関数先頭に明示。
     // getBoundingClientRect() は通常 null を返さないが、万一 falsy な場合は関数先頭でガードしゼロ rect を返す。
-    // 呼び出し側の既存ガード（rect.width === 0 / rect.height === 0・task17）がそのまま処理をスキップさせる。
+    // 呼び出し側の既存ガード（rect.width === 0 / rect.height === 0）がそのまま処理をスキップさせる。
     if (!boxRect || boxRect.width <= 0 || boxRect.height <= 0) {
         // ゼロサイズ（要素非表示等）または boxRect 非存在: ゼロ rect を返し、呼び出し側の既存ガード（rect.width === 0 / rect.height === 0）で処理をスキップさせる
         return { left: 0, top: 0, width: 0, height: 0 };
@@ -74,7 +74,7 @@ function _refreshGameScreenRects() {
 }
 
 // #game-screen の **content rect（letterbox 適用後）** を返す。
-// [task27] セマンティクス変更: 修正前は box rect（letterbox 込み）を返していた。
+// セマンティクス変更: 修正前は box rect（letterbox 込み）を返していた。
 // 呼び出し側（座標正規化・仮想カーソル・拡大鏡）は全て content 基準を前提にする。
 function getCachedGameScreenRect() {
     if (!_gameScreenRectCacheValid || _cachedBoxRect === null) {
@@ -83,9 +83,9 @@ function getCachedGameScreenRect() {
     return _cachedContentRect;
 }
 
-// [task27] #game-screen の **box rect（letterbox 込み）** を返す。
+// #game-screen の **box rect（letterbox 込み）** を返す。
 // 仮想カーソルを #screen-container（= canvas box）のローカル座標へ変換する際に使用。
-// [task27・S-1 反映] 設計意図（設計書 §3.7）: 座標系（vCursor / 正規化 / 表示 / 送信）は content 基準を統一しており、
+// 設計意図: 座標系（vCursor / 正規化 / 表示 / 送信）は content 基準を統一しており、
 // box は以下の 2 用途にのみ使用する:
 //   1. letterbox オフセット算出（updateCursorDisplay() 内の (rect.left - boxRect.left) / (rect.top - boxRect.top) 項）
 //   2. 仮想カーソルの container ローカル変換（updateCursorDisplay() のみ・唯一の呼び出し箇所）
@@ -101,10 +101,10 @@ function getCachedGameScreenBoxRect() {
 window.getCachedGameScreenRect = getCachedGameScreenRect;
 window.getCachedGameScreenBoxRect = getCachedGameScreenBoxRect;
 
-// [task19 不具合2修正] レイアウト変更時に rect キャッシュを無効化する公開関数
+// レイアウト変更時に rect キャッシュを無効化する公開関数
 // resize イベントだけでなく、HUD バー表示/非表示・パネル展開等で #game-screen の実寸が変わる
 // 場合にもキャッシュを無効化し、stale な rect による座標ズレを防止する
-// [task27] 注: canvas 内在サイズ（screen.width/height）は現在不変（HTML attribute 固定・JS 再代入なし）であるため
+// 注: canvas 内在サイズ（screen.width/height）は現在不変（HTML attribute 固定・JS 再代入なし）であるため
 // 追加の無効化トリガーは不要。将来 canvas 内在サイズを変更する処理を追加する場合は
 // 必ず window.invalidateGameScreenRect() を併呼すること
 function invalidateGameScreenRect() {
@@ -112,7 +112,7 @@ function invalidateGameScreenRect() {
 }
 window.invalidateGameScreenRect = invalidateGameScreenRect;
 
-// [task19 v3] resize イベントでキャッシュを無効化
+// resize イベントでキャッシュを無効化
 if (typeof window.addEventListener === 'function') {
     window.addEventListener('resize', () => { invalidateGameScreenRect(); });
 }
@@ -148,7 +148,7 @@ let lastContentVersion = 0;
 async function updateScreenDiff() {
     const now = Date.now();
 
-    // [task06] フォールバック: タイマースリップ検知
+    // フォールバック: タイマースリップ検知
     // 前回のフレーム実行から (予定ディレイ + 5秒) 以上経過している場合、PCスリープから復帰したとみなす
     // 注: lastFrameStartTime は「最後に更新処理が**開始**された時刻」を記録する。
     // スリープ復帰検知には「関数呼出間隔」で十分であり、非同期処理の完了時刻ではない。
@@ -177,7 +177,7 @@ async function updateScreenDiff() {
     if (ProtocolManager.effectiveMode === 'ws') {
         isUpdating = false;
         const nextDelay = getNextDelay(getDynamicDelay());
-        lastScheduledDelay = nextDelay; // [task06] 予定ディレイを記録
+        lastScheduledDelay = nextDelay; // 予定ディレイを記録
         updateTimer = setTimeout(updateScreenDiff, nextDelay);
         return;
     }
@@ -225,7 +225,7 @@ async function updateScreenDiff() {
 
             const elapsed = Date.now() - startTime;
             const nextDelay = getNextDelay(Math.max(5, getDynamicDelay() - elapsed));
-            lastScheduledDelay = nextDelay; // [task06] 予定ディレイを記録
+            lastScheduledDelay = nextDelay; // 予定ディレイを記録
             updateTimer = setTimeout(updateScreenDiff, nextDelay);
             return;
         }
@@ -233,7 +233,7 @@ async function updateScreenDiff() {
         if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
 
         // [v4] isFirstWebpRequest の消費はURL生成時に行うため、ここでの無条件上書きは削除
-        // isFirstWebpRequest = false; // ← 削除 (79行目)
+        // isFirstWebpRequest = false; // ← 削除
 
         const rawSeqHeader = response.headers.get('X-Frame-Sequence');
         const httpSeq = (rawSeqHeader !== null && !isNaN(parseInt(rawSeqHeader, 10)))
@@ -280,7 +280,7 @@ async function updateScreenDiff() {
 
                 const elapsed = Date.now() - startTime;
                 const nextDelay = getNextDelay(Math.max(5, getDynamicDelay() - elapsed));
-                lastScheduledDelay = nextDelay; // [task06] 予定ディレイを記録
+                lastScheduledDelay = nextDelay; // 予定ディレイを記録
                 updateTimer = setTimeout(updateScreenDiff, nextDelay);
             }
         };
@@ -302,7 +302,7 @@ async function updateScreenDiff() {
             // 通常のタイマーサイクルに任せてサーバー負荷を抑制する設計が適切。
             const elapsed = Date.now() - startTime;
             const nextDelay = getNextDelay(Math.max(5, getDynamicDelay() - elapsed));
-            lastScheduledDelay = nextDelay; // [task06] 予定ディレイを記録
+            lastScheduledDelay = nextDelay; // 予定ディレイを記録
             updateTimer = setTimeout(updateScreenDiff, nextDelay);
         };
 
@@ -316,7 +316,7 @@ async function updateScreenDiff() {
         isUpdating = false;
 
         const nextDelay = getNextDelay(1000);
-        lastScheduledDelay = nextDelay; // [task06] 固定値1000msのため1000を記録
+        lastScheduledDelay = nextDelay; // 固定値1000msのため1000を記録
         updateTimer = setTimeout(updateScreenDiff, nextDelay);
     }
 }
@@ -363,7 +363,7 @@ function drawMagnifier() {
         magCanvas.height = canvasHeight;
     }
 
-    // [task27] content 基準（letterbox 適用後）: crop の CSS px → canvas バッファ px 変換を
+    // content 基準（letterbox 適用後）: crop の CSS px → canvas バッファ px 変換を
     // content CSS 幅（例: right/left で 625px）基準で行う（box 幅 768px 基準だった現行の混合基準を解消）
     const screenRect = getCachedGameScreenRect();
     const displayWidth = screenRect.width || 1;
@@ -420,10 +420,10 @@ function scheduleCursorUpdate() {
 function updateCursorDisplay() {
     // #virtual-cursor は親要素 #screen-container (position: relative) の子要素 (position: absolute) であるため、
     // 親要素の左上 (0,0) を基準としたローカルピクセル座標で配置する。
-    // [task27] rect は content 基準（letterbox 適用後）。canvas box は #screen-container に 100%×100% で
-    // 追随する（remote_base.css:103-106・実測でも canvas rect = container rect・task26 E10）ため、
+    // rect は content 基準（letterbox 適用後）。canvas box は #screen-container に 100%×100% で
+    // 追随するため、
     // container ローカル座標 = content の box 内オフセット + content 内相対位置。
-    // [task27・M-2 反映] 前提: #game-screen（canvas box）の左上と #screen-container（position: relative）の左上が一致
+    // 前提: #game-screen（canvas box）の左上と #screen-container（position: relative）の左上が一致
     // していること（現状 CSS 上成立）。将来 #game-screen / #screen-container へ transform / margin / padding を
     // 追加する場合は本変換式を破るため再検証が必要。
     const rect = getCachedGameScreenRect();        // content rect
@@ -467,7 +467,7 @@ function applyNightvisionFilter(index) {
 }
 
 //=============================================================================================
-// [task23 F-0] WebCodecs 経路専用の VideoDecoder 出力フレーム描画関数
+// WebCodecs 経路専用の VideoDecoder 出力フレーム描画関数
 // VideoFrame は Canvas 2D の ImageSource であり、drawImage() で描画可能
 // （MDN VideoFrame: "A VideoFrame is an image source"）
 // 責務分離: 本関数は「VideoFrame の描画 + frame.close()」に専念する。
@@ -480,7 +480,7 @@ function applyNightvisionFilter(index) {
 //=============================================================================================
 function drawVideoFrame(frame) {
     try {
-        // [task23 指摘2] null frame 時は描画をスキップ（close は呼ばない・frame.close 不存在で TypeError を回避）
+        // null frame 時は描画をスキップ（close は呼ばない・frame.close 不存在で TypeError を回避）
         if (!frame) return;
         if (!gameCtx || !screen) {
             console.error('[drawVideoFrame] gameCtx or screen is null - draw skipped');
@@ -495,7 +495,7 @@ function drawVideoFrame(frame) {
         console.error('[drawVideoFrame] draw error:', e);
         if (window.__eventLog) window.__eventLog.consoleLog('error', '[drawVideoFrame] draw error: ' + (e && e.message ? e.message : e), 'SCREEN_DRAW_ERR');
     } finally {
-        // [task23 F-0-2] frame.close() の所有権は drawVideoFrame に単一化（drawImage の直後に解放）
+        // frame.close() の所有権は drawVideoFrame に単一化（drawImage の直後に解放）
         // MDN 公式パターン: ctx.drawImage(frame, 0, 0); frame.close();
         // W3C 仕様 "Close is final": close() 後の参照は InvalidStateError を投げるため、
         // output コールバック側の frame.close() は削除済み（二重 close を回避）。
@@ -505,6 +505,6 @@ function drawVideoFrame(frame) {
     }
 }
 
-// [task23 F-0] remote_connection.js の output コールバック（デコード発火時）から
+// remote_connection.js の output コールバック（デコード発火時）から
 // 参照可能にするため window に明示公開（getCachedGameScreenRect と同一パターン）
 window.drawVideoFrame = drawVideoFrame;

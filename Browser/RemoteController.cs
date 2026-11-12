@@ -4,56 +4,7 @@
 // file name      : RemoteController.cs
 // summary        : モバイル端末からの遠隔操作（画面配信・操作転送）を管理するクラス
 //--------------------------------------------------------------------------------------------
-// author         : myi
-// creation date  : 2026/04/20
 // version        : 2.00
-//--------------------------------------------------------------------------------------------
-#region "change history"
-// change history : 2026/04/20 myi 新規作成
-//                  2026/05/25 myi HTMLレイアウト調整の利便性向上のため、HTMLコンテンツを外部ファイル(RemoteController.html)に切り出し.
-//                  2026/07/29 myi HTTPヘッダーフォールバック処理の改善、WebSocket/HTTP間シーケンス番号競合対策、
-//                                           SendSemaphore保持時間最小化、init処理のシーケンス番号管理適正化を実施。
-//                                           ビルド不要でリアルタイム反映可能なロード処理を実装。
-//                                           また、余分なハードコードHTML(デフォルト定義)を完全に削除し、動的パス探索を強化。
-//                  2026/07/29 myi フェーズ5：中央キャプチャ・ファンアウト方式を導入。各セッション独立キャプチャを単一中央タスクに統合し、
-//                                           CefSharp負荷を O(N) → O(1) に削減。SharedFrameBuffer, CentralCaptureLoopAsync,
-//                                           WebSocketFanoutLoopAsync, GetMaxFpsIntervalMs, CleanupZombieSessions を実装。
-//                  2026/07/29 myi フェーズ6：接続管理とクリーンアップの実装。
-//                                           1. 最大接続数制限のアトミック管理（Interlocked 使用、レースコンディション排除）
-//                                           2. RemoveWebSocketSession によるセッション即時削除（ゾンビ防止）
-//                                           3. WebSocket切断状態の即時検知（WebSocketState チェック追加）
-//                                           4. SharedFrameBuffer 参照カウント解放の整合性確認・Dispose 時クリーンアップ
-//                                           5. WebSocketSession 二重解放保護（_disposed フラグ）
-//                  2026/05/25 myi モバイル端末へ実際の資源・艦隊・直近の戦闘情報をリアルタイム返却する JSON API (/hud) を実装。
-//                  2026/05/25 myi 連合艦隊および7隻編成(遊撃部隊)に対応した、一隻毎の詳細HP情報を返却するJSON APIへの拡張。
-//                  2026/05/25 myi プロセス間通信(WCF)経由でメインプロセスからHUD情報を受信し、循環参照を防ぐキャッシュ配信方式へ変更。
-//                  2026/05/25 myi 仮想マウスポインタとゲーム画面のアスペクト比自動補正ロジック(GetBrowserCoords)の復活・統合。
-//                  2026/05/26 myi レスポンスヘッダに charset=utf-8 を追加し、ブラウザでの日本語文字化け（?表示）を修正。
-//                  2026/05/26 myi 艦隊タブ機能（一括ストック方式）対応として、デモデータにships配列・docks配列を追加拡張。
-//                  2026/05/26 myi デモ用HUDデータ(SendHudData)に受領中任務の検証用ダミーデータ(quests)を追加。
-//                  2026/05/26 myi デモ用任務データ(SendHudData)のdescriptionを廃止、進捗・進捗率(progressText, progressRate)を新規定義。
-//                  2026/05/27 myi サーバー主導バージョン管理によるHUD更新最適化（無駄な通信とDOM再描画をスキップする機能）を追加。
-//                  2026/05/27 myi デモデータに第3艦隊の入渠中（DOCKING）状態を追加し、入渠中の艦艇がいる艦隊の表示検証用としてデモデータを拡張。
-//                  2026/05/28 myi 未使用の画像サイズ縮小用定数(TargetWidth, TargetHeight)を削除。
-//                  2026/05/28 myi デモデータ(combatブロック)にdamageRate, victory, airBattleプロパティを追加。
-//                  2026/05/28 myi /control APIに navigate_login, set_filter, toggle_cover アクションを追加。設定HUDからログインページ移動・プライバシーフィルター操作を可能に。
-//                  2026/05/29 myi 差分WebP方式による画面配信機能を実装（JPEG→差分WebPへ移行）。
-//                                           低解像度JPEGサムネイル比較方式を採用し、静的画面では204 No Contentで通信量ゼロを実現。
-//                                           セーフコード（Marshal.Copy）によるピクセル差分算出。
-//                  2026/05/29 myi サムネイルキャプチャをclip+Scale方式（GPU縮小）に変更。160×96への縮小をDevTools側で行うことで
-//                                           比較ピクセル数を57分の1（864,000→15,360）に削減し、定数ThumbnailWidth/Heightと実サイズを一致させた。
-//                  2026/05/29 myi 送信方式の統一として、SendScreenDiffWebPAsync内のfullキーフレーム送信後の
-//                                           サムネイルキャプチャも同様にclip+Scale方式（GPU縮小）に統一。
-//                  2026/05/31 myi 案A採用による画面縮小拡大 of ガタつきバグの修正。clip指定のない全体キャプチャ1回化とC#側サムネイルリサイズによる安定化および負荷削減。
-//                  2026/06/01 myi 常駐フック型フレームキャッシュ方式（プランA）対応、BoundObject廃止に伴う超高速引き抜き方式へのリファクタリング。
-//                  2026/06/01 myi 不要なレガシーJPEG配信の完全廃止、およびWebP動的画質調整機能（スライダー連動）を追加。
-//                  2026/06/02 myi C#側のGDI+差分判定を完全廃止し、ブラウザJS側のオンデマンドキャプチャおよび軽量ピクセル差分判定へ移行。
-//                  2026/06/10 myi 遠隔操作サーバー起動時のポート自動登録機能 (UAC昇格対応) の追加。
-//                  2026/06/11 myi ゲーム画面（viewport）をタップした位置の絶対座標を直接クリックする機能（touch_clickアクション）を追加。
-//                  2026/08/18 myi /control APIに logout_blank アクションを追加。
-//                                           ブラウザ操作セクションから本体ブラウザを空白ページへ
-//                                           ログアウト（Cookie維持）する機能を追加。
-#endregion
 // Copyright 2026 myi
 //============================================================================================
 
@@ -151,11 +102,11 @@ namespace Browser
 		/// グローバルシーケンス番号（WebSocket/HTTP共通、単調増加）
 		/// Interlocked.Increment でスレッドセーフなインクリメント
 		///
-		/// 【設計書整合性: int 型採用の理由】
-		/// 設計書では uint (32bit単調増加) が規定されているが、C# の Interlocked.Increment は uint 型を
-		/// サポートしていないため、int 型 (32bit 符号付き) を使用している。
+		/// int 型採用の理由
+		/// ワイヤ仕様は uint（32bit 単調増加）だが、C# の Interlocked.Increment は uint 型を
+		/// サポートしていないため、int 型（32bit 符号付き）で使用し、
 		/// ヘッダー書き込み時（BuildWebCodecsHeader）で (uint) キャストを行い、
-		/// Big-Endian バイト列に変換する。これにより設計書の uint 仕様に準拠した通信が行われる。
+		/// Big-Endian バイト列に変換する。これによりヘッダー仕様は uint に準拠する。
 		///
 		/// ラップアラウンド対応: 符号付き int として -2147483648 〜 +2147483647 の範囲で単調増加し、
 		/// 差分計算（int 演算）で過去フレームの検出を行う。符号付き整数の差分でラップアラウンド後も
@@ -522,7 +473,7 @@ namespace Browser
 				}
 
 				// 3. ProtocolVersionTimeoutMs によるフォールバック
-				// 設計書 §5.3.3 定義: 接続確立後5秒以内に PROTOCOL_VERSION 応答待ち
+				// 接続確立後5秒以内に PROTOCOL_VERSION 応答待ち
 				// タイムアウト時は Version 1 (6Bヘッダー) フォールバック
 				//
 				// TOCTOU 競合解消:
@@ -678,7 +629,7 @@ namespace Browser
 				RemoteDedicatedLog.Controller.Append(
 					$"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}][P{priority}] {message}");
 				// 注: _parent?.AddLog(...) を呼び出さない（eolog.log への混在・UIログウィンドウへの
-				// 出力を防止する意図）。トレードオフは Q1、ログ参照手順は §12（運用）参照。
+				// 出力を防止する意図）。トレードオフは意図的な設計判断であり、ログ参照手順は運用ドキュメント側で定義する。
 			}
 			catch (Exception ex)
 			{
@@ -1163,7 +1114,7 @@ namespace Browser
 		// CleanupZombieSessions と SetClientVersion 間の TOCTOU
 		//                  (Time-of-Check to Time-of-Use) 競合を解消するため、Get→Set の2ステップ
 		//                  を ConcurrentDictionary.AddOrUpdate による単一原子操作に置換。
-		//                  設計書 §5.3.3 定義: フォールバック時のトランザクション保護
+		//                  フォールバック時のトランザクション保護
 		//------------------------------------------------------------------------------------
 		/// <summary>
 		/// セッションのバージョンが null の時のみ、指定されたバージョンを原子的に設定する。
@@ -1329,7 +1280,7 @@ namespace Browser
 		//                  CefSharpへのキャプチャ要求は常に1回/フレーム（O(1)負荷）。
 		//------------------------------------------------------------------------------------
 		// none 連続この回数に到達したら次回 pull を force（full 1 回強制）にする防御閾値。
-		// 誤 none（ハッシュ閾値より小さい変化）が続き画面が凍り続けるのを防ぐ（task01 O7「疑わしきは full」）。
+		// 誤 none（ハッシュ閾値より小さい変化）が続き画面が凍り続けるのを防ぐ。
 		// 既定 FPS（100ms=10FPS）で約 12 秒、60FPS 運用で約 2 秒に相当
 		private const int ConsecutiveNoneForceFullThreshold = 120;
 
@@ -1345,7 +1296,7 @@ namespace Browser
 
 			var sw = new System.Diagnostics.Stopwatch();
 			long nextTargetTicks = System.Diagnostics.Stopwatch.GetTimestamp();
-			// [FPS Fix] ミリ秒→ティック変換の丸め誤差を排除
+			// ミリ秒→ティック変換の丸め誤差を排除
 			// Frequency は通常 10,000,000 Hz 程度
 			// double で計算することで、整数除算の切り捨て誤差を排除
 			double ticksPerMs = (double)System.Diagnostics.Stopwatch.Frequency / 1000.0;
@@ -1438,15 +1389,15 @@ namespace Browser
 								{
 									// フレーム到着シグナル（Channelを使用し、例外発生を防止）
 									// TryWrite はチャンネルが一杯でも例外を投げず、false を返す
-									// [Critical修正] 設計書 §5.1.2 規定: TryWrite 失敗時はフレームドロップとして処理
+									// TryWrite 失敗時はフレームドロップとして処理
 									if (!session._frameSignal.Writer.TryWrite(seq))
 									{
 										// session._droppedFrameCount を使用（セッションスコープでドロップ回数を累積）
-										// 設計書ではメソッドスコープの droppedCount を規定しているが、
+										// メソッドスコープの droppedCount を規定しているが、
 										// セッション全体のドロップ回数の累積統計は運用上のデバッグ・監視に有用なため、
-										// セッションスコープのフィールドとして実装している（設計書整合性の明記）
+										// セッションスコープのフィールドとして実装している
 										session._droppedFrameCount++;
-										// 設計書 §5.3.2 規定: キュー溢れ警告ログ出力（M1対応）
+										// キュー溢れ警告ログ出力
 										Log(3, $"[RemoteController] _frameSignal queue full, dropping frame {seq} (session={session.SessionId}, dropped={session._droppedFrameCount})");
 									}
 								}
@@ -1454,7 +1405,7 @@ namespace Browser
 						}
 					}
 
-					// 誤 none 防御（task01 O7「疑わしきは full」）: none 継続で画面が凍り続けるのを防ぐため、
+					// 誤 none 防御: none 継続で画面が凍り続けるのを防ぐため、
 					// 閾値到達時に次回 pull を force（full 1 回強制）にする。full 受信でカウントリセット
 					if (type == "none")
 					{
@@ -1492,13 +1443,13 @@ namespace Browser
 					}
 
 					// ドリフト補正タイマー
-					// [FPS Fix] double → long キャストで高精度に計算（整数除算の切り捨て誤差を排除）
+					// double → long キャストで高精度に計算（整数除算の切り捨て誤差を排除）
 					nextTargetTicks += (long)(targetInterval * ticksPerMs);
 					long currentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
 					long remainingTicks = nextTargetTicks - currentTicks;
 					int remainingMs = (int)(remainingTicks / ticksPerMs);
 
-					// [FPS Fix] targetIntervalTicks を計算（リセット条件に使用）
+					// targetIntervalTicks を計算（リセット条件に使用）
 					long targetIntervalTicks = (long)(targetInterval * ticksPerMs);
 
 					if (remainingMs > 2)

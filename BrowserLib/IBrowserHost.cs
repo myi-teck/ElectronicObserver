@@ -260,19 +260,19 @@ namespace BrowserLib
 		public bool RemoteInputFocusRecovery { get; set; }
 
 		/// <summary>
-		/// 【task28】WebCodecs モードを有効にするか
+		/// WebCodecs モードを有効にするか
 		/// </summary>
 		[DataMember]
 		public bool WebCodecsEnabled { get; set; }
 
 		/// <summary>
-		/// 【task28】WebCodecs エンコーダのビットレート（bps）
+		/// WebCodecs エンコーダのビットレート（bps）
 		/// </summary>
 		[DataMember]
 		public int WebCodecsBitrate { get; set; }
 
 		/// <summary>
-		/// 【task28】WebCodecs エンコーダの FPS
+		/// WebCodecs エンコーダの FPS
 		/// </summary>
 		[DataMember]
 		public double WebCodecsFps { get; set; }

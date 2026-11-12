@@ -4,13 +4,7 @@
 // file name      : RemoteController.Auth.cs
 // summary        : Authentication, login, cookie, IP block
 //----------------------------------------------------------------------------
-// author         : myi
-// creation date  : 2026-08-25
 // version        : 1.00
-//----------------------------------------------------------------------------
-#region "change history"
-// change history : 2026-08-25 myi task30 split out of RemoteController.cs
-#endregion
 // Copyright 2026 myi
 //============================================================================================
 
@@ -559,7 +553,7 @@ namespace Browser
 
 		// JSON boolean リテラルの定数化・ヘルパー化:
 		// C# の bool.ToString() は仕様上大文字 "True"/"False" を返すため、そのまま文字列連結すると
-		// 不正 JSON となる（JS の JSON.parse が SyntaxError: 実ブラウザ E2E 検証で発見、設計書 §15.1）。
+		// 不正 JSON となる（JS の JSON.parse が SyntaxError: ）。
 		// 定数 + ヘルパーに集約し、大文字回帰を構造的に防止する（JSON boolean 出力はすべてこの経路で統一）。
 		private const string JsonTrue = "true";
 		private const string JsonFalse = "false";
@@ -587,10 +581,10 @@ namespace Browser
 			// 出力される（JS の JSON.parse で boolean / number として正しく解析可能）。
 			// C# の bool.ToString() は仕様上大文字 "True"/"False" を返すため、
 			// そのまま連結すると不正 JSON となる（JS 側 res.json()=JSON.parse が SyntaxError を投げ、
-			// remote 画面の /logout-page 遷移・/ 復帰が永発しなくなる: 実ブラウザ E2E 検証で発見）。
+			// remote 画面の /logout-page 遷移・/ 復帰が永発しなくなる: ）。
 			// JSON 仕様に従い小文字 true/false に明示する。
 			// boolean 出力は WriteJsonBool() に統一（大文字回帰の構造防止）。
-			// TODO（将来、設計書 §15.3）: 本メソッドの文字列連結による JSON 組立は
+			// TODO本メソッドの文字列連結による JSON 組立は
 			// 最小差分原則（固定キー 3 つ・エスケープ不要値のみ）での暫定対応。bool/long 以外の値
 			// （double・文字列等）が追加される場合、不正 JSON になるリスクがあるため、その際は
 			// 標準シリアライザ（System.Web.Script.Serialization.JavaScriptSerializer 等のラッパ）へ移行する。

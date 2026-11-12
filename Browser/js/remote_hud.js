@@ -347,12 +347,12 @@ async function updateHud() {
         }
 
         if (response.status === 204) {
-            // [task19 v6] 204 No Content 時もセーフティネット適用
+            // 204 No Content 時もセーフティネット適用
             // 204 は「変更なし」の成功レスポンスであり、HTTP 通信自体は正常に完了している
             // 3回リトライ失敗後にサーバー復旧し 204 を返す場合、_hudInitialized を立てる
             if (window.ProtocolManager && !window.ProtocolManager._hudInitialized) {
                 window.ProtocolManager._hudInitialized = true;
-                // [task19 P4] 可観測性向上（レビュー Minor 対応）:
+                // 可観測性向上:
                 // _hudInitialized の復旧イベントは運用上重要な異常復旧シグナルであり、
                 // console.log では見落としやすいため console.warn にレベルを向上させる
                 console.warn('[remote_hud] _hudInitialized restored via 204 response (safety net)');
@@ -741,7 +741,7 @@ function updateHudData(data) {
             renderLogHud(data.logs);
         }
 
-        // [task19 v5] 初回リトライ失敗後にサーバー復旧した場合のセーフティネット
+        // 初回リトライ失敗後にサーバー復旧した場合のセーフティネット
         if (window.ProtocolManager && !window.ProtocolManager._hudInitialized) {
             window.ProtocolManager._hudInitialized = true;
             console.log('[remote_hud] _hudInitialized validated via updateHud polling');
@@ -819,7 +819,6 @@ function renderFleetHud(fleets = window._fleetData) {
 // 処理ブロック名 : setElText
 // 概要           : 要素のtextContentを安全に設定する共通ヘルパー
 //                  要素が存在し、値がtruthyな場合のみ設定する
-//                  2026/07/31 myi 新規作成（renderBattleHud/renderCombatHudの重複排除）
 //============================================================================================
 function setElText(id, value) {
     if (value) {
@@ -831,7 +830,6 @@ function setElText(id, value) {
 //============================================================================================
 // 処理ブロック名 : renderBattleHud
 // 概要           : battleデータを基に作戦海域・戦闘予測HUDをレンダリングする
-//                  2026/07/31 myi 新規作成（二次コードレビュー指摘修正）
 //============================================================================================
 function renderBattleHud(bat) {
     try {
@@ -848,7 +846,6 @@ function renderBattleHud(bat) {
 //============================================================================================
 // 処理ブロック名 : renderCombatHud
 // 概要           : combatデータを基に詳細戦闘情報HUDをレンダリングする
-//                  2026/07/31 myi 新規作成（二次コードレビュー指摘修正）
 //============================================================================================
 function renderCombatHud(com) {
     try {
@@ -904,7 +901,6 @@ function renderCombatHud(com) {
 //============================================================================================
 // 処理ブロック名 : renderQuestHud
 // 概要           : questsデータを基に任務HUDをレンダリングする
-//                  2026/07/31 myi 新規作成（二次コードレビュー指摘修正）
 //============================================================================================
 function renderQuestHud(qData) {
     try {
@@ -982,7 +978,6 @@ function renderQuestHud(qData) {
 //============================================================================================
 // 処理ブロック名 : renderLogHud
 // 概要           : logsデータを基にログHUDをレンダリングする
-//                  2026/07/31 myi 新規作成（二次コードレビュー指摘修正）
 //============================================================================================
 function renderLogHud(logData) {
     try {

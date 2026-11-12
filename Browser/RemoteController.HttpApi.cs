@@ -4,13 +4,7 @@
 // file name      : RemoteController.HttpApi.cs
 // summary        : control / eventlog / hud endpoints, static file serving, mouse control
 //----------------------------------------------------------------------------
-// author         : myi
-// creation date  : 2026-08-25
 // version        : 1.00
-//----------------------------------------------------------------------------
-#region "change history"
-// change history : 2026-08-25 myi task30 split out of RemoteController.cs
-#endregion
 // Copyright 2026 myi
 //============================================================================================
 
@@ -293,8 +287,7 @@ namespace Browser
 		}
 
 		//====================================================================================
-		// クライアント中継イベントログ API（POST /event-log）・Q9 ON/OFF API（POST /log-toggle）
-		// 設計書: plans/task14_remote-doubleclick-fix-and-event-logging.md §3.5 / §3.5c / §3.8
+		// クライアント中継イベントログ API（POST /event-log）・ON/OFF API（POST /log-toggle）
 		//------------------------------------------------------------------------------------
 		/// <summary>
 		/// POST /event-log: クライアント中継イベントログを受信し専用ファイル（remote_event_log_YYYYMMDD.log）へ追記。
@@ -342,12 +335,12 @@ namespace Browser
 				bool truncated = false;
 				// ContentLength64 が <= 0（chunked）の場合、
 				// 実読取サイズ（body.Length・文字数）で補正する（従来は originalBytes=0 になる矛盾を解消）。
-				// 注: chunked 時は originalBytes がバイト数ではなく文字数の近似値になる（設計書 §3.5c-4）。
+				// 注: chunked 時は originalBytes がバイト数ではなく文字数の近似値になる。
 				long originalBytes = (contentLength > 0) ? contentLength : (long)body.Length;
 				if (body.Length > 65536)
 				{
 					// body が 64KB 超過 → 先頭 64KB を切り取って保存（読み捨てしない）
-					// 切り取り位置はサロゲートペア境界に合わせ直す（§3.5c-3・SafeTruncate）
+					// 切り取り位置はサロゲートペア境界に合わせ直す（SafeTruncate）
 					body = SafeTruncate(body, 65536);
 					truncated = true;
 				}
@@ -361,7 +354,7 @@ namespace Browser
 					return;
 				}
 				// 1 行 4096 文字超過 → 先頭 4096 文字に切り取って保存（truncated=true）
-				// 切り取り位置はサロゲートペア境界に合わせ直す（§3.5c-3・SafeTruncate）。
+				// 切り取り位置はサロゲートペア境界に合わせ直す（SafeTruncate）。
 				// 「4096」は文字数（UTF-16 コードユニット）でありバイト数ではない。多バイト UTF-8 文字を含む場合、
 				// ディスク上のバイト数は大きくなるが、JSONL の「1 行の長さ」は 4096 文字上限で維持する（設計意図: 行長の安定）。
 				if (line.Length > 4096)
@@ -394,7 +387,7 @@ namespace Browser
 			catch (Exception ex)
 			{
 				// AGENTS.md NEVER 対応: 例外を握りつぶさず記録・500 返却。
-				// 設計書コード例の finally { try { res.Close(); } catch { } } の空 catch を解消するため、
+				//  finally { try { res.Close(); } catch { } } の空 catch を解消するため、
 				// HandleControlAsync と同一の「catch でログ記録＋finally で res.Close()」パターンに構造化。
 				Log(3, $"[RemoteController] POST /event-log error: {ex.GetType().Name}: {ex.Message}");
 				try { res.StatusCode = 500; } catch (Exception ex2) { Log(3, $"[RemoteController] POST /event-log status 設定失敗: {ex2.Message}"); }
@@ -426,7 +419,7 @@ namespace Browser
 					body = await reader.ReadToEndAsync();
 				}
 				// enabled の抽出: 既存ヘルパ ExtractJsonString を流用（未クォートの true/false も抽出可能）。
-				// 設計書コード例の「enabled 未定義」欠陥を解消:
+				// 「enabled 未定義」欠陥を解消:
 				// キー欠落時は ExtractJsonString が null を返し、bool.TryParse が false を返すため 400 で拒否する。
 				string enabledStr = ExtractJsonString(body ?? "", "enabled");
 				bool enabled;
@@ -458,13 +451,13 @@ namespace Browser
 
 		/// <summary>
 		/// JSON 文字列内の特殊文字をエスケープ（標準機能のみ・NuGet 不要）。
-		/// 生テキストを JSONL 1 行の "raw" 値として安全に格納するためのヘルパ（§3.5c-3）。
-		/// （一次 Major-1・二次 Major-2 反映）:
+		/// 生テキストを JSONL 1 行の "raw" 値として安全に格納するためのヘルパ。
+		/// :
 		/// - 切り取り位置は SafeTruncate でサロゲートペア境界に合わせ、ペアを途中で分断しない。
 		/// - ソースに存在した孤立サロゲート（unpaired surrogate）は U+FFFD（置換文字）に置換し、
 		///   不正な UTF-16／UTF-8 を生成して日本語文字化けするのを防止する。
 		/// - System.Text.Encodings.Web（JavaScriptEncoder）は .NET Framework 4.8 でも package-provided
-		///   （NuGet 参照必須）であり、新規 NuGet 禁止制約（AGENTS.md）に抵触するため不採用（§9 参照）。
+		///   （NuGet 参照必須）であり、新規 NuGet 禁止制約（AGENTS.md）に抵触するため不採用。
 		/// </summary>
 		private static string EscapeJsonString(string s, int maxLen)
 		{
@@ -504,7 +497,7 @@ namespace Browser
 		/// 文字列を指定文字数で切り詰め（サロゲートペア境界に一致）。
 		/// 切り取り位置がサロゲートペア（上位サロゲート＋下位サロゲート）の中間に落ちる場合は
 		/// ペア頭（上位サロゲート）の前へ巻き戻すことで、ペアを途中で分断して孤立サロゲート
-		/// （不正な UTF-16／UTF-8・日本語文字化け）を生成しない（§3.5c-3）。
+		/// （不正な UTF-16／UTF-8・日本語文字化け）を生成しない。
 		/// </summary>
 		private static string SafeTruncate(string s, int maxLen)
 		{
@@ -1094,14 +1087,14 @@ namespace Browser
 		{
 			var baseDir = AppDomain.CurrentDomain.BaseDirectory;
 
-			// 1. 【リリース環境優先】実行フォルダ直下に css/ または js/ があるか確認
+			// 1. 実行フォルダ直下に css/ または js/ があるか確認
 			//    デプロイ環境（bin/Release等）ではファイルが直接配置されているため
 			if (Directory.Exists(Path.Combine(baseDir, "css")) && Directory.Exists(Path.Combine(baseDir, "js")))
 			{
 				return Path.GetFullPath(baseDir);
 			}
 
-			// 2. 【開発用】親階層を遡って Browser ディレクトリを探索
+			// 2. 親階層を遡って Browser ディレクトリを探索
 			var dir = new DirectoryInfo(baseDir);
 			while (dir != null)
 			{

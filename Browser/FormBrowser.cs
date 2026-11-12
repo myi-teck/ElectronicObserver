@@ -265,7 +265,6 @@ namespace Browser
 		/// 軽量差分判定を行い、かつメインスレッドをブロックしない非同期toBlob + FileReaderによるバックグラウンドWebPキャッシュを行い、
 		/// C#からの要求時にその最新キャッシュを非同期引き抜きするハイブリッドJavaScriptスクリプト。
 		/// 変化がない場合はWebPエンコードを完全にスキップし、変化時のみ描画スレッドを占有せずバックグラウンドでWebP化を行います。
-		/// 2026/06/02 myi 変更（同期toDataURLを完全廃止し、非同期toBlobによるバックグラウンドエンコードと多重起動防止を実装）
 		/// </summary>
 		internal string CaptureEngineScript => @"
 			(function() {
@@ -274,14 +273,14 @@ namespace Browser
 	
 				// WebCodecs 用エンコードチャンクキュー（リングバッファ）
 				var _encodedChunks = [];
-				// 【task28 ver 3.9】 設計書 §5.1.1 対応: 最大エンコードチャンク数（30エントリ）
+				// 最大エンコードチャンク数（30エントリ）
 				// 目標FPS 30-60FPS において許容遅延を約0.5〜1秒に抑えるための値
 				// （30エントリ × 1/30秒 ≒ 1秒: 30FPS時） / （30エントリ × 1/60秒 ≒ 0.5秒: 60FPS時）
 				// 低帯域環境では遅延要因となるため、必要に応じて値を調整すること
-				const MAX_ENCODED_CHUNKS = 30; // 【二次レビュー Minor 修正】 var→const 定数化（設計書 §5.1.1: 30エントリ）
-				// 【二次レビュー Minor 指摘S3 修正】 stopEncoder の flush タイムアウト値を定数化
+				const MAX_ENCODED_CHUNKS = 30; // var→const 化された定数（30エントリ）
+				// stopEncoder の flush タイムアウト値の定数
 				const STOP_ENCODER_FLUSH_TIMEOUT_MS = 2000;
-				// 【二次レビュー Minor 修正】 btoa() チャンク分割サイズの定数化
+				// btoa() チャンク分割サイズの定数
 				// V8 の String.fromCharCode.apply の引数制限（スタックサイズ）の安全域として 8192 を選択
 				// Chunks サイズを大きくするとスタックオーバーフロー、小さすぎると文字列連結の GC 負荷増大
 				const BASE64_ENCODE_CHUNK_SIZE = 8192;
@@ -291,15 +290,15 @@ namespace Browser
 				const HASH_CELLS_X = 12, HASH_CELLS_Y = 8;  // セルグリッド（1セル 8x8px）
 				const HASH_CELL_DIST_THRESHOLD = 2;         // 任意セルの平均輝度距離 >=2 で変化ありと判定
 	
-				// 【task28 ver 3.9 + レビュー修正】 設計書 §5.1.2 対応: Promise ベースの排他ロック
-				// 設計書定義通り _encodedChunksLock 構造体 + キュー方式 + タイムアウト 50ms に修正
-				// 【Minor修正】 意図しない再代入を防止するため var→const 定数化
+				// Promise ベースの排他ロック
+				// _encodedChunksLock 構造体 + キュー方式 + タイムアウト 50ms に修正
+				// 意図しない再代入を防止するため var→const 定数化
 				const _encodedChunksLock = { locked: false, waiters: [] };
 			
-				// 【Minor修正】 意図しない再代入を防止するため var→const 定数化
-				// 【Minor修正】 _acquireLock をより堅牢な形式にリファクタリング
+				// 意図しない再代入を防止するため var→const 定数化
+				// _acquireLock をより堅牢な形式にリファクタリング
 				// - 内部関数の変数宣言を const/let に統一（var の関数スコープによる予期せぬ変数汚染を防止）
-				// - タイムアウト定数化（50ms: 設計書 §5.1.2 ver 3.9 対応: 30FPSで約1.5フレーム分）
+				// - タイムアウト定数化
 				const _acquireLockTimeoutMs = 50;
 				const _acquireLock = async function() {
 						return await new Promise(function(resolve, reject) {
@@ -307,9 +306,9 @@ namespace Browser
 								_encodedChunksLock.locked = true;
 								resolve();
 							} else {
-								// 50ms タイムアウト（設計書 §5.1.2 ver 3.9 対応: 30FPSで約1.5フレーム分）
+								// 50ms タイムアウト
 								const thisWaiter = { resolve: resolve, reject: reject, timer: null };
-								// 【レビュー修正】 setTimeout コールバックをアロー関数に変更（一次レビュー Minor 対応）
+								// setTimeout コールバックをアロー関数に変更
 								// クロージャ変数 thisWaiter を安全に参照可能
 								const timer = setTimeout(() => {
 									const idx = _encodedChunksLock.waiters.indexOf(thisWaiter);
@@ -324,7 +323,7 @@ namespace Browser
 						});
 					};
 			
-				// 【Minor修正】 意図しない再代入を防止するため var→const 定数化
+				// 意図しない再代入を防止するため var→const 定数化
 				const _releaseLock = function() {
 					if (_encodedChunksLock.waiters.length > 0) {
 						const waiter = _encodedChunksLock.waiters.shift();
@@ -400,14 +399,14 @@ namespace Browser
 					}
 				}
 
-				// [task19_v1 Critical#5 修正] SPS/PPS 抽出・AVCDecoderConfigurationRecord (AVCC) 変換
+				// SPS/PPS 抽出・AVCDecoderConfigurationRecord (AVCC) 変換
 				// 根本原因: Chromium 143 の H.264 エンコーダは onoutput の
 				// metadata.decoderConfig.description を populate しない（常に null）。
 				// W3C WebCodecs 仕様の decoderConfig 初期化アルゴリズムも codec/codedWidth/
 				// codedHeight のみコピーし description を設定しないため、既存の
 				// metadata.decoderConfig.description キャプチャ経路は機能しなかった。
 				// 対策（候補B・確実）: 最初のキーフレームチャンクの byte 列から SPS/PPS NALU を
-				// 抽出し、AVCDecoderConfigurationRecord (AVCC / ISO/IEC 14496-15 §5.3.3.1) へ
+				// 抽出し、AVCDecoderConfigurationRecord (AVCC / ISO/IEC 14496-15 5.3.3.1) へ
 				// 変換して description として返す。annex-b（start code）と AVCC（length-prefixed）
 				// の両形式に対応する。NALU type: 7 = SPS, 8 = PPS
 				function _parseAnnexBNalus(bytes) {
@@ -415,7 +414,7 @@ namespace Browser
 					var startPositions = [];
 					var i = 0;
 					while (i + 2 < n) {
-						// [task19_v1 Round5 Minor-2 修正] 4-byte start code (00 00 00 01) を明示的に検出
+						// 4-byte start code (00 00 00 01) を明示的に検出
 						// 3-byte start code (00 00 01) の位置 (i+1) を記録し 4 バイトスキップすることで、
 						// NALU 開始位置 (startPositions[k] + 3) が 01 バイトの直後 (i+4) となることを保証する
 						if (bytes[i] === 0 && bytes[i + 1] === 0 && bytes[i + 2] === 0 && i + 3 < n && bytes[i + 3] === 1) {
@@ -447,7 +446,7 @@ namespace Browser
 					var nalus = [];
 					var p = 0;
 					while (p + 4 <= n) {
-						// [task19_v1 Round5 Minor-1 修正] ビットシフト演算で 4 バイト大端長を復元
+						// ビットシフト演算で 4 バイト大端長を復元
 						// >>> 0 で unsigned 化し、符号拡張による負値を防止する
 						var len = ((bytes[p] << 24) | (bytes[p + 1] << 16) | (bytes[p + 2] << 8) | bytes[p + 3]) >>> 0;
 						if (len <= 0 || p + 4 + len > n) break;
@@ -521,7 +520,7 @@ namespace Browser
 					intervalMs: 0,
 					active: true,
 	
-					// WebCodecs 状態管理（設計書 ver 3.9 §5.1.1 対応）
+					// WebCodecs 状態管理
 					videoEncoder: null,
 					isReinitializing: false,
 					encoderConfig: {
@@ -547,7 +546,7 @@ namespace Browser
 						this.offCanvas = offCanvas;
 
 						// 差分検出用ハッシュキャンバス: getImageData を毎ティック実行するため
-						// willReadFrequently を指定し CPU バックエンド化で GPU 読み戻しストールを避ける（§6 R14）
+						// willReadFrequently を指定し CPU バックエンド化で GPU 読み戻しストールを避ける
 						const hashCanvas = document.createElement('canvas');
 						hashCanvas.width = HASH_W;
 						hashCanvas.height = HASH_H;
@@ -709,13 +708,13 @@ namespace Browser
 					},
 
 					//================================================================================
-					// WebCodecs エンコーダ機能（task28 Phase 2）
+					// WebCodecs エンコーダ機能
 					//--------------------------------------------------------------------------------
 
 					// initEncoder(): VideoEncoder の構築・configure()・encoderOutputCallback 設定
-					// 【レビュー修正】 設計書 ver 3.9 §5.1.1 対応: ロック保護付きの encoderOutputCallback 退避・キュークリア
+					// ロック保護付きの encoderOutputCallback 退避・キュークリア
 					initEncoder: async function(config) {
-						// 再入防止（設計書 S7 対応）
+						// 再入防止
 						if (this.isReinitializing) {
 							return { success: false, error: 'Already reinitializing' };
 						}
@@ -733,17 +732,17 @@ namespace Browser
 							return { success: false, error: 'Not a Secure Context' };
 						}
 
-						// 【レビュー修正】 設計書 ver 3.9 §5.1.1 対応: 旧 encoderOutputCallback 退避（ロック取得前）
+						// 旧 encoderOutputCallback 退避（ロック取得前）
 						var encoderOutputCallbackBeforeLock = this.encoderOutputCallback;
 
 						try {
-							// 【レビュー修正】 ロック取得 → encoderOutputCallback null 化 → キュークリアの順序
+							// ロック取得 → encoderOutputCallback null 化 → キュークリアの順序
 							await _acquireLock();
 							try {
 								// ロック取得成功後に encoderOutputCallback を null 化
 								this.encoderOutputCallback = null;
 								// キュークリア（ロック保護下で安全）
-								// 【Major修正】 設計書 §5.1.1 対応: splice方式で配列参照を維持
+								// splice方式で配列参照を維持
 								_encodedChunks.splice(0, _encodedChunks.length);
 							} finally {
 								_releaseLock();
@@ -769,7 +768,7 @@ namespace Browser
 
 							if (!supported.supported) {
 								this.isReinitializing = false;
-								// 【Minor修正】 エラーメッセージを具体化: codec/width/height/bitrate/reason を含めて出力
+								// エラーメッセージを具体化: codec/width/height/bitrate/reason を含めて出力
 								// supported.reason には 'unsupported' / 'not-efficient' 等の詳細理由が含まれる
 								var errorMsg = 'Config unsupported: codec=' + config.codec
 									+ ', width=' + config.width
@@ -795,23 +794,23 @@ namespace Browser
 							// configure() 実行
 							this.videoEncoder.configure(config);
 							this.encoderConfig = config;
-							// [task19_v1 Critical#5 修正] SPS/PPS 抽出フラグをリセット（再初期化時に新しい SPS/PPS を再抽出）
+							// SPS/PPS 抽出フラグをリセット（再初期化時に新しい SPS/PPS を再抽出）
 							this._spsPpsExtracted = false;
 
-							// 【レビュー修正】 設計書 ver 3.9 §5.1.1 対応: encoderOutputCallback 内のロック保護
+							// encoderOutputCallback 内のロック保護
 							var self = this;
 							this.encoderOutputCallback = async function(chunk, metadata) {
 								var view = new Uint8Array(chunk.byteLength);
 								chunk.copyTo(view);
 
-								// [task19_v1 Critical#5 修正] SPS/PPS (description) キャプチャ（候補B・確実）
+								// SPS/PPS (description) キャプチャ（候補B・確実）
 								// 根本原因: Chromium 143 の H.264 エンコーダは onoutput の
 								// metadata.decoderConfig.description を populate しない（常に null）。
 								// W3C WebCodecs 仕様の decoderConfig 初期化アルゴリズムも codec/codedWidth/
 								// codedHeight のみコピーし description を設定しないため、既存の
 								// metadata.decoderConfig.description キャプチャ経路は機能しなかった。
 								// 対策: 最初のキーフレームチャンクの byte 列から SPS/PPS NALU を抽出し、
-								// AVCDecoderConfigurationRecord (AVCC / ISO/IEC 14496-15 §5.3.3.1) へ変換する。
+								// AVCDecoderConfigurationRecord (AVCC / ISO/IEC 14496-15 5.3.3.1) へ変換する。
 								// annex-b（start code）と AVCC（length-prefixed）の両形式に対応。
 								// 抽出は 1 回だけ（_spsPpsExtracted フラグで管理）。initEncoder() でフラグをリセットするため、
 								// reinit（再初期化）後は新しい SPS/PPS を再抽出する。
@@ -820,12 +819,12 @@ namespace Browser
 									// ① 仕様準拠経路: 将来 Chromium が decoderConfig.description を populate した場合に備え
 									//    最優先で利用する（現行 Chromium 143 では常に null であるため ② にフォールバック）
 									if (metadata && metadata.decoderConfig && metadata.decoderConfig.description) {
-										// [task19 レビュー指摘 M4/Minor] バッファコピー安全性:
+										// バッファコピー安全性:
 										// Uint8Array.from() は常に独立した新 ArrayBuffer を生成するため、参照共有を排除する
 										description = Uint8Array.from(metadata.decoderConfig.description);
 										this._spsPpsExtracted = true;
 									}
-									// ② [task19_v1 Critical#5] チャンク byte 列から SPS/PPS を抽出（候補B・確実）
+									// ② チャンク byte 列から SPS/PPS を抽出（候補B・確実）
 									//    SPS/PPS は AVC セッション内で不変なため、初回キーフレームのみ抽出（1 回だけ）
 									else if (!this._spsPpsExtracted) {
 										var extracted = _extractSpsPpsDescription(view);
@@ -867,7 +866,7 @@ namespace Browser
 							return { success: true, codec: config.codec };
 
 						} catch (e) {
-							// 【レビュー修正】 タイムアウト時は旧 encoderOutputCallback を復元
+							// タイムアウト時は旧 encoderOutputCallback を復元
 							this.encoderOutputCallback = encoderOutputCallbackBeforeLock;
 							this.isReinitializing = false;
 							this.videoEncoder = null;
@@ -877,8 +876,8 @@ namespace Browser
 					},
 
 					// encodeFrame(): VideoFrame をエンコーダに投入し、close() で解放
-					// 【Critical修正】 try-finally で frame.close() を確実に実行し、VRAMリークを防止
-					// 【二次レビュー Minor 指摘S2 修正】 _encodeErrorCount のスレッド安全性確保
+					// try-finally で frame.close() を確実に実行し、VRAMリークを防止
+					// _encodeErrorCount のスレッド安全性確保
 					// 将来的な並列化に備え、_encodeErrorCount の読み書きは _acquireLock() / _releaseLock() で保護すること
 					// 現状は単一スレッド（WebCodecsキャプチャループ内逐次実行）であり競合は発生しないが、
 					// 将来マルチスレッド化された場合はこの関数を async 化し、await _acquireLock() で保護すること
@@ -897,9 +896,8 @@ namespace Browser
 								return { action: 'reinit' };
 							}
 	
-							// 【レビュー修正】 VideoFrame 生成エラーカウント（二次レビュー Minor 対応）
+							// VideoFrame 生成エラーカウント
 							// 連続失敗時に自動再初期化をトリガー（閾値: 10回）
-							// 【二次レビュー Minor 指摘S3 修正】
 							// 将来並列化時は Atomics または _acquireLock() / _releaseLock() で保護が必要
 							// 現状は単一スレッド実行であり、JavaScript の非同期コンテキストで競合しない
 							if (!this._encodeErrorCount) this._encodeErrorCount = 0;
@@ -927,7 +925,7 @@ namespace Browser
 							} catch (e) {
 								this._encodeErrorCount++;
 								console.warn('[CaptureEngine] VideoFrame encode failed: ' + e.message + ' (count=' + this._encodeErrorCount + ')');
-								// 【レビュー修正】 連続エラー閾値超過時は自動再初期化をトリガー
+								// 連続エラー閾値超過時は自動再初期化をトリガー
 								if (this._encodeErrorCount >= 10) {
 									this._encodeErrorCount = 0;
 									console.warn('[CaptureEngine] encode error count exceeded, triggering reinit');
@@ -935,7 +933,7 @@ namespace Browser
 								}
 								return { success: false, error: 'encode failed: ' + e.message };
 							} finally {
-								// 【Critical修正】 エラー経路を含め frame.close() を確実に実行（VRAMリーク防止）
+								// エラー経路を含め frame.close() を確実に実行（VRAMリーク防止）
 								if (frame) {
 									frame.close();
 								}
@@ -943,8 +941,8 @@ namespace Browser
 						},
 
 					// pull_encoded(): _encodedChunks キューから EncodedVideoChunk を取り出し、Base64 として返却
-					// 【レビュー修正】 設計書 ver 3.9 §5.1.2 対応: _encodedChunks アクセスをロックで保護
-					// 【レビュー修正】 isReinitializing チェックをロック取得前に移動（設計書 §5.1.2 定義順）
+					// _encodedChunks アクセスをロックで保護
+					// isReinitializing チェックをロック取得前に移動
 					pull_encoded: async function() {
 						// isReinitializing チェック（ロック取得前: ロック中に reinitializing 変更時に無駄な処理を防ぐ）
 						if (this.isReinitializing) {
@@ -963,17 +961,17 @@ namespace Browser
 								return ['none', null];
 							}
 
-							// 【Critical修正】 Base64 チャンク分割バグ修正: btoa() を全体に対して1回だけ呼び出す
+							// Base64 チャンク分割バグ修正: btoa() を全体に対して1回だけ呼び出す
 							// 旧実装ではチャンク単位でbtoa()を呼び出し結合していたが、
 							// 3バイト境界でパディングが挿入されるため中間パディングを含む不正なBase64が生成される
 							// 修正案: チャンク単位で文字列を構築し、結合後の文字列全体に対してbtoa()を1回だけ呼び出す
 							//
-							// 【Critical修正】 String.fromCharCode.apply のパフォーマンス改善:
+							// String.fromCharCode.apply のパフォーマンス改善:
 							// V8 の引数展開制限（65536 引数）と文字列連結の O(n²) コストを回避。
 							// チャンク単位で String.fromCharCode.apply を呼び出し、Array.join('') で O(n) 連結。
 							// binary += String.fromCharCode.apply(...) の文字列連結が O(n²) となる問題を解消。
 							//
-							// 【二次レビュー Minor 修正】 btoa() 実行負荷について:
+							// btoa() 実行負荷について:
 							// 毎フレーム btoa() を呼び出すことによる GC 負荷の懸念があるが、
 							// チャンク単位(8192バイト)で文字列を構築し、btoa() は1回/フレームで実行するため、
 							// 中間の一時文字列は 1フレーム × 1回 のみ。エンコードデータ量 ≒ 100KB の場合、
@@ -982,7 +980,7 @@ namespace Browser
 							// 現行の簡潔な実装を維持する（V8のbtoaは内部で高速なネイティブ実装を使用）。
 							var base64 = _bytesToBase64(new Uint8Array(entry.data));
 	
-							// [task19 P2] SPS/PPS (description) を第4要素として返却（設計書 §4.2.2 ステップ1-2）
+							// SPS/PPS (description) を第4要素として返却
 							// description がある場合のみ Base64 文字列、なければ null
 							// C# 側が Convert.ToBase64String() 相当で復号し、Type=0x02 フレームでクライアントへ送信する
 							var descriptionBase64 = null;
@@ -1047,17 +1045,17 @@ namespace Browser
 					},
 
 					// stopEncoder(): encoder.flush() の待機および encoder.close() の実行
-					// 【レビュー修正】 Promise.race による flush タイムアウト処理（デッドロック防止）
+					// Promise.race による flush タイムアウト処理（デッドロック防止）
 					stopEncoder: async function() {
 						if (!this.videoEncoder) {
 							return;
 						}
 
 						try {
-							// 【レビュー修正】 Promise.race で flush() タイムアウト処理
+							// Promise.race で flush() タイムアウト処理
 							// flush() 正常完了 vs 2秒タイムアウトの競争
 							var flushPromise = this.videoEncoder.flush();
-							// 【二次レビュー Minor 指摘S3 修正】 setTimeout コールバックをアロー関数化 + 定数化
+							// setTimeout コールバックをアロー関数化 + 定数化
 							var timeoutPromise = new Promise(resolve => {
 								setTimeout(() => resolve('timeout'), STOP_ENCODER_FLUSH_TIMEOUT_MS);
 							});
@@ -1080,7 +1078,7 @@ namespace Browser
 								console.error('[CaptureEngine] stopEncoder error:', e);
 								if (this.videoEncoder && this.videoEncoder.state !== 'closed') {
 									try { this.videoEncoder.reset(); } catch (e2) {
-										// 【レビュー修正】 reset() 失敗時の console.error 出力（二次レビュー Minor 対応）
+										// reset() 失敗時の console.error 出力
 										console.error('[CaptureEngine] reset() failed after stopEncoder error:', e2);
 									}
 								}
@@ -1115,14 +1113,12 @@ namespace Browser
 
 		private volatile RemoteController _remoteController;
 
-		// 2026/07/26 myi 新規作成（RemoteController 初期化前のHUDデータバッファ）
 		/// <summary>
 		/// _remoteController が null の間に到着したHUDデータをバッファリングします。
 		/// _remoteController が初期化された後にフラッシュされます。
 		/// </summary>
 		private string _bufferedHudJson = null;
 
-		// 2026/07/26 myi 新規作成（HUDデータバッファの同期用ロック）
 		/// <summary>
 		/// _bufferedHudJson へのアクセスを同期するためのロックオブジェクトです。
 		/// </summary>
@@ -1130,7 +1126,7 @@ namespace Browser
 
 		private string ProxySettings = null;
 
-		// [task19 不具合3修正] APIObserver 下流プロキシの既定値
+		// APIObserver 下流プロキシの既定値
 		// （SetProxy がホストから届く前・ProxySettings が null/未パースの場合のフォールバック）
 		// Program.cs が Application.Run 以前に CefSharpSettings.Proxy を既定値で早期設定するのにも使用
 		public const string DefaultApiObserverHost = "127.0.0.1";
@@ -1340,7 +1336,7 @@ namespace Browser
 			if (Browser != null)
 				return;
 
-			// [task19 不具合3修正 / Round 7 Minor 修正] 公式機構 CefSharpSettings.Proxy の設定は単一責務に集約する:
+			// 公式機構 CefSharpSettings.Proxy の設定は単一責務に集約する:
 			// - Program.cs が Application.Run 以前に既定値（127.0.0.1:40620）を早期設定済み。
 			// - ここで再適用するのは、ProxySettings が到着済み（SetProxy 経由で設定済み）かつ
 			//   Cef.Initialize 実行前（= CefSharpSettings.Proxy の変更が有効な唯一のタイミング）の場合のみ。
@@ -1373,14 +1369,14 @@ namespace Browser
 						settings.DisableGpuAcceleration();
 					else
 					{
-						// task28: WebCodecs API 用の GPU ハードウェアエンコード有効化
+						// WebCodecs API 用の GPU ハードウェアエンコード有効化
 						// Intel QSV / NVENC 等の GPU ハードウェアエンコーダに処理をオフロードするため
-						// 設計書 §5.2 対応: AcceleratedVideoEncoder,AcceleratedVideoDecoder (Chromium 143 以降の公式フラグ)
-						// 【レビュー修正】 GPU無効時はフラグ追加をスキップ（一次レビュー Major 対応）
+						// AcceleratedVideoEncoder,AcceleratedVideoDecoder (Chromium 143 以降の公式フラグ)
+						// GPU無効時はフラグ追加をスキップ
 						settings.CefCommandLineArgs.Add("enable-features", "AcceleratedVideoEncoder,AcceleratedVideoDecoder");
 					}
 
-				// [task19 不具合3修正] proxy-server は公式機構 CefSharpSettings.Proxy により適用する。
+				// proxy-server は公式機構 CefSharpSettings.Proxy により適用する。
 				// ApplyCefSharpProxy（Cef.Initialize 前）が --proxy-server をコマンドラインに反映する。
 				// 手動の settings.CefCommandLineArgs.Add("proxy-server") は削除する（重複キー例外の回避）。
 				if (Configuration.ForceColorProfile)
@@ -1401,7 +1397,7 @@ namespace Browser
 			}
 			else
 			{
-				// [task19 不具合3修正] CefSharp が既に初期化済み（Cef.IsInitialized == true）の場合の検知
+				// CefSharp が既に初期化済み（Cef.IsInitialized == true）の場合の検知
 				// この場合、Cef.Initialize が呼ばれないため proxy-server が適用されず、
 				// ゲーム API トラフィックが APIObserver プロキシ（ポート40620）に到達しない。
 				// 自動再起動は行わない（ユーザーの進行中のセッションを壊さない）。
@@ -1452,7 +1448,7 @@ namespace Browser
 					string address = string.IsNullOrEmpty(Configuration.RemoteControllerAddress) ? "*" : Configuration.RemoteControllerAddress;
 					string password = Configuration.RemoteControllerPassword;
 
-					// task28: WebCodecs 設定値を取得
+					// WebCodecs 設定値を取得
 					int webCodecsBitrate = (int)Configuration.WebCodecsBitrate;
 					if (webCodecsBitrate <= 0) webCodecsBitrate = 800000;
 					int webCodecsFps = (int)Configuration.WebCodecsFps;
@@ -1484,7 +1480,7 @@ namespace Browser
 
 
 		/// <summary>
-		/// [task19 不具合3修正] 公式機構 <c>CefSharpSettings.Proxy</c> によるプロキシ設定を行う。
+		/// 公式機構 <c>CefSharpSettings.Proxy</c> によるプロキシ設定を行う。
 		/// </summary>
 		/// <remarks>
 		/// <c>CefSharpSettings.Proxy</c> は静的プロパティで、<c>Cef.Initialize</c> 前に設定すると
@@ -1492,7 +1488,6 @@ namespace Browser
 		/// Chromium のネットワークスタック（utility-network / renderer サブプロセス）へ反映する。
 		/// <c>Cef.Initialize</c> 実行後の変更は無効なため、本メソッドは初期化前に呼ぶこと。
 		/// 冪等性：同一値で繰り返し設定しても安全（静的プロパティの上書き）。
-		/// [Round 7 Minor 修正]
 		/// - IPv6 リテラルに対応（例 "[::1]:40620"、 "::1:40620"）。ホストはブラケット付きで
 		///   保持し、Chromium の "--proxy-server=[::1]:40620" 標準形式になるよう生成する。
 		/// - ポート番号は 1〜65535 の範囲を検証する（無効値・未パース時は既定値にフォールバックしログ記録）。
@@ -1511,7 +1506,7 @@ namespace Browser
 				string parsedHost = null;
 				string parsedPort = null;
 
-				// [Round 7 Minor 修正] IPv6 対応パース:
+				// IPv6 対応パース:
 				//  - ブラケット付き IPv6 リテラル "[::1]:40620"（ホストはブラケット付きで保持）
 				//  - IPv4 / ホスト名 "127.0.0.1:40620"（ホストにコロンを含まない通常形式）
 				var m = System.Text.RegularExpressions.Regex.Match(trimmed, @"^(?:\[(?<b6>[0-9A-Fa-f:.]+)\]|(?<h>[^:\]]+)):(?<p>\d+)$");
@@ -1540,7 +1535,7 @@ namespace Browser
 				if (parsedHost != null)
 				{
 					int portVal;
-					// [Round 7 Minor 修正] ポート番号を 1〜65535 の範囲で検証する
+					// ポート番号を 1〜65535 の範囲で検証する
 					// （従来の p.All(char.IsDigit) は数値範囲を検証せず、port=0 や 65535 超過が受け入れられていた）
 					if (int.TryParse(parsedPort, out portVal) && portVal >= 1 && portVal <= 65535)
 					{
@@ -1602,8 +1597,8 @@ namespace Browser
 				HeartbeatTimer.Stop();
 				_dummyVideoWarnTimer.Stop();
 				_remoteController?.Dispose();
-				// [task21] 空白ページ配信用 static ストアの全エントリを解放（一次 Major 2 / S-1 対応）。
-				// Cef.Shutdown() は同期停止のため直前呼び出しで安全（設計書 §4.1 注記）。
+				// 空白ページ配信用 static ストアの全エントリを解放。
+				// Cef.Shutdown() は同期停止のため直前呼び出しで安全。
 				CustomResourceRequestHandler.ClearLogoutHtmlStore();
 				// ダミー映像のメモリ配信ストアも対で解放（Exit 以外の経路では StopDummyVideo 側で解放済み、
 				// 二重解放とならないよう Clear は null 代入のみで冪等）
@@ -1654,7 +1649,6 @@ namespace Browser
 			UpdateColorFilterMenu();
 			ApplyColorFilter();
 
-			// 2026/07/23 追記（遠隔操作サーバー設定の動的更新）
 			// 注意: _remoteController がまだ生成されていない（null）場合、
 			// ConfigurationChanged は RemoteController 構築前に発生し得るため、
 			// ガード句で安全に処理する。
@@ -1674,7 +1668,7 @@ namespace Browser
 		/// </summary>
 		public void NavigateToLoginPage()
 		{
-			// [task20] WinForms クロススレッド対策（r3 指摘3 対応）。
+			// WinForms クロススレッド対策。
 			// HandleControlAsync（HTTP リスナーワーカースレッド）から直接呼ばれるため、
 			// InvokeRequired チェックで UI スレッドへディスパッチする（RefreshBrowser と同パターン）。
 			// 従来はチェックなしで Navigate → StyleSheetApplied setter（UI スレッド制約）が
@@ -1685,7 +1679,7 @@ namespace Browser
 				return;
 			}
 
-			// [task20] null・空文字列・スキーム防御を ResolveLogInPageURL() で統一
+			// null・空文字列・スキーム防御を ResolveLogInPageURL() で統一
 			//（従来は Configuration.LogInPageURL の裸参照。正常時の遷移 URL は不変）
 			Navigate(ResolveLogInPageURL());
 		}
@@ -1718,7 +1712,7 @@ namespace Browser
 			EnsureInputFocus("relogin");
 
 			IsKanColleLoaded = true;
-			// [task22] ゲーム API 受信 = ゲームがロード済み（再ログイン後に再発火するため復帰検出にも機能）
+			// ゲーム API 受信 = ゲームがロード済み（再ログイン後に再発火するため復帰検出にも機能）
 			_isLogoutBlank = false;
 			
 			//ロード直後の適用ではレイアウトがなぜか崩れるのでこのタイミングでも適用
@@ -2236,18 +2230,18 @@ namespace Browser
 		// その場合ロードに失敗してブラウザが白画面でスタートしてしまう（手動でログインページを開けば続行は可能だが）
 		// 応急処置として失敗したとき後で再試行するようにしてみる
 		private string navigateCache = null;
-		// [task20] ログアウト（空白ページ）の保留フラグ
-		// volatile 修飾子を付与（一次レビュー Critical 3 / 二次レビューで Major に降格・推奨）。
+		// ログアウト（空白ページ）の保留フラグ
+		// volatile 修飾子を付与。
 		// 書き込み・読み出しは原則 UI スレッド上のみ（LogoutToBlankPage は InvokeRequired チェックで
 		// UI スレッドディスパッチ済み、クリアは Browser_IsBrowserInitializedChanged = UI スレッド）だが、
 		// 将来の呼び出し経路増強に対する可視性保証として volatile を付与する。
 		private volatile bool _pendingLogoutBlank = false;
-		// [task22] ログアウト空白ページ「状態」フラグ（_pendingLogoutBlank = 保留要求、本フラグ = 現在状態）。
+		// ログアウト空白ページ「状態」フラグ（_pendingLogoutBlank = 保留要求、本フラグ = 現在状態）。
 		// volatile 修飾:
 		//  - InitialAPIReceived は WCF プロキシスレッドから書き込むため可視性保証が必要。
 		//  - Browser_FrameLoadEnd は WinForms UI スレッド上を直接保証しない（ChromiumWebBrowser は
 		//    WCF プロキシ経由でイベントを受け取る構造）ため、他スレッドから読み書きされる状態として扱う。
-		//  - .NET 公式 volatile 文書（MS Learn、2026-08-19 再検証）: 「多くのシナリオでは Interlocked /
+		//  - .NET 公式 volatile 文書（MS Learn）: 「多くのシナリオでは Interlocked /
 		//    lock を推奨」+「マルチプロセッサ環境では volatile の読み書きが他プロセッサへの即時可視化・
 		//    最新値取得を保証しない」注記。bool は volatile を適用可能な型。
 		//  - **設計上の対抗措置**: 各セットポイントは**単一の読み書き**のみを行う（複合操作なし）。
@@ -2258,7 +2252,7 @@ namespace Browser
 		// Browser_FrameLoadEnd(URL 監視セーフティネット)。
 		private volatile bool _isLogoutBlank = false;
 
-		/// <summary>[task22] 本体ブラウザが現在ログアウト空白ページ状態かどうか（RemoteController が HTTP スレッドから読む。volatile 読み込み）。</summary>
+		/// <summary>本体ブラウザが現在ログアウト空白ページ状態かどうか（RemoteController が HTTP スレッドから読む。volatile 読み込み）。</summary>
 		public bool IsLogoutBlank => _isLogoutBlank;
 
 		// ダミー映像「現在状態」フラグ（_isLogoutBlank と同一の volatile 単一読み書き方式）。
@@ -2288,7 +2282,7 @@ namespace Browser
 		{
 			if (IsBrowserInitialized)
 			{
-				// [task20] 保留機構の優先順位（一次レビュー Major 2 対応）:
+				// 保留機構の優先順位:
 				// 両方保留されている場合は navigateCache（Navigate）を先に実行し、
 				// 続いて _pendingLogoutBlank（LogoutToBlankPage）を実行する。
 				// 相互キャンセル（r3 指摘2 対応）:
@@ -2303,7 +2297,7 @@ namespace Browser
 				{
 					// ロードが完了したので再試行
 					string url = navigateCache;            // 非同期コールなのでコピーを取っておく必要がある
-					// [task20] フラグクリアは BeginInvoke **前**に統一（一次/二次 Major 3 / r3 指摘5 対応）。
+					// フラグクリアは BeginInvoke **前**に統一。
 					// 従来は BeginInvoke 後クリアだった。両フラグ（navigateCache / _pendingLogoutBlank）の
 					// クリア順序を統一し、BeginInvoke とクリアの間の再評価リスクを排除する
 					// （同一UIスレッド上の同期実行のため動作は等価）。
@@ -2311,8 +2305,8 @@ namespace Browser
 					BeginInvoke((Action)(() => Navigate(url)));
 				}
 
-				// [task20] ログアウト（空白ページ）の保留処理
-				// フラグクリアは BeginInvoke **前**に行う（一次レビュー Major 3 / 二次レビュー Major 3 対応）。
+				// ログアウト（空白ページ）の保留処理
+				// フラグクリアは BeginInvoke **前**に行う。
 				// 多重リクエストや再帰的ディスパッチによる再実行・積み上がりを防止する。
 				if (_pendingLogoutBlank)
 				{
@@ -2327,14 +2321,14 @@ namespace Browser
 		/// </summary>
 		public void Navigate(string url)
 		{
-			// [task20] 相互キャンセル（r3 指摘2 対応、変更 D）:
+			// 相互キャンセル:
 			// 明示的な Navigate が実行された場合、保留中のログアウト（空白ページ）要求をキャンセルする。
-			// 「後から実行した方が、相手の保留状態をキャンセルする」原則（設計書 §4.2）による。
+			// 「後から実行した方が、相手の保留状態をキャンセルする」原則による。
 			// 呼び出し元はすべて UI スレッド（メニュー / NavigateToLoginPage /
 			// Browser_IsBrowserInitializedChanged）のため、_pendingLogoutBlank の書き込みは
 			// UI スレッド上で実行されスレッド安全（volatile 修飾により可視性も保証）。
 			_pendingLogoutBlank = false;
-			// [task22] 明示的なナビゲーションは空白状態を離れる（_pendingLogoutBlank と同一箇所で同一意味論）
+			// 明示的なナビゲーションは空白状態を離れる（_pendingLogoutBlank と同一箇所で同一意味論）
 			_isLogoutBlank = false;
 			
 			if (url != Configuration.LogInPageURL || !Configuration.AppliesStyleSheet)
@@ -2348,15 +2342,15 @@ namespace Browser
 			}
 		}
 
-		// [task20] LogInPageURL の既定値（Configuration.cs の既定値と同一）
+		// LogInPageURL の既定値（Configuration.cs の既定値と同一）
 		private const string DefaultLogInPageURL = "https://play.games.dmm.com/game/kancolle";
 
 		/// <summary>
-		/// [task20] ログインページ URL を取得する。
+		/// ログインページ URL を取得する。
 		/// Configuration が null、または LogInPageURL が null・空文字列の場合は
-		/// 既定値にフォールバックする（二次レビュー Major 1 対応: 空文字列のまま
+		/// 既定値にフォールバックする空文字列のまま
 		/// href に埋め込むと about:blank への自己参照リンク（リンク切れ）になるため）。
-		/// NavigateToLoginPage とも共通利用し null 防御を統一する（二次レビュー Major 2 対応）。
+		/// NavigateToLoginPage とも共通利用し null 防御を統一する。
 		/// URL スキーム検証（r3 指摘4 対応）: Uri.TryCreate で http/https スキーム以外
 		/// （javascript: 等の不正スキーム・絶対URLとして解析できない値）は既定値へフォールバックする。
 		/// </summary>
@@ -2366,7 +2360,7 @@ namespace Browser
 			if (string.IsNullOrEmpty(url))
 				return DefaultLogInPageURL;
 
-			// [task20] URL スキーム検証（r3 指摘4 対応）。
+			// URL スキーム検証。
 			// javascript: 等の不正スキームが設定された場合、そのまま HTML 埋め込みされるのを防ぐため、
 			// http/https 以外・解析不能値は既定値にフォールバックする。
 			// Uri.TryCreate は .NET Framework 4.8 標準 API（新規パッケージ追加なし）。
@@ -2378,31 +2372,31 @@ namespace Browser
 			return DefaultLogInPageURL;
 		}
 
-		// [task21] 空白ページ配信用 URL 基底（v1.1: ホスト 127.0.0.1 + 実在しないポート 65535 を明示）。
+		// 空白ページ配信用 URL 基底（ホスト 127.0.0.1 + 実在しないポート 65535 を明示）。
 		// 実在しないポート（65535）を明示することで、意図しないネットワーク接続試行のリスクを排除する
 		// （RemoteController は 8080、APIObserver プロキシは 40620 で 65535 とは別）。
 		// 不変の URL 文字列のため const（コンパイル時に解決される定数）。
 		private const string LogoutBlankUrlBase = "http://127.0.0.1:65535/task20-logout-blank";
 
-		// [task21 v1.1] ts トークンのシーケンスカウンタ（Interlocked.Increment で単調増加・スレッド安全）。
+		// ts トークンのシーケンスカウンタ（Interlocked.Increment で単調増加・スレッド安全）。
 		// プロセス内で単調増加する共有カウンタであるため static フィールド。
 		private static long _logoutBlankSeq;
 
-		// [task21 v1.1] ts トークン生成（一次 Minor 1 対応: DateTime.Now.Ticks の衝突可能性を排除）。
+		// ts トークン生成（DateTime.Now.Ticks の衝突可能性を排除）。
 		// Ticks（約 100ns 分解能）+ Interlocked.Increment（プロセス内で単調増加・スレッド安全）を結合し、
 		// 同一プロセス内で ts 値が重複することを排除する。
 		// static フィールドのみを参照しインスタンス状態を参照しないため static メソッド。
-		// [task21 v1.3 注記] using System.Threading; を追加すると本ファイル 896 行目の既存
-		// System.Windows.Forms.Timer（HeartbeatTimer）参照が System.Threading.Timer とあいまい化
-		// （CS0104）するため、設計書 §4.1 注記（v1.3・FS-m1 対応）で許容される完全修飾名
-		// System.Threading.Interlocked.Increment を呼び出す方式で実装する（動作・スレッドセーフティ不変）。
+		// 注記: using System.Threading; を追加すると既存の System.Windows.Forms.Timer
+		// （HeartbeatTimer）参照が System.Threading.Timer とあいまい化（CS0104）するため、
+		// 完全修飾名 System.Threading.Interlocked.Increment を呼び出す方式で実装する
+		// （動作・スレッドセーフティ不変）。
 		private static string GenerateLogoutBlankToken()
 		{
 			return string.Format("{0}:{1}", DateTime.Now.Ticks, System.Threading.Interlocked.Increment(ref _logoutBlankSeq));
 		}
 
 		/// <summary>
-		/// [task20] 本体ブラウザを空白ページへ移動する（2重起動時のログアウト用）。
+		/// 本体ブラウザを空白ページへ移動する（2重起動時のログアウト用）。
 		/// Cookie は削除しない（DMMセッション維持）。空白ページ上のボタンから
 		/// ログインページに戻れば自動ログインとなる。
 		/// </summary>
@@ -2415,13 +2409,13 @@ namespace Browser
 				return;
 			}
 
-			// [task20] Browser == null（未生成）時も保留（一次レビュー Critical 2 対応）。
+			// Browser == null（未生成）時も保留。
 			// 「Browser == null なら return」だとリクエストが完全に失われるため、
 			// 未生成・未初期化のいずれも _pendingLogoutBlank で保留し、
 			// Browser_IsBrowserInitializedChanged で再実行する。
 			if (Browser == null || !Browser.IsBrowserInitialized)
 			{
-				// [task20] 相互キャンセル（r3 指摘2 対応）:
+				// 相互キャンセル:
 				// 保留中の Logout は既存の Navigate 要求（navigateCache）をキャンセルする。
 				// この分岐で navigateCache をクリアしないと「未初期化時に Logout 保留 →
 				// Navigate が navigateCache を設定 → 初期化完了時に両フラグが残存して
@@ -2437,19 +2431,19 @@ namespace Browser
 				return;
 			}
 
-			// [task20] 実行直前に navigateCache をクリア（一次レビュー Major 2 / r3 指摘2 対応）。
+			// 実行直前に navigateCache をクリア。
 			// 残存する navigateCache による後続 Navigate が空白ページを上書きするのを防ぐ。
 			navigateCache = null;
 
 			// StyleSheetApplied = false は UI スレッド上で実行（本メソッドは InvokeRequired チェック済み）。
 			// setter は SizeAdjuster.SuspendLayout() 等 UI スレッド制約の操作を行う
-			// ため、ここでの代入はスレッド安全（二次レビュー Major 3 注記）。
+			// ため、ここでの代入はスレッド安全。
 			StyleSheetApplied = false;
 
-			// [task20] null・空文字列チェック付きでログイン URL を解決（二次レビュー Major 1）
+			// null・空文字列チェック付きでログイン URL を解決
 			string loginUrl = ResolveLogInPageURL();
 
-			// [task22] 自ホスト logout.html を優先利用（リモートの /logout-page と同一コンテンツに統一）。
+			// 自ホスト logout.html を優先利用（リモートの /logout-page と同一コンテンツに統一）。
 			// ファイル不在時は従来の BuildLogoutBlankHtml インライン生成にフォールバックする（サイレントスルーしない）。
 			string pageHtml;
 			string logoutHtmlFile = SelfHostedHtml.ReadSelfHostedHtml("logout.html");
@@ -2466,35 +2460,35 @@ namespace Browser
 				pageHtml = BuildLogoutBlankHtml(loginUrl);
 			}
 
-			// [task21] 修正: about:blank は LoadHtml 第2引数として無効（CefSharp 公式:
+			// about:blank は LoadHtml 第2引数として無効（CefSharp 公式:
 			// "other uri's such as about:blank are invalid"）のため、LoadHtml(html, "about:blank")
-			// は Uri.TryCreate(Absolute) で失敗し browser.Load が呼ばれず真っ黒になる（task20 項目7 FAIL）。
+			// は Uri.TryCreate(Absolute) で失敗し browser.Load が呼ばれず真っ黒になる。
 			// 有効スキーム URL（127.0.0.1:65535、実在しないポート・メモリ配信専用）+
-			// CustomResourceRequestHandler 経由のメモリ配信で表示する（task21 §3.4）。
+			// CustomResourceRequestHandler 経由のメモリ配信で表示する。
 			string blankUrl = string.Format("{0}?ts={1}", LogoutBlankUrlBase, GenerateLogoutBlankToken());
 			byte[] blankHtml = Encoding.UTF8.GetBytes(pageHtml);
 			// CustomResourceRequestHandler は catch-all（CustomRequestHandler が全リクエストで返す）のため
-			// 必ず呼ばれる。配信はメモリ内（実ネットワーク接続なし、§3.4.1）。
+			// 必ず呼ばれる。配信はメモリ内。
 			// メモリ解放: RegisterLogoutHtml はエントリ上限（8）超過時に最旧エントリを削除し、
-			// Exit() 時に ClearLogoutHtmlStore() で全エントリを解放する（§3.4.2、一次 Major 2 / S-1 対応）。
+			// Exit() 時に ClearLogoutHtmlStore() で全エントリを解放する。
 			CustomResourceRequestHandler.RegisterLogoutHtml(blankUrl, blankHtml);
 			Browser.Load(blankUrl);
-			// [task22] ログアウト状態フラグを設定（リモートが /login-state で読取）
+			// ログアウト状態フラグを設定（リモートが /login-state で読取）
 			_isLogoutBlank = true;
 			// AddLog(0, ...) は情報ログ相当（r3 指摘7 注記）。既存パターンと整合。
-			// [task21 v1.1] 配信 URL をログに含める（一次 Minor 2: 配信失敗時のデバッグ性向上・可観測性）。
+			// 配信 URL をログに含める（配信失敗時のデバッグ性向上・可観測性）。
 			AddLog(0, string.Format("[task20] ログアウト（空白ページ）を実行: {0} [Window={1}, SizeAdjuster={2}x{3}, Browser={4}x{5}]",
 				blankUrl, WindowState, SizeAdjuster.Width, SizeAdjuster.Height, Browser.Width, Browser.Height));
 		}
 
 		/// <summary>
-		/// [task20] ログアウト用の空白ページ HTML を生成する（「ログインページへ」ボタン付き）。
+		/// ログアウト用の空白ページ HTML を生成する（「ログインページへ」ボタン付き）。
 		/// ボタンは location.replace でログインページへ遷移する（履歴には残さない）。
 		/// Cookie は削除しない（DMMセッション維持）。
 		/// </summary>
 		private static string BuildLogoutBlankHtml(string loginUrl)
 		{
-			// HTML属性（onclick 内 JS 文字列）に埋め込むため HTML エンティティ化（一次レビュー Critical 1 / Major 1 対応）。
+			// HTML属性（onclick 内 JS 文字列）に埋め込むため HTML エンティティ化。
 			// WebUtility.HtmlEncode は &・<・>・" 等の特殊文字を HTML エンティティに変換する。
 			// 旧案の Replace 連打（無意味置換・クォートを空文字に置換して URL を破壊）は廃止。
 			// 既定値（https://play.games.dmm.com/game/kancolle）は特殊文字を含まないため、
@@ -2533,7 +2527,7 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 		}
 
 		/// <summary>
-		/// [task22] 指定 URL がログアウト空白ページ URL（LogoutBlankUrlBase）と一致するかを厳密判定する。
+		/// 指定 URL がログアウト空白ページ URL（LogoutBlankUrlBase）と一致するかを厳密判定する。
 		/// Uri パース後、Host == "127.0.0.1" かつ Port == 65535 かつ AbsolutePath が
 		/// "/task20-logout-blank" で始まることを要求する（サブストリング一致の誤検知を排除）。
 		/// クエリ（?ts=...）は AbsolutePath に含まれないため影響しない。
@@ -2931,7 +2925,7 @@ requestAnimationFrame(draw);
 				SendErrorReport(ex.ToString(), "Browser_FrameLoadEnd: キャプチャエンジンの自動注入に失敗しました。");
 			}
 
-			// 全フレーム URL の診断ログ（Q6 判定の証跡・挙動不変）。
+			// 全フレーム URL の診断ログ。
 			// 下の AppliesStyleSheet（設定値）ガードより前に置くことで、設定が false の環境でも取得できる。
 			try
 			{
@@ -2967,7 +2961,7 @@ requestAnimationFrame(draw);
 					StopDummyVideo(toLogoutBlank: false);
 			}
 
-			// [task22] URL 監視セーフティネット: メインフレーム URL からログアウト状態フラグを更新する。
+			// URL 監視セーフティネット: メインフレーム URL からログアウト状態フラグを更新する。
 			// - CefSharp 143.0.90 に AddressChanged イベントが存在しないため、
 			//   既存の FrameLoadEnd 内で IFrame.IsMain + IFrame.Url を確認する方式。
 			// - 挿入位置: 第 1 try/catch（キャプチャ注入）の後、`if (!Configuration.AppliesStyleSheet) return;`
@@ -2978,7 +2972,7 @@ requestAnimationFrame(draw);
 			{
 				if (e.Frame != null && e.Frame.IsMain && e.Frame.Url != null)
 				{
-					// [task22] 厳密判定（Uri パース）。サブストリング一致（Contains）は
+					// 厳密判定（Uri パース）。サブストリング一致（Contains）は
 					// "task20-logout-blank-extra" 等の誤検知を防げないため使用しない。
 					_isLogoutBlank = IsLogoutBlankUrl(e.Frame.Url);
 				}
@@ -3024,7 +3018,7 @@ requestAnimationFrame(draw);
 			}
 			catch (Exception ex)
 			{
-				// [task22 一次コードレビュー P-3] 空 catch 修正: サイレントな例外の握りつぶしを禁止
+				// 空 catch 修正: サイレントな例外の握りつぶしを禁止
 				// （AGENTS.md 制約）するため、同ハンドラの第 1 try/catch と同一パターンで SendErrorReport へ委譲する。
 				SendErrorReport(ex.ToString(), "Browser_FrameLoadEnd: PageScript/FrameScript の自動注入に失敗しました。");
 			}
