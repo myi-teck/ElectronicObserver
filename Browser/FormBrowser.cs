@@ -1431,6 +1431,10 @@ namespace Browser
 				KeyboardHandler = new KeyboardHandler(),
 				DragHandler = new DragHandler(),
 			};
+			// 初期 about:blank 自己治癒除外フラグはブラウザ生成時に再初期化する（セッション内再起動は
+			// プロセス再生成でフィールドが既定値 false になるため、明示代入は実プロセス内再生成に
+			// 備えた不変条件の宣言）
+			_nonBlankMainLoadCompleted = false;
 			Browser.LoadingStateChanged += Browser_LoadingStateChanged;
 			Browser.FrameLoadStart += Browser_OnFrameLoadStart;
 			Browser.FrameLoadEnd += Browser_FrameLoadEnd;
@@ -2265,8 +2269,18 @@ namespace Browser
 		/// <summary>キャプチャ源が現在ダミー映像（検証用映像源）状態かどうか（RemoteController が HTTP スレッドから読む。volatile 読み込み）。</summary>
 		public bool IsDummyVideo => _dummyVideoActive;
 
+		// 「about:blank 以外のメインフレームロードが一度でも完了したか」の記録。
+		// ブラウザ実体の初期 about:blank（初期文書）のロード完了は自動開始要求より遅れて届くことが
+		// あり、ユーザー遷移ではないため自己治癒トリガーから除外する。ただし about:blank を一律に
+		// 除外すると、ユーザーの手動 about:blank 遷移での自己治癒（他ページ遷移と同一の OFF 化）が
+		// 阻害されるため、非 blank メインフレームロードが未完了の間のみ除外する。
+		// Browser_FrameLoadEnd でセット（単一 volatile 書き込み。本ハンドラは UI スレッド保証がないため
+		// _isLogoutBlank と同一方式）。ブラウザ生成時に再初期化される（InitializeBrowser 参照）。
+		private volatile bool _nonBlankMainLoadCompleted = false;
+
 		// 10 分周期で「ダミーが ON のままか」を警告するタイマ（WinForms Timer・UI スレッド）。
-		// 非永続トグルの「見落としたまま常時 ON」検知用（_isLogoutBlank と同様、起動毎リセット）。
+		// 「見落としたまま常時 ON」検知用（_isLogoutBlank と同様、起動毎リセット）。
+		// トグルは条件付き永続（ON は即 Settings へ保存）のため、意図的常時 ON でも発火し続ける。
 		// auto-FPS 状態機械（接続＝活動）には接続しない（レンダリング活動判定と無関係なため）。
 		private readonly System.Windows.Forms.Timer _dummyVideoWarnTimer;
 
@@ -2535,19 +2549,22 @@ html,body {{ margin:0; padding:0; width:100%; height:100%; background:#000; colo
 		}
 
 		/// <summary>
-		/// ブラウザの初期ページ（about:blank）判定。
-		/// 初期ページのロード完了は自動開始要求の後に（非同期ロードとして）遅れて届くことがあり、
-		/// ユーザー遷移ではないため自己治癒トリガーから除外する（除外しないと自動開始のたびに
-		/// ダミーが誤解除され OFF が永続化される）。
+		/// 自己治癒トリガーから除外する初期 about:blank（ブラウザ実体の初期ページ）かを判定する。
+		/// 初期 about:blank のロード完了は自動開始要求の後に（非同期ロードとして）遅れて届くことがあり、
+		/// ユーザー遷移ではないため、除外しないと自動開始のたびにダミーが誤解除され OFF が永続化される。
+		/// 除外するのは「非 blank メインフレームロードが一度も完了していない間」（_nonBlankMainLoadCompleted）
+		/// であり、クリア後は about:blank への手動遷移も通常どおり自己治癒の対象となる。
 		/// </summary>
-		private static bool IsBrowserInitialBlank(string url)
+		private bool IsBrowserInitialBlank(string url)
 		{
-			return string.Equals(url, "about:blank", StringComparison.OrdinalIgnoreCase);
+			return !_nonBlankMainLoadCompleted
+				&& string.Equals(url, "about:blank", StringComparison.OrdinalIgnoreCase);
 		}
 
 		//------------------------------------------------------------------------------------
 		// ダミー映像（検証用映像源）: 開始/停止/状態同期
-		// game 未ログイン状態からそのまま起動でき、停止時は直前 URL へ復帰する。
+		// game 未ログイン状態からそのまま起動でき、明示停止時はログアウト（空白）ページへ遷移する
+		// （自己治癒＝手動ナビゲーションによる解除は遷移しない）。
 		//------------------------------------------------------------------------------------
 
 		/// <summary>
@@ -2969,6 +2986,16 @@ requestAnimationFrame(draw);
 			catch (Exception ex)
 			{
 				SendErrorReport(ex.ToString(), "Browser_FrameLoadEnd: ログアウト状態フラグ更新に失敗しました。");
+			}
+
+			// 「非 blank メインフレームロードが一度でも完了したか」フラグのセット（IsBrowserInitialBlank が
+			// 初期 about:blank の自己治癒除外条件として参照する）。単一 volatile 書き込み（本ハンドラは
+			// UI スレッド保証がないため _isLogoutBlank と同一方式）。非 blank ロードが完了して以降、
+			// about:blank 遷移はユーザー操作とみなす（手動 about:blank 遷移は自己治癒対象）。
+			if (e.Frame != null && e.Frame.IsMain && e.Frame.Url != null
+				&& !string.Equals(e.Frame.Url, "about:blank", StringComparison.OrdinalIgnoreCase))
+			{
+				_nonBlankMainLoadCompleted = true;
 			}
 			
 			if (!Configuration.AppliesStyleSheet)
