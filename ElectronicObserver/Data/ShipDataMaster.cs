@@ -686,7 +686,7 @@ namespace ElectronicObserver.Data
 		/// <summary>
 		/// 図鑑に載っているか(ゲーム内の艦船図鑑の数)
 		/// </summary>
-		public bool IsListedInAlbum => 0 < AlbumNo && AlbumNo <= 630;
+		public bool IsListedInAlbum => 0 < AlbumNo && AlbumNo <= 700;
 
 		/// <summary>
 		/// 改装段階
@@ -751,6 +751,40 @@ namespace ElectronicObserver.Data
 			);
 
 		/// <summary>
+		/// 無条件夜戦砲撃可能空母か
+		/// </summary>
+		public bool IsNightShellingCarrier =>
+			(
+				ShipID == 432 ||    // Graf Zeppelin
+				ShipID == 353 ||    // Graf Zeppelin改
+				ShipID == 433 ||    // Saratoga
+				ShipID == 735 ||    // Lexington改
+				ShipID == 966 ||    // Lexington
+				ShipID == 1025 ||   // Wasp
+				ShipID == 1030 ||   // Wasp改
+				ShipID == 646 ||    // 加賀改二護
+				ShipID == 889 ||    // 雲鷹改二
+				ShipID == 536 ||    // 神鷹改二
+				ShipID == 529 ||    // 大鷹改二
+				ShipID == 1055 ||   // Bearn
+				ShipID == 1060 ||   // Bearn改 
+				ShipID == 1061      // Bearn amelioration
+			);
+
+		/// <summary>
+		/// 無条件夜間航空攻撃可能空母か
+		/// </summary>
+		public bool IsNightAirAttackCarrier =>
+			(
+				ShipID == 545 ||    // Saratoga Mk.II
+				ShipID == 599 ||    // 赤城改二戊
+				ShipID == 610 ||    // 加賀改二戊
+				ShipID == 883 ||    // 龍鳳改二戊
+				ShipID == 1008 ||   // しまね丸改
+				ShipID == 1036      //Independence Flight II
+			);
+		
+		/// <summary>
 		/// 国籍
 		/// (1:米 2:英 3:伊 4:独 5:仏 6:露 7:豪 8:蘭 9:瑞 10:中 11:亜 12:諾)
 		/// </summary>
@@ -813,6 +847,9 @@ namespace ElectronicObserver.Data
 					case 79:      //Richelieu級
 					case 128:     //La Galissonnière級
 					case 129:     //Mogador級
+					case 138:     //Algérie級
+					case 139:     //Aigle級
+					case 141:     //Béarn級
 						return 5;
 					case 73:      //Гангут級
 					case 81:      //Ташкент級
@@ -823,6 +860,7 @@ namespace ElectronicObserver.Data
 					case 98:      //De Ruyter級
 						return 8;
 					case 89:      //Gotland級
+					case 140:     //Visby級
 						return 9;
 					case 133:    //Norge級
 						return 12;
@@ -855,7 +893,8 @@ namespace ElectronicObserver.Data
 				NameReading == "ローマ" ||
 				NameReading == "い8" ||
 				NameReading == "ひらど" ||
-				NameReading == "へいあんまる"
+				NameReading == "へいあんまる" ||
+				NameReading == "ひえまる"
 			);
 
 		/// <summary>
@@ -935,6 +974,74 @@ namespace ElectronicObserver.Data
 			}
 		}
 
+		private List<List<int>> equipImprovement = Enumerable.Range(0, 7)
+			.Select(_ => new List<int>())
+			.ToList();
+
+		/// <summary>
+		/// 改修担当装備ID。
+		/// 日曜～土曜の7日分を保持し、各曜日は装備IDを最大3件持つ。
+		/// </summary>
+		public IReadOnlyList<IReadOnlyList<int>> EquipImprovement => equipImprovement;
+
+		internal void BuildEquipImprovement()
+		{
+			var result = Enumerable.Range(0, 7)
+				.Select(_ => new List<int>())
+				.ToList();
+
+			foreach (var equipment in KCDatabase.Instance.MasterEquipments.Values)
+			{
+				if (equipment?.Improvements == null || equipment.Improvements.Count == 0)
+					continue;
+
+				foreach (var improvement in equipment.Improvements)
+				{
+					var weekConditions = improvement?.Req?.WeekConditions;
+					if (weekConditions == null)
+						continue;
+
+					for (int day = 0; day < 7; day++)
+					{
+						if (result[day].Count >= 3)
+							continue;
+
+						var ships = weekConditions.ElementAtOrDefault(day);
+						if (ships == null || ships.Count == 0)
+							continue;
+
+						if (!ships.Contains(ShipID))
+							continue;
+
+						if (!result[day].Contains(equipment.EquipmentID))
+						{
+							result[day].Add(equipment.EquipmentID);
+						}
+					}
+				}
+			}
+
+			equipImprovement = result;
+		}
+ 
+		/// <summary>
+		/// 今日の改修装備があるかどうか
+		/// </summary>
+		public bool HasEquipImprovementToday
+		{
+			get
+			{
+				if (EquipImprovement == null || EquipImprovement.Count < 7)
+					return false;
+
+				int today = (int)DateTime.Now.DayOfWeek;
+				var list = EquipImprovement[today];
+
+				return list != null && list.Count > 0;
+			}
+		}
+		
+		
 		public ShipDataMaster()
 		{
 			RemodelBeforeShipID = 0;

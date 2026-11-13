@@ -229,6 +229,12 @@ namespace ElectronicObserver.Data
 			public ResourceBlock Resource { get; set; } = new();
 		}
 
+		/// <summary>
+		/// この装備を素材として使用する改修先装備IDの一覧
+		/// </summary>
+		public int[] improvementFeed = new int[0];
+		public IEnumerable<int> ImprovementFeed => improvementFeed;
+
 		public class ReqCondition
 		{
 			public List<List<int>> WeekConditions { get; set; } = new();
@@ -255,7 +261,21 @@ namespace ElectronicObserver.Data
 			public int NeedCount { get; set; }
 		}
 
-
+		/// <summary>
+		/// 改修可能な曜日。
+		/// 日曜日を0、土曜日を6とする。
+		/// </summary>
+		public IEnumerable<int> ImprovableDays =>
+			Improvements?
+				.Where(improvement => improvement?.Req?.WeekConditions != null)
+				.SelectMany(improvement => improvement.Req.WeekConditions
+					.SelectMany((shipIds, day) =>
+						shipIds != null && shipIds.Any(id => id >= 0)
+							? new[] { day }
+							: Enumerable.Empty<int>()))
+				.Distinct()
+				.OrderBy(day => day)
+			?? Enumerable.Empty<int>();
 
 
 
@@ -522,7 +542,9 @@ namespace ElectronicObserver.Data
 			EquipmentID == 544 ||       // SBD VB-2(爆撃飛行隊)
 			EquipmentID == 550 ||       // 試製 明星(増加試作機)
 			EquipmentID == 551 ||       // 明星改
-			EquipmentID == 552;         // 九九式練爆二二型改(夜間装備実験機)
+			EquipmentID == 552 ||       // 九九式練爆二二型改(夜間装備実験機)
+			EquipmentID == 578 ||       // SB2U-2
+			EquipmentID == 587;         // V-156F(SB2U輸出型)
 
 		/// <summary> 改修値が制空に影響する艦爆かどうか(要は爆戦)</summary>
 		public bool IsAirLevelBonusedGroundBomber =>

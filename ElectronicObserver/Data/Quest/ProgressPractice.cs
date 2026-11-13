@@ -327,6 +327,34 @@ namespace ElectronicObserver.Data.Quest
 						ret = true;
 					}
 					break;
+				case 359:   //|359|週|Halloween艦隊 実りの秋、最新演習！|演習A勝利以上5|条件：鈴谷, Minneapolis, 阿武隈, 朧, 曙, 村雨, 夕立, 野分, 朝潮, 早波, 浜波, Jervis, Johnston, 伊201 から4隻以上| イヤーリーだが1日で進捗リセット|
+					if (ships.Count(s =>
+					{
+						switch (s?.MasterShip?.NameReading)
+						{
+							case "ミネアポリス":
+							case "すずや":
+							case "あぶくま":
+							case "おぼろ":
+							case "あけぼの":
+							case "むらさめ":
+							case "ゆうだち":
+							case "のわき":
+							case "あさしお":
+							case "はやなみ":
+							case "はまなみ":
+							case "ジャーヴィス":
+							case "ジョンストン":
+							case "い201":
+								return true;
+							default:
+								return false;
+						}
+					}) >= 4)
+					{
+						ret = true;
+					}
+					break;
 				case 362:   //|362|４|特型初代「第十一駆逐隊」演習スペシャル！|演習A勝利以上4|条件：吹雪、白雪、初雪、深雪|イヤーリーだが1日で進捗リセット|
 					if (ships.Count(s =>
 					{
@@ -548,7 +576,7 @@ namespace ElectronicObserver.Data.Quest
 						ret = true;
 					}
 					break;
-				case 382:   //|382|月|【期間限定任務】第三十一戦隊 緊急演習！|演習A勝利以上×3回|条件：「榧」「杉」「樫」「竹」「潮」「響」「初霜」「雪風」「冬月」「涼月」から5隻編成 | 1日で進捗リセット|期間限定任務
+				case 382:   //|382|月|【期間限定任務】第三十一戦隊 緊急演習！|演習A勝利以上×3回|条件：「花月」「桐」「竹」「榧」「杉」「樫」「潮」「響」から5隻編成 | 1日で進捗リセット|期間限定任務
 					if (ships.Count(s =>
 					{
 						switch (s?.MasterShip?.NameReading)
@@ -560,21 +588,74 @@ namespace ElectronicObserver.Data.Quest
 							case "うしお":
 							case "ひびき":
 
-							case "はつしも":
-							case "ゆきかぜ":
-							case "すずつき":
-							case "ふゆつき":
+							case "はなづき":
+							case "きり":
 								return true;
 							default:
 								return false;
 						}
-					}) >= 3)
+					}) >= 5)
 					{
 						ret = true;
 					}
 					break;
 				case 383:   //|383|週|【期間限定任務】フランス艦隊、特別演習！|演習A勝利以上×3回|条件：フランス艦を3隻以上 | 1日で進捗リセット|期間限定任務
 					if (ships.Count(s => s.MasterShip.ShipNationality == 5) >= 3)
+					{
+						ret = true;
+					}
+					break;
+				case 384:   //|384|週|【期間限定任務】提督との秋祭り演習！|演習B勝利以上×4回|条件：「秋雲」「秋月」「綾波」「敷波」「白露」「浦風」「浜風」「長波」「藤波」「朝霜」「白雲」「朧」「漣」「迅鯨」「長鯨」「大鯨」「神通」から4隻以上 | 1日で進捗リセット|期間限定任務
+					if (ships.Count(s =>
+					{
+						switch (s?.MasterShip?.NameReading)
+						{
+							case "あきぐも":
+							case "あきづき":
+							case "あやなみ":
+							case "しきなみ":
+							case "しらつゆ":
+							case "うらかぜ":
+							case "はまかぜ":
+							case "ながなみ":
+							case "ふじなみ":
+							case "あさしも":
+							case "しらくも":
+							case "おぼろ":
+							case "さざなみ":
+							case "じんげい":
+							case "ちょうげい":
+							case "たいげい":
+							case "じんつう":
+								return true;
+							default:
+								return false;
+						}
+					}) >= 4)
+					{
+						ret = true;
+					}
+					break;
+				case 385:   //|385|週|【期間限定拡張任務】秋祭り拡張演習！|演習S勝利以上×4回|条件：「Algérie」「Vautour」「Mogador」「Béarn」「日枝丸」「平安丸」「大泊」「陸奥」「South Dakota」「Victorious」から3隻以上 | 1日で進捗リセット|期間限定任務
+					if (ships.Count(s =>
+					{
+						switch (s?.MasterShip?.NameReading)
+						{
+							case "アルジェリー":
+							case "ヴァトール":
+							case "モガドール":
+							case "ベアルン":
+							case "ひえまる":
+							case "へいあんまる":
+							case "おおとまり":
+							case "むつ":
+							case "サウスダコタ":
+							case "ヴィクトリアス":
+								return true;
+							default:
+								return false;
+						}
+					}) >= 3)
 					{
 						ret = true;
 					}

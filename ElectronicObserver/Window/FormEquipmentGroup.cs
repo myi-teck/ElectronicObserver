@@ -359,7 +359,7 @@ namespace ElectronicObserver.Window
 		/// （最適化: アイコンはキャッシュ経由で行作成時に設定し、装備配備先文字列は事前にまとめて計算したマップを利用）
 		/// </summary>
 		/// <param name="equip">追加する装備マスターデータ。</param>
-		private DataGridViewRow CreateEquipViewRow(EquipmentDataMaster equip, Dictionary<int, string> shipsMap = null)
+		private DataGridViewRow CreateEquipViewRow(EquipmentDataMaster equip, Dictionary<int, string> shipsMap = null, Dictionary<int, int> quantityMap = null)
 		{
 			if (equip == null) return null;
 
@@ -370,6 +370,9 @@ namespace ElectronicObserver.Window
 			// 今日の担当を取得。 "-" の場合は次回担当を表示する。
 			string today = GetTodayImprovementNames(equip.Improvements);
 			string improveDisplay = today == "-" ? GetNextImprovementNamesCombined(equip.Improvements) : today;
+
+			// 装備の所持数を取得。quantityMap が null の場合は個別走査で取得する。
+			int quantity = quantityMap != null && quantityMap.TryGetValue(equip.EquipmentID, out var count) ? count : 0;
 
 			// SetValues ではアイコン列には int (IconType) を入れておく（ソートのため）
 			row.SetValues(
@@ -390,6 +393,7 @@ namespace ElectronicObserver.Window
 				equip.AA,
 				equip.Armor,
 				equip.AircraftDistance,
+				quantity,
 				// EquipView_EquipedShips は後で shipsMap から設定するか、フォールバックで取得
 				shipsMap != null && shipsMap.TryGetValue(equip.EquipmentID, out var ships) ? ships : GetShipsEquipping(equip.EquipmentID)
 			);
@@ -419,7 +423,30 @@ namespace ElectronicObserver.Window
 
 			return row;
 		}
-		
+
+		/// <summary>
+		/// 指定された装備ID集合について、装備の所持数を一括で集計する。
+		/// BuildEquipView の内部最適化用。
+		/// </summary>
+		private Dictionary<int, int> BuildEquipQuantityMap(IEnumerable<int> equipmentIDs)
+		{
+			var ids = new HashSet<int>(equipmentIDs.Where(i => i > 0));
+			var result = ids.ToDictionary(i => i, i => 0);
+
+			foreach (var eq in KCDatabase.Instance.Equipments.Values)
+			{
+				if (eq == null || eq.MasterEquipment == null || eq.MasterEquipment.IsAbyssalEquipment)
+					continue;
+
+				int equipmentID = eq.EquipmentID;
+				if (ids.Contains(equipmentID))
+				{
+					result[equipmentID]++;
+				}
+			}
+
+			return result;
+		}
 		
 		/// <summary>
 		/// 指定したタブのグループのEquipViewを作成します。
@@ -455,18 +482,19 @@ namespace ElectronicObserver.Window
 
 			EquipView.Rows.Clear();
 
-			var equips = group.MembersInstance;
+			var equips = group.MembersInstance.ToList();
 			var rows = new List<DataGridViewRow>(equips.Count());
 
 			// --- ここで装備ごとの配備先文字列マップを一括構築しておく（GetShipsEquipping を繰り返さない） ---
-			var equipIds = equips.Select(e => e?.EquipmentID ?? -1).Where(id => id > 0).Distinct();
+			var equipIds = equips.Select(e => e?.EquipmentID ?? -1).Where(id => id > 0).Distinct().ToArray();
 			var shipsMap = BuildEquipToShipsMap(equipIds);
+			var quantityMap = BuildEquipQuantityMap(equipIds);
 
 			foreach (var eq in equips)
 			{
 				if (eq == null) continue;
 
-				DataGridViewRow row = CreateEquipViewRow(eq, shipsMap);
+				DataGridViewRow row = CreateEquipViewRow(eq, shipsMap, quantityMap);
 				rows.Add(row);
 			}
 
@@ -1068,7 +1096,7 @@ namespace ElectronicObserver.Window
 				int total = instances.Count;
 				int equippedCount = instances.Count(i => equippedMasterIDs.Contains(i.MasterID));
 
-				Status_Total.Text = $"所持数: {total} (装備中/配備中: {equippedCount})";
+				Status_Total.Text = $"所持数: {total} (装備・配備中: {equippedCount})";
 
 				var byLevel = instances
 					.GroupBy(i => i.Level)
@@ -1076,7 +1104,7 @@ namespace ElectronicObserver.Window
 					.Select(g => $"★{g.Key}:{g.Count()}")
 					.ToArray();
 
-				Status_ByLevel.Text = "改修: " + (byLevel.Length > 0 ? string.Join(" /", byLevel) : "なし");
+				Status_ByLevel.Text = "改修別: " + (byLevel.Length > 0 ? string.Join(" /", byLevel) : "なし");
 
 				var byAlvSimple = instances
 					.GroupBy(i => i.AircraftLevel)
@@ -1095,7 +1123,7 @@ namespace ElectronicObserver.Window
 				}
 				else
 				{
-					Status_ByAircraftLevel.Text = "熟練度: " + (byAlvSimple.Length > 0 ? string.Join(" /", byAlvSimple) : "なし");
+					Status_ByAircraftLevel.Text = "熟練度別: " + (byAlvSimple.Length > 0 ? string.Join(" /", byAlvSimple) : "なし");
 				}
 			}
 			else
@@ -1942,6 +1970,36 @@ namespace ElectronicObserver.Window
 				if (group != null)
 					group.GroupID = i + 1;
 			}
+		}
+
+		private void MenuMember_ShowImprovementFeed_Click(object sender, EventArgs e)
+		{
+			var ids = GetSelectedShipID().ToArray();
+			if (ids.Length == 0)
+			{
+				System.Media.SystemSounds.Exclamation.Play();
+				return;
+			}
+
+			var eq = KCDatabase.Instance.MasterEquipments[ids[0]];
+			if (eq == null)
+			{
+				System.Media.SystemSounds.Exclamation.Play();
+				return;
+			}
+
+			string result = string.Join("\r\n",
+				eq.ImprovementFeed
+				.Select(id => KCDatabase.Instance.MasterEquipments[id])
+				.Where(master => master != null)
+				.Select(master => $"[{master.EquipmentID}] {master.Name}"));
+
+			if (string.IsNullOrWhiteSpace(result))
+			{
+				result = eq.Name + " を素材として使用する改修先装備はありません。";
+			}
+
+			MessageBox.Show(result, "本装備を使用する改修装備", MessageBoxButtons.OK, MessageBoxIcon.Information);
 		}
 
 		private void FormEquipmentGroup_Resize(object sender, EventArgs e)

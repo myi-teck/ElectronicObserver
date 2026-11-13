@@ -60,6 +60,7 @@ namespace ElectronicObserver.Window
 			this.EquipView_AA = new System.Windows.Forms.DataGridViewTextBoxColumn();
 			this.EquipView_Armor = new System.Windows.Forms.DataGridViewTextBoxColumn();
 			this.EquipView_Radius = new System.Windows.Forms.DataGridViewTextBoxColumn();
+			this.EquipView_Quantity = new System.Windows.Forms.DataGridViewTextBoxColumn();
 			this.EquipView_EquipedShips = new System.Windows.Forms.DataGridViewTextBoxColumn();
 			this.MenuMember = new System.Windows.Forms.ContextMenuStrip(this.components);
 			this.MenuMember_AddToGroup = new System.Windows.Forms.ToolStripMenuItem();
@@ -71,6 +72,7 @@ namespace ElectronicObserver.Window
 			this.MenuMember_SortOrder = new System.Windows.Forms.ToolStripMenuItem();
 			this.toolStripSeparator3 = new System.Windows.Forms.ToolStripSeparator();
 			this.MenuMember_CSVOutput = new System.Windows.Forms.ToolStripMenuItem();
+			this.MenuMember_CopyName = new System.Windows.Forms.ToolStripMenuItem();
 			this.MenuGroup = new System.Windows.Forms.ContextMenuStrip(this.components);
 			this.MenuGroup_Add = new System.Windows.Forms.ToolStripMenuItem();
 			this.MenuGroup_Copy = new System.Windows.Forms.ToolStripMenuItem();
@@ -86,7 +88,8 @@ namespace ElectronicObserver.Window
 			this.Status_ByLevel = new System.Windows.Forms.ToolStripStatusLabel();
 			this.Status_ByAircraftLevel = new System.Windows.Forms.ToolStripStatusLabel();
 			this.SaveCSVDialog = new System.Windows.Forms.SaveFileDialog();
-			this.MenuMember_CopyName = new System.Windows.Forms.ToolStripMenuItem();
+			this.MenuMember_ShowImprovementFeed = new System.Windows.Forms.ToolStripMenuItem();
+			this.toolStripSeparator1 = new System.Windows.Forms.ToolStripSeparator();
 			((System.ComponentModel.ISupportInitialize)(this.EquipView)).BeginInit();
 			this.MenuMember.SuspendLayout();
 			this.MenuGroup.SuspendLayout();
@@ -123,6 +126,7 @@ namespace ElectronicObserver.Window
 			this.EquipView_AA,
 			this.EquipView_Armor,
 			this.EquipView_Radius,
+			this.EquipView_Quantity,
 			this.EquipView_EquipedShips});
 			this.EquipView.ContextMenuStrip = this.MenuMember;
 			dataGridViewCellStyle7.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleRight;
@@ -280,6 +284,13 @@ namespace ElectronicObserver.Window
 			this.EquipView_Radius.ReadOnly = true;
 			this.EquipView_Radius.Width = 40;
 			// 
+			// EquipView_Quantity
+			// 
+			this.EquipView_Quantity.HeaderText = "個数";
+			this.EquipView_Quantity.Name = "EquipView_Quantity";
+			this.EquipView_Quantity.ReadOnly = true;
+			this.EquipView_Quantity.Width = 40;
+			// 
 			// EquipView_EquipedShips
 			// 
 			dataGridViewCellStyle6.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
@@ -292,6 +303,8 @@ namespace ElectronicObserver.Window
 			// MenuMember
 			// 
 			this.MenuMember.Items.AddRange(new System.Windows.Forms.ToolStripItem[] {
+			this.MenuMember_ShowImprovementFeed,
+			this.toolStripSeparator1,
 			this.MenuMember_AddToGroup,
 			this.MenuMember_CreateGroup,
 			this.MenuMember_Exclude,
@@ -303,75 +316,74 @@ namespace ElectronicObserver.Window
 			this.MenuMember_CSVOutput,
 			this.MenuMember_CopyName});
 			this.MenuMember.Name = "MenuMember";
-			this.MenuMember.Size = new System.Drawing.Size(216, 214);
+			this.MenuMember.Size = new System.Drawing.Size(272, 242);
 			this.MenuMember.Opening += new System.ComponentModel.CancelEventHandler(this.MenuMember_Opening);
 			// 
 			// MenuMember_AddToGroup
 			// 
 			this.MenuMember_AddToGroup.Name = "MenuMember_AddToGroup";
-			this.MenuMember_AddToGroup.Size = new System.Drawing.Size(215, 22);
+			this.MenuMember_AddToGroup.Size = new System.Drawing.Size(271, 22);
 			this.MenuMember_AddToGroup.Text = "グループへ追加(&A)...";
 			this.MenuMember_AddToGroup.Click += new System.EventHandler(this.MenuMember_AddToGroup_Click);
 			// 
 			// MenuMember_CreateGroup
 			// 
 			this.MenuMember_CreateGroup.Name = "MenuMember_CreateGroup";
-			this.MenuMember_CreateGroup.Size = new System.Drawing.Size(215, 22);
+			this.MenuMember_CreateGroup.Size = new System.Drawing.Size(271, 22);
 			this.MenuMember_CreateGroup.Text = "新規グループの作成(&N)...";
 			this.MenuMember_CreateGroup.Click += new System.EventHandler(this.MenuMember_CreateGroup_Click);
 			// 
 			// MenuMember_Exclude
 			// 
 			this.MenuMember_Exclude.Name = "MenuMember_Exclude";
-			this.MenuMember_Exclude.Size = new System.Drawing.Size(215, 22);
+			this.MenuMember_Exclude.Size = new System.Drawing.Size(271, 22);
 			this.MenuMember_Exclude.Text = "除外(&E)";
 			this.MenuMember_Exclude.Click += new System.EventHandler(this.MenuMember_Exclude_Click);
 			// 
 			// toolStripSeparator2
 			// 
 			this.toolStripSeparator2.Name = "toolStripSeparator2";
-			this.toolStripSeparator2.Size = new System.Drawing.Size(212, 6);
+			this.toolStripSeparator2.Size = new System.Drawing.Size(268, 6);
 			// 
 			// MenuMember_Filter
 			// 
 			this.MenuMember_Filter.Name = "MenuMember_Filter";
-			this.MenuMember_Filter.Size = new System.Drawing.Size(215, 22);
+			this.MenuMember_Filter.Size = new System.Drawing.Size(271, 22);
 			this.MenuMember_Filter.Text = "フィルタ設定(&F)...";
 			this.MenuMember_Filter.Click += new System.EventHandler(this.MenuMember_Filter_Click);
 			// 
 			// MenuMember_ColumnFilter
 			// 
 			this.MenuMember_ColumnFilter.Name = "MenuMember_ColumnFilter";
-			this.MenuMember_ColumnFilter.Size = new System.Drawing.Size(215, 22);
+			this.MenuMember_ColumnFilter.Size = new System.Drawing.Size(271, 22);
 			this.MenuMember_ColumnFilter.Text = "列の表示設定(&C)...";
 			this.MenuMember_ColumnFilter.Click += new System.EventHandler(this.MenuMember_ColumnFilter_Click);
 			// 
 			// MenuMember_SortOrder
 			// 
 			this.MenuMember_SortOrder.Name = "MenuMember_SortOrder";
-			this.MenuMember_SortOrder.Size = new System.Drawing.Size(215, 22);
+			this.MenuMember_SortOrder.Size = new System.Drawing.Size(271, 22);
 			this.MenuMember_SortOrder.Text = "自動ソート設定(&S)...";
 			this.MenuMember_SortOrder.Click += new System.EventHandler(this.MenuMember_SortOrder_Click);
 			// 
 			// toolStripSeparator3
 			// 
 			this.toolStripSeparator3.Name = "toolStripSeparator3";
-			this.toolStripSeparator3.Size = new System.Drawing.Size(212, 6);
+			this.toolStripSeparator3.Size = new System.Drawing.Size(268, 6);
 			// 
 			// MenuMember_CSVOutput
 			// 
 			this.MenuMember_CSVOutput.Name = "MenuMember_CSVOutput";
-			this.MenuMember_CSVOutput.Size = new System.Drawing.Size(215, 22);
+			this.MenuMember_CSVOutput.Size = new System.Drawing.Size(271, 22);
 			this.MenuMember_CSVOutput.Text = "グループのCSV出力(&O)...";
 			this.MenuMember_CSVOutput.Click += new System.EventHandler(this.MenuMember_CSVOutput_Click);
 			// 
 			// MenuMember_CopyName
 			// 
 			this.MenuMember_CopyName.Name = "MenuMember_CopyName";
-			this.MenuMember_CopyName.Size = new System.Drawing.Size(215, 22);
+			this.MenuMember_CopyName.Size = new System.Drawing.Size(271, 22);
 			this.MenuMember_CopyName.Text = "装備名をコピー";
 			this.MenuMember_CopyName.Click += new System.EventHandler(this.MenuMember_CopyName_Click);
-			this.MenuMember_CopyName.Visible = true;
 			// 
 			// MenuGroup
 			// 
@@ -506,6 +518,18 @@ namespace ElectronicObserver.Window
 			this.SaveCSVDialog.Filter = "CSV|*.csv|File|*";
 			this.SaveCSVDialog.Title = "CSVに出力";
 			// 
+			// MenuMember_ShowImprovementFeed
+			// 
+			this.MenuMember_ShowImprovementFeed.Name = "MenuMember_ShowImprovementFeed";
+			this.MenuMember_ShowImprovementFeed.Size = new System.Drawing.Size(271, 22);
+			this.MenuMember_ShowImprovementFeed.Text = "改修で本装備を使用する装備を検索(&I)";
+			this.MenuMember_ShowImprovementFeed.Click += new System.EventHandler(this.MenuMember_ShowImprovementFeed_Click);
+			// 
+			// toolStripSeparator1
+			// 
+			this.toolStripSeparator1.Name = "toolStripSeparator1";
+			this.toolStripSeparator1.Size = new System.Drawing.Size(268, 6);
+			// 
 			// FormEquipmentGroup
 			// 
 			this.AutoHidePortion = 150D;
@@ -561,6 +585,7 @@ namespace ElectronicObserver.Window
 		private System.Windows.Forms.ToolStripMenuItem MenuMember_Exclude;
 		private System.Windows.Forms.ToolStripSeparator toolStripSeparator2;
 		private System.Windows.Forms.SaveFileDialog SaveCSVDialog;
+		private ToolStripMenuItem MenuMember_CopyName;
 		private DataGridViewTextBoxColumn EquipView_ID;
 		private DataGridViewImageColumn EquipView_Icon;
 		private DataGridViewTextBoxColumn EquipView_Name;
@@ -578,7 +603,9 @@ namespace ElectronicObserver.Window
 		private DataGridViewTextBoxColumn EquipView_AA;
 		private DataGridViewTextBoxColumn EquipView_Armor;
 		private DataGridViewTextBoxColumn EquipView_Radius;
+		private DataGridViewTextBoxColumn EquipView_Quantity;
 		private DataGridViewTextBoxColumn EquipView_EquipedShips;
-		private ToolStripMenuItem MenuMember_CopyName;
+		private ToolStripMenuItem MenuMember_ShowImprovementFeed;
+		private ToolStripSeparator toolStripSeparator1;
 	}
 }

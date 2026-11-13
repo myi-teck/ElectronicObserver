@@ -866,29 +866,62 @@ namespace ElectronicObserver.Window.Dialog
 			exweapons.AddRange(db.MasterEquipments.Values.Where(eq => eq.EquippableStypeAtExpansion.Contains(ship.ShipTypeInstance.ID)).ToList());
 			exweapons.AddRange(db.MasterEquipments.Values.Where(eq => eq.EquippableCtypeAtExpansion.Contains(ship.ShipClass)).ToList());
 
-			// 特定の艦で指定の EquipmentID を除外する
-			if (ship.IsCoastalDefenceShip)
+			// 特定の艦で指定の装備を除外する
+			exweapons.RemoveAll(eq =>
 			{
-				var exclude = new HashSet<int> { 45, 226, 227, 346, 347, 488, 569 };
-				exweapons = exweapons.Where(eq => !exclude.Contains(eq.EquipmentID)).ToList();
-			}
-			if (ship.ID == 507 || ship.ID == 162 || ship.ID == 182 || ship.ID == 634 || ship.ID == 635 || ship.ID == 645 || ship.ID == 650 || ship.ID == 944 || ship.ID == 996 || ship.ID == 988 ||
-				ship.ShipClass == 50 || ship.ShipClass == 60 || ship.ShipClass == 70 || ship.ShipClass == 90)
-			{
-				var exclude = new HashSet<int> { 346, 347 };
-				exweapons = exweapons.Where(eq => !exclude.Contains(eq.EquipmentID)).ToList();
-			}
-			if (ship.ID == 877)
-			{
-				var exclude = new HashSet<int> { 35, 317, 483 };
-				exweapons = exweapons.Where(eq => !exclude.Contains(eq.EquipmentID)).ToList();
-			}
-			if (ship.ID == 162|| ship.ID == 645 || ship.ID == 650 || ship.ID == 900 || ship.ID == 945 || ship.ID == 988)
-			{
-				var exclude = new HashSet<int> { 524 };
-				exweapons = exweapons.Where(eq => !exclude.Contains(eq.EquipmentID)).ToList();
-			}
+				int eqCategory = (int)eq.CategoryType2;
+				var shiptype = ship.ShipTypeInstance;
 
+				var preSpecialShips = new Dictionary<ShipTypes, List<ShipDataMaster>>();
+				var specialShips = new Dictionary<ShipTypes, List<int>>();
+
+				foreach (var s in db.MasterShips.Values.Where(x => x.SpecialEquippableCategories != null))
+				{
+					bool usual = s.ShipTypeInstance.EquippableCategories.Contains(eqCategory);
+					bool special = s.SpecialEquippableCategories.Contains(eqCategory);
+
+					if (s.specialEquippableId != null)
+					{
+						foreach (var id in s.specialEquippableId)
+						{
+							if (!db.MasterEquipments.ContainsKey(id) || (int)db.MasterEquipments[id].CategoryType != eqCategory)
+								continue;
+
+							special = false;
+							if (id == eq.EquipmentID)
+							{
+								special = true;
+								break;
+							}
+						}
+					}
+
+					if (usual != special)
+					{
+						if (preSpecialShips.ContainsKey(s.ShipType))
+							preSpecialShips[s.ShipType].Add(s);
+						else
+							preSpecialShips.Add(s.ShipType, new List<ShipDataMaster>(new[] { s }));
+					}
+				}
+
+				foreach (var sp in preSpecialShips)
+				{
+					specialShips[sp.Key] = sp.Value
+						.OrderBy(s => s.ShipClass)
+						.ThenBy(s => s.NameReading)
+						.ThenBy(s => s.RemodelTier)
+						.Select(s => s.ShipID)
+						.ToList();
+				}
+
+				bool usualEquippable = shiptype.EquippableCategories.Contains(eqCategory);
+				bool isSpecialShip = specialShips.ContainsKey(shiptype.Type) && specialShips[shiptype.Type].Contains(shipID);
+
+				return usualEquippable ? isSpecialShip : !isSpecialShip;
+			});
+
+			// カテゴリ別に並び替え、同じカテゴリ内は装備名でソートする
 			exweapons = exweapons.OrderBy(eq => eq.CategoryType2)
 								 .ThenBy(eq => eq.Name).ToList();
 
@@ -897,6 +930,51 @@ namespace ElectronicObserver.Window.Dialog
 			return cats;
 		}
 
+		private string GetImprovementEquipsString(ShipDataMaster ship)
+		{
+			if (ship == null)
+				return "";
+
+			var weekNames = new[]
+			{
+				"日曜日",
+				"月曜日",
+				"火曜日",
+				"水曜日",
+				"木曜日",
+				"金曜日",
+				"土曜日",
+			};
+
+			var lines = new List<string>(7);
+
+			for (int day = 0; day < 7; day++)
+			{
+				var ids = ship.EquipImprovement != null && ship.EquipImprovement.Count > day
+					? ship.EquipImprovement[day]
+					: null;
+
+				string equips;
+				if (ids == null || ids.Count == 0)
+				{
+					equips = "(なし)";
+				}
+				else
+				{
+					equips = string.Join(" / ", ids.Select(id =>
+					{
+						if (KCDatabase.Instance.MasterEquipments.TryGetValue(id, out var eq) && eq != null)
+							return $"[{eq.EquipmentID}] {eq.Name}";
+
+						return $"ID:{id}";
+					}));
+				}
+
+				lines.Add($"{weekNames[day]}：{equips}");
+			}
+
+			return string.Join("\r\n", lines);
+		}
 
 		private void ParameterLevel_ValueChanged(object sender, EventArgs e)
 		{
@@ -1741,7 +1819,101 @@ namespace ElectronicObserver.Window.Dialog
 			MessageBox.Show(result, "出現海域検索", MessageBoxButtons.OK, MessageBoxIcon.Information);
 		}
 
+		private void StripMenu_View_ShowImprovementEquips_Click(object sender, EventArgs e)
+		{
+			var ship = KCDatabase.Instance.MasterShips[_shipID];
+			if (ship == null)
+			{
+				System.Media.SystemSounds.Exclamation.Play();
+				return;
+			}
 
+			string text = GetImprovementEquipsString(ship);
+
+			if (string.IsNullOrEmpty(text))
+				text = "改修装備情報はありません。";
+
+			using (var dialog = new Form())
+			using (var panel = new FlowLayoutPanel())
+			using (var button = new Button())
+			{
+				dialog.Text = "改修を担当する特別装備";
+				dialog.StartPosition = FormStartPosition.CenterParent;
+				dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+				dialog.MinimizeBox = false;
+				dialog.MaximizeBox = false;
+				dialog.ShowInTaskbar = false;
+				dialog.Icon = this.Icon;
+				dialog.Font = this.Font;
+				dialog.BackColor = SystemColors.Control;
+
+				panel.FlowDirection = FlowDirection.TopDown;
+				panel.WrapContents = false;
+				panel.AutoSize = true;
+				panel.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+				panel.Location = new Point(12, 12);
+				panel.Margin = Padding.Empty;
+				panel.Padding = Padding.Empty;
+				panel.BackColor = dialog.BackColor;
+
+				var lines = text.Replace("\r\n", "\n").Split('\n');
+				int maxWidth = 0;
+
+				foreach (string line in lines)
+				{
+					Size size = TextRenderer.MeasureText(
+						line.Length == 0 ? " " : line,
+						dialog.Font,
+						new Size(int.MaxValue, int.MaxValue),
+						TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+
+					if (size.Width > maxWidth)
+						maxWidth = size.Width;
+				}
+
+				int textWidth = Math.Min(Math.Max(260, maxWidth + 4), 1200);
+
+				foreach (string line in lines)
+				{
+					var label = new Label
+					{
+						AutoSize = false,
+						Width = textWidth,
+						Height = TextRenderer.MeasureText(
+							line.Length == 0 ? " " : line,
+							dialog.Font,
+							new Size(int.MaxValue, int.MaxValue),
+							TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine).Height + 6,
+						Text = line,
+						Font = dialog.Font,
+						BackColor = dialog.BackColor,
+						ForeColor = SystemColors.ControlText,
+						Margin = Padding.Empty,
+						Padding = new Padding(0, 3, 0, 3),
+						TextAlign = ContentAlignment.MiddleLeft
+					};
+
+					panel.Controls.Add(label);
+				}
+
+				button.Text = "OK";
+				button.DialogResult = DialogResult.OK;
+				button.Size = new Size(75, 23);
+
+				dialog.AcceptButton = button;
+				dialog.CancelButton = button;
+
+				dialog.Controls.Add(panel);
+				dialog.Controls.Add(button);
+
+				button.Location = new Point(panel.Left + panel.Width - button.Width, panel.Bottom + 12);
+				dialog.ClientSize = new Size(panel.Right + 12, button.Bottom + 12);
+
+				dialog.Shown += (s, ev) => button.Focus();
+
+				dialog.ShowDialog(this);
+			}
+		}
 
 		private void ShipBanner_MouseClick(object sender, MouseEventArgs e)
 		{

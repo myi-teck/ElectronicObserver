@@ -429,6 +429,10 @@ namespace ElectronicObserver.Data
 				case 135: return "Glorious級";
 				case 136: return "野埼型";
 				case 137: return "Thonburi級";
+				case 138: return "Algérie級";
+				case 139: return "Aigle級";
+				case 140: return "Visby級";
+				case 141: return "Béarn級";
 				default: 
 					return "不明";
 			}
@@ -1211,6 +1215,8 @@ namespace ElectronicObserver.Data
 					return "爆雷攻撃";
 				case DayAttackKind.Torpedo:
 					return "雷撃";
+				case DayAttackKind.AirDepthCharge:
+					return "航空爆雷攻撃";
 				case DayAttackKind.CutinFighterBomberAttacker:
 					return "空母カットイン(FBA)";
 				case DayAttackKind.CutinBomberBomberAttacker:
@@ -1316,6 +1322,8 @@ namespace ElectronicObserver.Data
 					return "爆雷攻撃";
 				case NightAttackKind.Torpedo:
 					return "雷撃";
+				case NightAttackKind.AirDepthCharge:
+					return "航空爆雷攻撃";
 				case NightAttackKind.Rocket:
 					return "ロケット砲撃";
 				case NightAttackKind.LandingDaihatsu:
@@ -1362,8 +1370,8 @@ namespace ElectronicObserver.Data
 					return "夜間瑞雲攻撃(瑞雲2)";
 				case NightAttackKind.SpecialNightZuiun2Rader:
 					return "夜間瑞雲攻撃(瑞雲2/電探)";
-
-
+				case NightAttackKind.Nothing:
+					return "攻撃不能";
 
 				default:
 					return "不明(" + (int)id + ")";
