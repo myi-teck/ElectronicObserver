@@ -8,7 +8,7 @@
 // Viewport CSS変数同期サブシステム
 //============================================================================================
 
-// [v3対応] TDZ回避のため、モジュール変数は関数の実行より前に定義（let使用）
+// TDZ回避のため、モジュール変数は関数の実行より前に定義（let使用）
 let viewportSyncRafId = null;
 
 /**
@@ -96,11 +96,11 @@ function syncBodyHeightToVisualViewport() {
     const vv = window.visualViewport;
     const vvh = (vv && typeof vv.height === 'number') ? vv.height : NaN;
     const rawHeight = (Number.isFinite(vvh) && vvh > 0) ? vvh : window.innerHeight;
-    // [S-3①] 上限クランプ: visual viewport が layout viewport を超える異常拡大
+    // 上限クランプ: visual viewport が layout viewport を超える異常拡大
     //   （ピンチズーム等）を防止し、body が layout viewport（innerHeight）を超えないことを保証。
     //   Math.round は sub-pixel レイアウトぼやけ防止（既存 syncViewportToCSSVariables と同方針）。
     const newHeight = Math.min(Math.round(rawHeight), window.innerHeight) + 'px';
-    // [S-3②] inline body.style.height ではなく、documentElement の CSS 変数 --kc-body-height
+    // inline body.style.height ではなく、documentElement の CSS 変数 --kc-body-height
     //   に書き込む。body { height: var(--kc-body-height, 100svh) } が吸収し、
     //   変数未設定（JS 未実行・非サポート）時は 100svh（静的下限）がフォールバックする。
     const root = document.documentElement;
@@ -118,7 +118,7 @@ function syncBodyHeightToVisualViewport() {
 }
 
 // 初期適用（load 時・remote_screen.js が invalidateGameScreenRect を公開した後に実行）
-// [S-5] remote_main.js は RemoteController.html:420 で </body> 直前（末尾）に読み込まれるため、
+// remote_main.js は RemoteController.html:420 で </body> 直前（末尾）に読み込まれるため、
 //   本関数実行時点で document.body / document.documentElement の存在が確定している。
 syncBodyHeightToVisualViewport();
 
@@ -136,7 +136,7 @@ if (window.visualViewport) {
 }
 
 // 既存の window.resize で再適用。
-// [S-7] これは既存 resize リスナ（remote_main.js:80、syncViewportToCSSVariables）とは
+// これは既存 resize リスナ（remote_main.js:80、syncViewportToCSSVariables）とは
 //   独立した「並列登録」であり、置換ではない。同一の resize イベントで両リスナが独立に発火する。
 window.addEventListener('resize', syncBodyHeightToVisualViewport);
 
@@ -147,7 +147,7 @@ window.addEventListener('resize', syncBodyHeightToVisualViewport);
 //   - 100ms = 中間レイアウト更新後の再適用
 //   - 300ms = レイアウト更新完了後の最終再適用
 //   0ms は「同期的に即座に」ではなく「イベントループに回して次タスクで」実行する意図を持つ。
-// [S-1] この orientationchange リスナは、既存 handleOrientationChange（remote_main.js:814、
+// この orientationchange リスナは、既存 handleOrientationChange（remote_main.js:814、
 //   パネル状態リセット・100ms デバウンス）とは独立に「意図的な並列登録」する（両立・非置換・責務分離）。
 //   回転時に handleOrientationChange（パネルリセット）と本関数（body 高さ追従）が別コールバックで発火する。
 window.addEventListener('orientationchange', () => {

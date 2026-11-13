@@ -24,7 +24,7 @@ let _cachedContentRect = null;
 let _gameScreenRectCacheValid = false;
 
 // object-fit: contain サポート判定（極古ブラウザのフォールバック: content = box = 現行挙動）
-// [M-1/E-1 反映] `CSS.supports` 自体が非存在する極古環境では「サポート不明」を安全側 = false とみなす。
+// `CSS.supports` 自体が非存在する極古環境では「サポート不明」を安全側 = false とみなす。
 // object-fit 非サポート環境では letterbox 自体が存在しない（canvas が box に引き伸ばされる）ため content = box が正しく、
 // false 側（content = box フォールバック）に落ちる方が安全。対象環境（CefSharp Chromium 91+ / PWA iOS Safari 14+）
 // では CSS.supports は常に存在するため挙動は変わらない
@@ -51,7 +51,7 @@ function computeContentRect(boxRect) {
     if (!intrinsicW || !intrinsicH || !_supportsObjectFitContain) {
         // 内在サイズ未設定 / object-fit 未サポート（極古ブラウザ・canvas が box に引き伸ばされる）:
         // letterbox は生じないため box = content（現行挙動と等価）
-        // [M-3 反映] ゼロサイズ判定の優先順位: 上段の box ゼロサイズガード（boxW/boxH <= 0 → ゼロ rect）が先に効くため、
+        // ゼロサイズ判定の優先順位: 上段の box ゼロサイズガード（boxW/boxH <= 0 → ゼロ rect）が先に効くため、
         // ここに到達し得るのは「box 非ゼロ + 内在サイズ 0」のみ。canvas 内在サイズは HTML attribute（1200×720）で固定・
         // JS 再代入なしのため 0 になることは想定外であり、本フォールバックは防御的（挙動: content = box）
         return { left: boxRect.left, top: boxRect.top, width: boxW, height: boxH };
@@ -155,7 +155,7 @@ async function updateScreenDiff() {
     const elapsedSinceLastFrame = now - lastFrameStartTime;
     if (elapsedSinceLastFrame > (lastScheduledDelay + SLEEP_SLIP_TOLERANCE_MS)) {
         console.log(`[SleepResume] Timer slip detected: elapsed=${elapsedSinceLastFrame}ms, scheduled=${lastScheduledDelay}ms`);
-        // [v4] 現在すでにupdateScreenDiff()が実行中であるため、triggerResumeUpdate()を呼ばない。
+        // 現在すでにupdateScreenDiff()が実行中であるため、triggerResumeUpdate()を呼ばない。
         // 直接 isFirstWebpRequest = true をセットし、自身のフローでキーフレームを取得する。
         isFirstWebpRequest = true;
         if (typeof ProtocolManager !== 'undefined' && ProtocolManager.effectiveMode === 'ws') {
@@ -164,7 +164,7 @@ async function updateScreenDiff() {
     }
     lastFrameStartTime = now;
 
-    // [v4] ヘルパー: スリープ復帰ペンディングがある場合は即時ディレイ (0ms) を適用
+    // ヘルパー: スリープ復帰ペンディングがある場合は即時ディレイ (0ms) を適用
     const getNextDelay = (calculatedDelay) => {
         if (triggerResumeUpdate._pendingImmediate) {
             triggerResumeUpdate._pendingImmediate = false;
@@ -192,7 +192,7 @@ async function updateScreenDiff() {
 
     try {
         let url = `/screen.webp?t=${Date.now()}`;
-        // [v4] URL生成時に isFirstWebpRequest を消費（レスポンス完了時の無条件上書きを防止）
+        // URL生成時に isFirstWebpRequest を消費（レスポンス完了時の無条件上書きを防止）
         if (isFirstWebpRequest) {
             url += '&init=1';
             isFirstWebpRequest = false;
@@ -219,7 +219,7 @@ async function updateScreenDiff() {
             // 204 にも X-Content-Version が付与される（cver 判定結果の確定値）。次回リクエストへ引き継ぐ
             const cvNone = parseInt(response.headers.get('X-Content-Version'), 10);
             if (!isNaN(cvNone)) lastContentVersion = cvNone;
-            // [v4] isFirstWebpRequest の消費はURL生成時に行うため、ここでの無条件上書きは削除
+            // isFirstWebpRequest の消費はURL生成時に行うため、ここでの無条件上書きは削除
             // isFirstWebpRequest = false; // ← 削除
             isUpdating = false;
 
@@ -232,7 +232,7 @@ async function updateScreenDiff() {
 
         if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
 
-        // [v4] isFirstWebpRequest の消費はURL生成時に行うため、ここでの無条件上書きは削除
+        // isFirstWebpRequest の消費はURL生成時に行うため、ここでの無条件上書きは削除
         // isFirstWebpRequest = false; // ← 削除
 
         const rawSeqHeader = response.headers.get('X-Frame-Sequence');
@@ -249,7 +249,7 @@ async function updateScreenDiff() {
 
         const img = new Image();
 
-        // [v5] img.onload 全体を try...finally で保護（描画例外によるデッドロック防止）
+        // img.onload 全体を try...finally で保護（描画例外によるデッドロック防止）
         img.onload = () => {
             try {
                 if (httpSeq >= 0) {
@@ -274,7 +274,7 @@ async function updateScreenDiff() {
                 console.error("[remote_screen] img.onload render error:", err);
                 if (window.__eventLog) window.__eventLog.consoleLog('error', '[remote_screen] img.onload render error: ' + (err && err.message ? err.message : err), 'SCREEN_IMG_ERR');
             } finally {
-                // [v5] 例外発生時も確実にリソース解放・更新フラグ解除・タイマー再予約
+                // 例外発生時も確実にリソース解放・更新フラグ解除・タイマー再予約
                 URL.revokeObjectURL(img.src);
                 isUpdating = false;
 
@@ -288,12 +288,12 @@ async function updateScreenDiff() {
         img.onerror = () => {
             URL.revokeObjectURL(img.src);
             isUpdating = false;
-            // [v4] isFirstWebpRequest は維持。次回の updateScreenDiff() でキーフレーム要求によりリカバリ
+            // isFirstWebpRequest は維持。次回の updateScreenDiff() でキーフレーム要求によりリカバリ
             // デコード失敗時はコンテンツ版数を不明状態に戻す。cver を保持したままだと
             // サーバーが「既受領」と誤判定して 204 を返し続け、画面が凍結する可能性がある
             lastContentVersion = 0;
             isFirstWebpRequest = true;
-            // [v5 重要] _pendingImmediate の消費方針:
+            // _pendingImmediate の消費方針:
             // 画像ロードエラー時は「一度更新を試みた」とみなし、getNextDelay() を経由して
             // _pendingImmediate フラグを消費（false にリセット）する。
             // これにより、エラー発生後の次回のタイマー予約は即時ディレイ (0ms) が適用されるが、

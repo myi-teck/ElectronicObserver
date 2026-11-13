@@ -68,7 +68,7 @@ const ProtocolManager = {
     // 実値より狭い間隔だと復元順のクランプ（TS_CLAMP）が頻発する
     webCodecsFps: 0,
 
-    // [A1修正] 意図的 close 抑制フラグ
+    // 意図的 close 抑制フラグ
     // モード切替（setMode → startConnection）など意図的な closeWebSocket() 実行時に true を設定し、
     // 旧 WS の非同期発火する onclose（onWsClose）が reconnectWebSocket() / fallbackToHttp() を
     // トリガーすることを抑制する。これにより 1 クリック = 1 WS = 1 switch_mode送信 が保証される。
@@ -184,7 +184,7 @@ const ProtocolManager = {
     },
 
     startConnection() {
-        // [A1 fix] 意図的 close 抑制フラグ設定
+        // 意図的 close 抑制フラグ設定
         // setMode() は currentMode を先に更新してから本関数を呼ぶため、
         // このフラグがなければ旧 WS の非同期 onclose が onWsClose で
         // 更新済みの currentMode を読み取り reconnectWebSocket() をトリガーし、
@@ -208,7 +208,7 @@ const ProtocolManager = {
             this.effectiveMode = 'http';
             this.httpPollingActive = true;
             this.updateConnStatus('HTTP', true);
-            // [A1 fix] HTTP モードでは新 WS を生成しないため、意図的 close フラグをリセット
+            // HTTP モードでは新 WS を生成しないため、意図的 close フラグをリセット
             this._intentionalClose = false;
         }
     },
@@ -232,7 +232,7 @@ const ProtocolManager = {
             return;
         }
 
-        // [A1 fix] 新 WS 生成後に意図的 close フラグをリセット
+        // 新 WS 生成後に意図的 close フラグをリセット
         // 意図的 close のウィンドウは新 WS のライフサイクル開始で終了。
         // これにより、この新 WS の**異常**切断（接続拒否・サーバ側切断等）時は
         // フラグが false のため onWsClose → reconnectWebSocket が従来通り動作する
@@ -243,7 +243,7 @@ const ProtocolManager = {
         this.wsConnection.onopen = () => {
             console.log('[ProtocolManager] WebSocket connected successfully:', wsUrl);
             if (window.__eventLog) window.__eventLog.consoleLog('log', '[ProtocolManager] WebSocket connected successfully: ' + wsUrl, 'WS_OPEN');
-            // [A1 fix] 新 WS 確立後に意図的 close フラグをリセット（二重安全: 新 WS の onopen 後リセット）
+            // 新 WS 確立後に意図的 close フラグをリセット（二重安全: 新 WS の onopen 後リセット）
             this._intentionalClose = false;
             this.wsReconnectAttempts = 0;
             this.effectiveMode = 'ws';
@@ -417,7 +417,7 @@ const ProtocolManager = {
         }
         this.updateConnStatus('DISCONNECTED', false);
 
-        // [A1 fix] 意図的 close（モード切替等）時は再接続をトリガーしない。
+        // 意図的 close（モード切替等）時は再接続をトリガーしない。
         // 新 WS は startConnection() の attemptWebSocket() が生成するため
         // 1 クリック = 1 WS = 1 switch_mode送信 となる。
         // 異常切断（サーバ側切断・ネットワークエラー）時はフラグが false のため、
@@ -440,7 +440,7 @@ const ProtocolManager = {
     },
 
     reconnectWebSocket() {
-        // [A1 fix] Reconnection only occurs on abnormal disconnect (flag is false). Reset for safety.
+        // Reconnection only occurs on abnormal disconnect (flag is false). Reset for safety.
         this._intentionalClose = false;
         if (this.wsReconnectAttempts >= this.maxReconnectAttempts) {
             console.warn('[ProtocolManager] Max reconnect attempts reached, falling back to HTTP');
@@ -472,14 +472,14 @@ const ProtocolManager = {
 
         // 順序を明示: closeWebSocket → effectiveMode → initializeHudViaHttp
         // 1. WebSocket 切断（先に切断し、その後にモード切替）
-        // [A1 fix] 意図的 close: 旧 WS の onclose による再接続トリガーを抑制
+        // 意図的 close: 旧 WS の onclose による再接続トリガーを抑制
         this._intentionalClose = true;
         this.closeWebSocket();
 
         // 2. モード切替
         this.effectiveMode = 'http';
         this.httpPollingActive = true;
-        // [A1 fix] HTTP モード切替後に意図的 close フラグをリセット（WS 再接続は発生しない）
+        // HTTP モード切替後に意図的 close フラグをリセット（WS 再接続は発生しない）
         this._intentionalClose = false;
 
         // セッション切替時にリトライカウンタをリセット
@@ -533,7 +533,7 @@ const ProtocolManager = {
 
     closeWebSocket() {
         if (this.wsConnection) {
-            // [A1 fix] Root-cause measure: null out the old WS's event handlers before close.
+            // Root-cause measure: null out the old WS's event handlers before close.
             // Since close() triggers onclose asynchronously, the old WS's onclose could later call
             // onWsClose() → reconnectWebSocket() and generate a second WS.
             // By detaching the handlers before close(), onclose no longer calls onWsClose,
@@ -545,19 +545,19 @@ const ProtocolManager = {
             this.wsConnection.onerror = null;
             this.wsConnection.onclose = null;
             try { this.wsConnection.close(); } catch (e) {
-                // [A1 fix] Do not swallow exceptions silently: log the cause of close() failure (AGENTS.md NEVER)
+                // Do not swallow exceptions silently: log the cause of close() failure (AGENTS.md NEVER)
                 console.warn('[ProtocolManager] WebSocket close() failed:', e && e.message ? e.message : e);
                 if (window.__eventLog) window.__eventLog.consoleLog('warn', '[ProtocolManager] WebSocket close() failed: ' + (e && e.message ? e.message : e), 'WS_CLOSE_FAIL');
             }
             this.wsConnection = null;
         }
-        // [A1 fix] Since the old WS's onclose no longer calls onWsClose, also perform cleanup here.
+        // Since the old WS's onclose no longer calls onWsClose, also perform cleanup here.
         // (previously onWsClose was responsible for this). Prevents the old timer from closing the new WS.
         if (ProtocolManager._pongTimeoutId) {
             clearTimeout(ProtocolManager._pongTimeoutId);
             ProtocolManager._pongTimeoutId = null;
         }
-        // [A1 fix] Also reset connection state here (previously onWsClose was responsible for this)
+        // Also reset connection state here (previously onWsClose was responsible for this)
         ProtocolManager._consecutiveDecodeErrors = 0;
         ProtocolManager._initProtectionActive = false;
         if (this._hudInitTimeout) {
@@ -1838,7 +1838,7 @@ function sendControlAction(action, x, y) {
  */
 function triggerResumeUpdate() {
     const now = Date.now();
-    // [v5] 100ms以内の重複呼出しをタイムスタンプ判定で無視するガード
+    // 100ms以内の重複呼出しをタイムスタンプ判定で無視するガード
     if (now - (triggerResumeUpdate._lastTriggerTime || 0) < 100) {
         return;
     }

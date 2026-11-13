@@ -591,7 +591,7 @@
 }
 
 /* 艦船詳細テーブル本体 */
-/* [v3対応] table-layout: fixed + font-size 7.5px (極小画面対応) */
+/* table-layout: fixed + font-size 7.5px (極小画面対応) */
 #ship-table {
     width: 100%;
     border-collapse: collapse;
@@ -600,10 +600,10 @@
     font-family: var(--font-tt);
     color: var(--text-color);
     table-layout: fixed;
-    /* [v3対応] 固定レイアウトによるセル幅制御 */
+    /* 固定レイアウトによるセル幅制御 */
 }
 
-/* [v3対応] <col> 要素による列幅制御（table-layout: fixed 用） - パーセンテージ単位 */
+/* <col> 要素による列幅制御（table-layout: fixed 用） - パーセンテージ単位 */
 #ship-table col.col-name {
     width: 25%;
 }
@@ -629,7 +629,7 @@
 }
 
 /* テーブルヘッダ */
-/* [v3対応] ヘッダとボディのフォントサイズを統一（7.5px） */
+/* ヘッダとボディのフォントサイズを統一（7.5px） */
 #ship-table thead th {
     text-align: left;
     padding: 1px 2px;
@@ -646,7 +646,7 @@
     white-space: nowrap;
 }
 
-/* [v3対応] th/td に overflow 制御を追加（列幅超過時のテキスト省略） */
+/* th/td に overflow 制御を追加（列幅超過時のテキスト省略） */
 #ship-table th,
 #ship-table td {
     overflow: hidden;
@@ -1578,7 +1578,7 @@ body.panel-expanded #hud-control-bar,
          * - これにより子要素（#screen-container の height: 100%、#hud-control-bar の
          *   height: 100%）のパーセントが definite 値で解決され、
          *   高さ駆動レイアウト（方針 B）が成立する。
-         * - max-height: 100%（）は維持（一致値 375pt・冗長だが防御として保持）。
+         * - max-height: 100%は維持（一致値 375pt・冗長だが防御として保持）。
          * - flex: 1 1 auto のまま横方向は body 幅 812 − margin 4×2 = 804pt にストレッチ（不変）。 */
         height: 100%;
         max-height: 100%;

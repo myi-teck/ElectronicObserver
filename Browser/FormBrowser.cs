@@ -2494,11 +2494,11 @@ namespace Browser
 			// 既定値（https://play.games.dmm.com/game/kancolle）は特殊文字を含まないため、
 			// HtmlEncode 後も同一文字列となり、正常時の挙動は不変。
 			string safeUrl = System.Net.WebUtility.HtmlEncode(loginUrl);
-			// [r3 指摘1 対応] C# 逐語的補間文字列 $@"..." 内では HTML 属性のダブルクォート " は
+			// C# 逐語的補間文字列 $@"..." 内では HTML 属性のダブルクォート " は
 			// 必ず "" にエスケープする（C# 言語仕様: 逐語文字列内の " は "" でエスケープ）。
 			// 単一 " のままだと CS1003 / CS1010 のコンパイルエラーになるため注意。
 			// 下方の body 側（<div class=""wrap""> 等）は "" 済み。
-			// [r3 指摘6 注記] HTML タグ <br/> はクォート文字を含まないため、
+			// HTML タグ <br/> はクォート文字を含まないため、
 			// C# 逐語文字列内でのエスケープは不要（"" 変換対象ではない）。
 			return $@"<!DOCTYPE html>
 <html>
